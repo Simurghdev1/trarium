@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trarium"
+version = "2.16.0"
+description = "ترجمه خودکار کتاب با هوش مصنوعی"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "google-genai>=2.0.0",
+    "requests>=2.31.0",
+    "PyMuPDF>=1.24.0",
+    "ebooklib>=0.18",
+    "arabic-reshaper>=3.0.0",
+    "python-bidi>=0.6.0",
+    "Pillow>=10.0.0",
+    "rich>=13.0.0",
+    "click>=8.1.0",
+    "streamlit>=1.30.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "pytesseract>=0.3.10",
+    "paddleocr>=2.7.0",
+    "paddlepaddle>=2.5.0",
+]
+surya = [
+    "surya-ocr>=0.22.1; python_version >= '3.10'",
+]
+
+[project.scripts]
+trarium = "trarium.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["trarium*"]
+
+[tool.setuptools.package-data]
+trarium = ["fonts/*.ttf"]

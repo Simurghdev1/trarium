@@ -1,0 +1,8 @@
+# OCR محلی (اختیاری و سنگین) — بعد از requirements.txt نصب کنید
+-r requirements.txt
+pytesseract>=0.3.10
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+# PaddleOCR سنگین‌ترین بخش است و فقط اگر OCR محلی دقیق می‌خواهید لازم است
+paddleocr>=2.7.0
+paddlepaddle>=2.5.0
