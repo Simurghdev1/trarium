@@ -151,3 +151,16 @@ WAF 403 بدون سه‌بار retry بسته شد.
 - `qa_results_baseline.json` / `qa_results_fixed.json` — اندازه‌گیری قبل و بعد
 - `kaman_results.json` — نتیجهٔ تست هستهٔ کامان
 - PDF/PNG نمونه: `fixed-simple.pdf`, `fixed-hybrid.pdf`, `fixed-source.pdf` و رندر PNG
+
+
+## 12) GitHub Actions (اجرای واقعی)
+
+- اجرای اول (شاخهٔ `qa/v2.17.0-audit`): https://github.com/alimahamdarijanipro-stack/trarium-/actions/runs/43222762699
+  - `Unit tests (Python 3.10)` ✅ / `3.11` ✅ / `3.12` ✅
+  - `End-to-end QA (mock provider, no API key)` ✅
+  - آرتیفکت `trarium-qa-results` آپلود شد.
+- اجرای دوم (پس از کامل‌کردن جمع‌آوری مصنوعات: PDF/EPUB/لاگ) در پایین همین بخش ثبت شده است.
+
+تنها ریپوی تراریوم دسترسی نوشتن دارد؛ برای مخزن کامان (پروژهٔ شخص دیگری) هیچ
+workflowای اضافه نشد چون دسترسی نوشتن وجود ندارد و تغییر پروژهٔ دیگران بدون اجازه
+مجاز نیست.
