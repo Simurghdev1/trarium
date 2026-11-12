@@ -1,10 +1,6 @@
 """تقسیم‌کننده متن به بخش‌های مناسب برای API."""
 import re
 
-# عنوان‌هایی که صفحه‌شمار PDF هستند (مثل «صفحه ۱۲») و ارزش نگه‌داشتن به‌عنوان
-# مرز فصل را ندارند؛ همین صفحات را می‌توان با هم در یک درخواست فرستاد.
-_PAGE_LIKE_TITLE = re.compile(r"^\s*صفحه\s*[\d۰-۹]+\s*$")
-
 
 class TextChunker:
     """متن رو به بخش‌های کوچک‌تر تقسیم می‌کنه تا در محدودیت API جا بشه."""
@@ -21,55 +17,55 @@ class TextChunker:
         self.max_chars = max_chars
         self.overlap = overlap
 
-    def chunk_by_chapters(self, chapters: list[dict]) -> list[dict]:
-        """متن رو بر اساس فصل‌ها تقسیم می‌کنه.
+    @staticmethod
+    def _is_generic_section_title(title: str) -> bool:
+        title = (title or "").strip().lower()
+        return bool(
+            re.fullmatch(r"(?:page|صفحه)\s*\d+", title, re.I)
+            or re.fullmatch(r"(?:paragraph|پاراگراف)\s*\d+", title, re.I)
+            or re.fullmatch(r"(?:section|بخش)\s*\d+", title, re.I)
+        )
 
-        فصل‌های کوتاه پشت‌سرهم در یک بخش جمع می‌شوند (کاهش تعداد درخواست و
-        هزینه)، ولی مرز فصل‌هایی که عنوان واقعی دارند حفظ می‌شود تا سرفصل
-        کتاب در خروجی گم نشود. صفحات PDF («صفحه ۱۲») قابل ادغام‌اند.
-        """
-        chunks: list[dict] = []
-        buffer: list[str] = []
-        buffer_len = 0
-        buffer_title = ""
-        mergeable = True
+    def chunk_by_chapters(self, chapters: list[dict]) -> list[dict]:
+        """Pack small generic sections together to reduce API calls without merging named chapters."""
+        chunks = []
+        current_parts: list[str] = []
+        current_len = 0
+        current_title = ""
+        generic_bundle = True
 
         def flush():
-            nonlocal buffer, buffer_len, buffer_title, mergeable
-            if buffer:
-                chunks.append({
-                    "title": buffer_title,
-                    "content": "\n\n".join(buffer).strip(),
-                })
-            buffer, buffer_len, buffer_title, mergeable = [], 0, "", True
+            nonlocal current_parts, current_len, current_title, generic_bundle
+            if current_parts:
+                chunks.append({"title": current_title or "متن", "content": "\n\n".join(current_parts).strip()})
+            current_parts = []
+            current_len = 0
+            current_title = ""
+            generic_bundle = True
 
         for chapter in chapters:
-            text = (chapter.get("content") or "").strip()
-            title = (chapter.get("title") or "").strip()
-            if not text:
+            chapter_text = str(chapter.get("content", "") or "").strip()
+            chapter_title = str(chapter.get("title", "") or "").strip() or "متن"
+            if not chapter_text:
                 continue
 
-            # فصل بلند: بخش یا بخش‌های مستقل
-            if len(text) > self.max_chars:
+            is_generic = self._is_generic_section_title(chapter_title)
+            if len(chapter_text) > self.max_chars:
                 flush()
-                for i, sub in enumerate(self.chunk_text(text)):
-                    chunks.append({
-                        "title": f"{title} (بخش {i + 1})" if title else f"بخش {i + 1}",
-                        "content": sub,
-                    })
+                for i, sc in enumerate(self.chunk_text(chapter_text)):
+                    chunks.append({"title": f"{chapter_title} (بخش {i + 1})", "content": sc})
                 continue
 
-            is_page_like = bool(_PAGE_LIKE_TITLE.match(title))
-            extra = len(text) + (2 if buffer else 0)
-
-            if buffer and (not mergeable or not is_page_like or buffer_len + extra > self.max_chars):
+            # Generic page/paragraph labels are only bookkeeping; safely pack them together.
+            if current_parts and (not generic_bundle or not is_generic or current_len + len(chapter_text) + 2 > self.max_chars):
                 flush()
 
-            if not buffer:
-                buffer_title = title
-                mergeable = is_page_like
-            buffer.append(text)
-            buffer_len += extra
+            if not current_parts:
+                current_title = chapter_title if not is_generic else "متن"
+                generic_bundle = is_generic
+
+            current_parts.append(chapter_text)
+            current_len += len(chapter_text) + 2
 
         flush()
         return chunks
@@ -91,7 +87,6 @@ class TextChunker:
                 for pattern in [r"\.\s", r"!\s", r"\?\s", r"\.\n", r"!\n", r"\?\n"]:
                     bp = list(re.finditer(pattern, text[start + self.max_chars // 3:end]))
                     if bp:
-                        # end() پس از فاصله/خط جدید است، پس مرز درست همان‌جاست
                         break_point = start + self.max_chars // 3 + bp[-1].end()
 
                 # اگه جمله پیدا نشد، خط جدید
@@ -103,9 +98,9 @@ class TextChunker:
                     break_point = text.rfind(" ", start + self.max_chars // 2, end)
 
                 if break_point > start:
+                    # break_point already sits just past the delimiter (+1 used to
+                    # eat the next word's first letter: «Sentence» -> «S» + «entence»)
                     end = break_point
-                else:
-                    end = start + self.max_chars
 
             chunk = text[start:end].strip()
             if chunk:

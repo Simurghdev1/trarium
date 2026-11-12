@@ -1,43 +1,34 @@
-# Changelog
+## 2.17.0 — Safe Translation Engine
 
-## [2.16.0] — اصلاح مسیر ترجمه و خروجی‌ها
+- Hybrid PDF extraction: native text first; OCR only on pages without text.
+- Safe optimization: conservative whitespace normalization and no aggressive literary rewriting.
+- Translation Memory + normalized cache and in-book de-duplication.
+- Persistent SQLite checkpoints for interrupted jobs and resume.
+- Token-aware batching with adaptive batch sizing and natural block boundaries.
+- Placeholder protection for URLs, emails, HTML/XML tags and inline code.
+- Persistent character/term registry with per-chunk terminology injection.
+- Dynamic provider failover instead of fixed round-robin.
+- Pre-flight token estimation/connectivity probe helpers.
+- PDF layout translation now reports cache/checkpoint/API/token metrics.
+- Attribution page remains: «ترجمه شده توسط تراریوم».
 
-این نسخه فقط کتابخانه‌ها و منطق داخلی را اصلاح می‌کند؛ ساختار رابط کاربری و گزینه‌های
-آن دست‌نخورده مانده است.
+# Trarium Changelog
 
-### Fixed
+## 2.16.4
+- OpenRouter auto transport now prefers curl when available, with requests fallback.
+- Removed localhost attribution headers from default OpenRouter requests; attribution is opt-in.
+- Added real OpenRouter diagnostics: GET /models + tiny authenticated POST.
+- Added direct Google Gemini REST provider with current Gemini 3.8/3.7/3.6/3.5 Flash model IDs.
+- Added direct Groq provider with current GPT-OSS and Qwen 3.8 models.
+- Added generic OpenAI-compatible provider for additional services.
+- Streamlit provider selector updated accordingly.
 
-- **EPUB دیگر کرش نمی‌کند:** `ebooklib` ثابت `ITEM_DOCUMENT` را در ریشهٔ پکیج نگه
-  می‌دارد، نه در `ebooklib.epub`؛ استفادهٔ اشتباه باعث `AttributeError` و توقف کامل
-  استخراج EPUB می‌شد.
-- **خروجی PDF فارسی در حالت حفظ قالب:** متن با فونت Sahel و `fontname` درست نوشته
-  می‌شود. پیش از این PyMuPDF به Helvetica برمی‌گشت و به‌جای ترجمه، `?????` می‌نوشت.
-- **حذف متن اصلی بدون خراب‌کردن صفحه:** redaction حالا با `fill=None` انجام می‌شود
-  (بدون مستطیل سفید) و با `PDF_REDACT_IMAGE_NONE` تصاویر و گرافیک صفحه حفظ می‌شوند.
-  دیگر متن ترجمه روی متن اصلی نمی‌نشیند و تصاویر خراب یا حذف نمی‌شوند.
-- **تقسیم متن کلمه را نمی‌شکند:** مرز جمله یک کاراکتر اضافه برمی‌داشت و کلمهٔ بعدی را
-  نصف می‌کرد («Sentence» → «S» + «entence»).
-- **ادغام واقعی فصل‌های کوتاه:** صفحات PDF («صفحه ۱۲») در یک درخواست جمع می‌شوند
-  (کاهش تعداد درخواست و هزینه) ولی مرز فصل‌های دارای عنوان واقعی حفظ می‌شود.
-- **فونت EPUB:** مسیر `@font-face` از `../fonts/Sahel.ttf` به `fonts/Sahel.ttf`
-  اصلاح شد و فونت در `content.opf` اعلام شد؛ قبلاً فونت هرگز بارگذاری نمی‌شد.
-- **هم‌ترازی بلاک‌ها در PDF:** اگر مدل تگ `[BLOCK_n]` را برای بخشی از متن برنگرداند،
-  همان بخش تک‌به‌تک دوباره ترجمه می‌شود؛ یک بلاک خالی هم دیگر کل کتاب را متوقف
-  نمی‌کند و متن اصلی همان بلاک حفظ می‌شود.
 
-### Changed
-
-- **مصرف توکن OCR به‌شدت کم شد:** تصویر صفحات برای OCR با ۱۸۰dpi و JPEG فشرده
-  (حداکثر ضلع ۱۷۰۰ پیکسل) تولید می‌شود، به‌جای PNG با ۳۰۰dpi. چون هزینهٔ توکن
-  Vision با تعداد پیکسل تعیین می‌شود، یک صفحهٔ A4 از حدود ۸٫۷ میلیون پیکسل به
-  حدود ۲ میلیون می‌رسد (بیش از ۷۰٪ کاهش). سقف `max_tokens` هم متناسب با تعداد
-  صفحه محدود شد.
-- `requirements.txt` فقط وابستگی‌های هستهٔ برنامه را دارد؛ بستهٔ سنگین OCR به
-  `requirements-ocr.txt` منتقل شد. نصب با `pip install -e .` یا
-  `pip install -r requirements.txt` سبک‌تر و پایدارتر است.
-- آزمون‌های آفلاین در `tests/` اضافه شد (`python -m pytest tests/ -v`).
-
-### Removed
-
-- خروجی‌های build (`build/`، `dist/`، `trarium.egg-info/`) و zip تودرتو از بستهٔ
-  پروژه حذف شد تا هر فایل یک نسخه داشته باشد.
+## 2.16.3
+- Added robust OpenRouter HTTP transport with WAF/security-policy classification.
+- Automatic curl fallback on WAF-style 403 when available; no repeated retries for deterministic security blocks.
+- OpenRouter errors now distinguish network/WAF blocks from API/guardrail/account 403s.
+- Added OpenRouter connection diagnostic in the Streamlit UI.
+- Refreshed current free OpenRouter model slugs (including Gemma 4 31B and Nemotron 3 Nano Omni).
+- Removed stale free slug for Nemotron 3.5 Lightning, which is currently a paid model.
+- OpenRouter OCR Vision now uses the same robust transport.

@@ -1,56 +1,48 @@
-"""ترجمه متن با Google Gemini."""
-import math
-import time
-from google import genai
+"""Direct Google Gemini REST translator."""
+from __future__ import annotations
+import math, time, requests
 from trarium.translators.base import BaseTranslator
 from trarium.utils import clean_translation as _clean_translation
 
-LANG_NAMES = {
-    "fa": "فارسی", "en": "انگلیسی", "ar": "عربی", "fr": "فرانسوی",
-    "de": "آلمانی", "es": "اسپانیایی", "tr": "ترکی", "ja": "ژاپنی",
-    "ko": "کره‌ای", "zh": "چینی", "ru": "روسی",
+GEMINI_MODELS = {
+    "Gemini 3.8 Flash (جدید)": "gemini-3.8-flash",
+    "Gemini 3.7 Flash": "gemini-3.7-flash",
+    "Gemini 3.6 Flash": "gemini-3.6-flash",
+    "Gemini 3.5 Flash": "gemini-3.5-flash",
 }
-SYSTEM_PROMPT = (
-    "You are a professional literary translator. Translate completely and faithfully into the requested target language. "
-    "Output only the translation, with no commentary, metadata, safety notes, or reasoning. "
-    "Preserve names, numbers, URLs, paragraph order, and meaning."
-)
-PERSIAN_RULES = " For Persian: use correct Persian نیم‌فاصله and quotation marks «…», and never use em dash or en dash."
-
-def _system_prompt(target_lang):
-    return SYSTEM_PROMPT + (PERSIAN_RULES if target_lang == "fa" else "")
-
-TRANSLATE_PROMPT = "Translate to {lang}. Output only the translation."
-
+LANG_NAMES = {"fa":"فارسی","en":"English","ar":"العربية","tr":"Türkçe","zh":"中文","ja":"日本語","ko":"한국어","ru":"Русский"}
 
 class GeminiTranslator(BaseTranslator):
-    def __init__(self, api_key=None, model_name="gemini-2.5-flash"):
-        self.client = genai.Client(api_key=api_key)
+    API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    def __init__(self, api_key=None, model_name="gemini-3.8-flash"):
+        if not api_key: raise RuntimeError("Google API Key وارد نشده است.")
+        self.api_key = api_key
         self.model_name = model_name
-
-    def get_token_limit(self):
-        return 1_000_000
-
+        self.last_transport = "requests"
+        self.last_usage = {}
+    def get_token_limit(self): return 1_048_576
     def translate(self, text, target_lang="fa"):
-        lang_name = LANG_NAMES.get(target_lang, target_lang)
-        user_msg = TRANSLATE_PROMPT.format(lang=lang_name) + "\n\n" + text
+        lang = LANG_NAMES.get(target_lang, target_lang)
+        system = "You are a professional literary translator. Translate completely and faithfully. Output only the translation. Preserve names, numbers, URLs, paragraph order, dialogue structure and meaning. Never summarize, omit, censor or add commentary."
+        if target_lang == "fa": system += " Use natural Persian, correct نیم‌فاصله and «…». Avoid em dash and en dash."
+        prompt = f"{system}\n\nTranslate to {lang}.\n\n{str(text)}"
+        payload = {"systemInstruction":{"parts":[{"text":system}]},"contents":[{"parts":[{"text":f"Translate to {lang}.\n\n{str(text)}"}]}],"generationConfig":{"maxOutputTokens":max(4096,min(30000,math.ceil(len(str(text))*1.15)))}}
+        last = None
         for attempt in range(3):
             try:
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=user_msg,
-                    config={
-                        "temperature": 0.3,
-                        "max_output_tokens": max(2048, min(20000, math.ceil(len(text) * 0.75))),
-                        "system_instruction": _system_prompt(target_lang),
-                    },
-                )
-                output = getattr(response, "text", None)
-                if not output:
-                    raise RuntimeError("Gemini پاسخ متنی خالی برگرداند")
-                return _clean_translation(output.strip())
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
-                    continue
-                raise RuntimeError(f"خطا در ترجمه Gemini: {e}")
+                url = self.API.format(model=self.model_name)
+                r = requests.post(url, headers={"Content-Type":"application/json","x-goog-api-key":self.api_key,"User-Agent":"Trarium/2.17.0"}, json=payload, timeout=180)
+                if r.status_code >= 400: raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:600]}")
+                data = r.json(); usage = data.get("usageMetadata") or {}
+                self.last_usage = {"input_tokens": int(usage.get("promptTokenCount") or 0), "output_tokens": int(usage.get("candidatesTokenCount") or 0)}
+                candidates = data.get("candidates") or []
+                text_out = ""
+                if candidates:
+                    for part in (candidates[0].get("content",{}).get("parts") or []):
+                        if part.get("text"): text_out += part["text"]
+                if not text_out: raise RuntimeError("Gemini پاسخ متنی خالی برگرداند.")
+                return _clean_translation(text_out)
+            except Exception as exc:
+                last = exc
+                if attempt < 2: time.sleep(1.5*(2**attempt))
+        raise RuntimeError(f"خطا در ترجمه Gemini: {last}")

@@ -19,17 +19,18 @@ def _get_extractor_class(ext: str):
     return None
 
 
-def get_extractor(file_path: str, use_ocr: bool = False, ocr_lang: str = "fas+eng") -> BaseExtractor:
+def get_extractor(file_path: str, use_ocr: bool = False, ocr_lang: str = "eng", ocr_method: str = "auto") -> BaseExtractor:
     """یک extractor مناسب برای فایل ورودی برمی‌گرداند."""
     from pathlib import Path
 
     ext = Path(file_path).suffix.lower()
 
-    if use_ocr:
-        if ext != ".pdf":
-            raise ValueError("OCR فقط برای فایل‌های PDF پشتیبانی می‌شود؛ برای TXT/EPUB گزینه --ocr را بردارید.")
-        from trarium.extractors.ocr import OCRExtractor
-        return OCRExtractor(ocr_lang=ocr_lang)
+    if use_ocr and ext != ".pdf":
+        raise ValueError("OCR فقط برای فایل‌های PDF پشتیبانی می‌شود؛ برای TXT/EPUB گزینه --ocr را بردارید.")
+
+    if ext == ".pdf":
+        from trarium.extractors.pdf import PDFExtractor
+        return PDFExtractor(use_ocr=use_ocr, ocr_lang=ocr_lang, ocr_method=ocr_method)
 
     extractor_class = _get_extractor_class(ext)
     if extractor_class is not None:

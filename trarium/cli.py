@@ -53,11 +53,13 @@ def parse_skip_pages(skip_str):
 @click.command()
 @click.argument("file_path", type=click.Path(exists=True))
 @click.option("--to", "-t", default="fa", help="زبان مقصد")
-@click.option("--provider", "-p", type=click.Choice(["openrouter", "gemini", "router9"]),
+@click.option("--provider", "-p", type=click.Choice(["openrouter", "gemini", "groq", "router9", "openai_compatible"]),
               default="openrouter", help="ارائه‌دهنده هوش مصنوعی")
 @click.option("--api-key", "-k", default=None, help="API Key")
 @click.option("--model", "-m", default=None, help="نام مدل")
+@click.option("--base-url", default=None, help="Base URL برای providerهای OpenAI-compatible")
 @click.option("--ocr", is_flag=True, help="OCR برای PDF اسکن‌شده")
+@click.option("--ocr-method", type=click.Choice(["auto", "paddleocr", "surya", "easyocr", "tesseract", "openrouter"]), default="auto", show_default=True)
 @click.option("--output", "-o", default=None, help="مسیر فایل خروجی")
 @click.option("--format", "-f", "out_format", type=click.Choice(["txt", "pdf", "epub"]),
               default="txt", help="فرمت خروجی")
@@ -66,7 +68,7 @@ def parse_skip_pages(skip_str):
 @click.option("--workers", "-w", default=5, help="تعداد درخواست‌های موازی")
 @click.option("--skip-pages", default=None, help="شماره صفحات برای رد کردن (مثال: 1,5,10-15)")
 @click.version_option(__version__)
-def main(file_path, to, provider, api_key, model, ocr, output, out_format, chunk_size, delay, workers, skip_pages):
+def main(file_path, to, provider, api_key, model, base_url, ocr, ocr_method, output, out_format, chunk_size, delay, workers, skip_pages):
     """تراریوم - ترجمه خودکار کتاب 🚀"""
     print_banner()
 
@@ -87,7 +89,17 @@ def main(file_path, to, provider, api_key, model, ocr, output, out_format, chunk
             console.print("  https://aistudio.google.com/apikey")
             sys.exit(1)
         if not model:
-            model = "gemini-2.5-flash"
+            model = "gemini-3.8-flash"
+    elif provider == "groq":
+        api_key = api_key or os.environ.get("GROQ_API_KEY")
+        model = model or "openai/gpt-oss-120b"
+    elif provider == "openai_compatible":
+        api_key = api_key or os.environ.get("TRARIUM_API_KEY")
+        model = model or os.environ.get("TRARIUM_MODEL")
+        base_url = base_url or os.environ.get("TRARIUM_BASE_URL")
+        if not base_url:
+            console.print("[red]❌ --base-url برای OpenAI-compatible لازمه![/]")
+            sys.exit(1)
     else:  # router9
         api_key = api_key or os.environ.get("ROUTER9_API_KEY") or "9router"
         model = model or "auto"
@@ -107,7 +119,7 @@ def main(file_path, to, provider, api_key, model, ocr, output, out_format, chunk
     console.print(Panel("[bold]📄 مرحله ۱: استخراج متن[/]", style="cyan"))
 
     try:
-        extractor = get_extractor(file_path, use_ocr=ocr)
+        extractor = get_extractor(file_path, use_ocr=ocr, ocr_method=ocr_method)
         console.print(f"  📁 فایل: {file_path}")
         console.print(f"  🔧 روش: {extractor.__class__.__name__}")
         book = extractor.extract(file_path)
@@ -126,7 +138,7 @@ def main(file_path, to, provider, api_key, model, ocr, output, out_format, chunk
     console.print(Panel(f"[bold]🌍 مرحله ۲: ترجمه به {to} ({provider})[/]", style="cyan"))
 
     try:
-        translator = get_translator(provider, api_key=api_key, model_name=model)
+        translator = CachedTranslator(get_translator(provider, api_key=api_key, model_name=model, base_url=base_url, provider_name="OpenAI-compatible") if provider == "openai_compatible" else get_translator(provider, api_key=api_key, model_name=model), provider, model)
 
         # فیلتر کردن فصل‌های رد شده
         if user_skip:
