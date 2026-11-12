@@ -159,11 +159,20 @@ WAF 403 بدون سه‌بار retry بسته شد.
   - `Unit tests (Python 3.10)` ✅ / `3.11` ✅ / `3.12` ✅
   - `End-to-end QA (mock provider, no API key)` ✅
   - آرتیفکت `trarium-qa-results` آپلود شد.
-- اجرای دوم (جمع‌آوری کامل مصنوعات): https://github.com/alimahamdarijanipro-stack/trarium-/actions/runs/43222989269 — ✅ (QA + هر سه نسخهٔ پایتون)
-- آرتیفکت شامل `qa_results_ci.json` و `qa-pytest.log` است و با اصلاح مسیر `$QA_TMP`، فایل‌های PDF/EPUB تولیدشده هم اضافه می‌شوند.
+- اجرای دوم: runs/43222989269 — ✅
+- اجرای سوم (با PDF/EPUB در آرتیفکت، ۳۴۳ KB): runs/43223494942 — ✅
+- همهٔ اجراها: https://github.com/alimahamdarijanipro-stack/trarium-/actions/workflows/qa.yml
+- آرتیفکت `trarium-qa-results` شامل `qa_results_ci.json`، `qa-pytest.log` و PDF/EPUB تولیدشده است.
 - SHA-256 زیپ نسخهٔ ۲٫۱۷٫۰ روی `main` پس از همهٔ این تغییرات دوباره چک شد:
   `86d3770dc1a17f8ac96bb0e146a38ef481fbfb1ee4d1fb445a866572c415d790` (بدون تغییر).
 
 تنها ریپوی تراریوم دسترسی نوشتن دارد؛ برای مخزن کامان (پروژهٔ شخص دیگری) هیچ
 workflowای اضافه نشد چون دسترسی نوشتن وجود ندارد و تغییر پروژهٔ دیگران بدون اجازه
 مجاز نیست.
+
+## 13) بازرسی نهایی مخزن
+
+- هیچ توکن یا secret در شاخه نیست (`git grep` روی الگوهای `ghp_` و `github_pat_`).
+- فایل‌های `__pycache__` از شاخه حذف و `.gitignore` اضافه شد.
+- زیپ نسخهٔ ۲٫۱۷٫۰ و ۲٫۱۶٫۰ داخل شاخه دست‌نخورده باقی مانده‌اند.
+- تغییرات فقط روی `qa/v2.17.0-audit` است؛ `main` هیچ کامیت جدیدی نگرفت.
