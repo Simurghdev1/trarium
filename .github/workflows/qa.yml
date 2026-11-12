@@ -56,7 +56,7 @@ jobs:
           QA_LABEL: ci
         run: |
           set -o pipefail
-          python -m pytest qa/qa_suite.py -q -p no:cacheprovider 2>&1 | tee qa-pytest.log
+          python -m pytest qa/qa_suite.py -q -p no:cacheprovider --basetemp "$QA_TMP/pytest" 2>&1 | tee qa-pytest.log
       - name: Collect artifacts
         if: always()
         env:

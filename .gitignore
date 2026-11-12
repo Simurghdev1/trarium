@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+qa/_tmp/
+qa/qa_results_*.json
+.env
+*.sqlite3
