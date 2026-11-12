@@ -130,6 +130,9 @@ WAF 403 بدون سه‌بار retry بسته شد.
 | متغیرها | `OPENROUTER_API_KEY` / `GOOGLE_API_KEY` / `GROQ_API_KEY` / `TRARIUM_API_KEY` (اختیاری، از env خوانده می‌شوند) |
 | امنیت | ⚠️ `.streamlit/config.toml` اصلی `enableCORS` و `enableXsrfProtection` را خاموش کرده؛ در Dockerfile با env روشن می‌شود. توصیه: خود فایل هم اصلاح شود |
 | منابع | ۳۰ صفحه: ~۱۸۰ MB RSS. OCR محلی (paddle) چند GB لازم دارد → در ایمیج نصب **نشد**؛ روی Railway از Vision استفاده شود |
+| اجرای واقعی فرمان شروع | ✅ `PORT=8099 sh -c 'streamlit ... --server.port=${PORT:-8080}'` → `/_stcore/health` = **200 "ok"** و صفحهٔ اصلی ۲۰۰ (۷٬۸۶۳ بایت) |
+| ساخت ایمیج Docker | ❌ انجام نشد — دسترسی به daemon داکر در این محیط `permission denied` است (بدون root). Dockerfile فقط از نظر محتوا و با اجرای واقعی همان فرمان شروع بررسی شد |
+| باگ پیدا‌شده در همین بررسی | اگر `$PORT` خالی باشد، Streamlit با خطا خارج می‌شود؛ `startCommand` به `${PORT:-8080}` اصلاح شد |
 | محدودیت ذخیره‌سازی | کش/checkpoint در `~/.trarium` (SQLite)؛ روی Railway موقتی است و با ری‌استارت پاک می‌شود → برای ماندگاری به Volume نیاز است |
 
 نتیجه: برای Railway **آماده است** به شرطی که OCR محلی نخواهید و برای ماندگاری
@@ -176,3 +179,10 @@ workflowای اضافه نشد چون دسترسی نوشتن وجود ندار�
 - فایل‌های `__pycache__` از شاخه حذف و `.gitignore` اضافه شد.
 - زیپ نسخهٔ ۲٫۱۷٫۰ و ۲٫۱۶٫۰ داخل شاخه دست‌نخورده باقی مانده‌اند.
 - تغییرات فقط روی `qa/v2.17.0-audit` است؛ `main` هیچ کامیت جدیدی نگرفت.
+
+### وضعیت نهایی CI
+
+- آخرین اجرای تأییدشده: https://github.com/alimahamdarijanipro-stack/trarium-/actions/runs/43223728521 — ✅
+  (`Unit tests 3.10/3.11/3.12` و `End-to-end QA` هر چهار مورد success)
+- آرتیفکت دانلودشده و بازرسی‌شده: `qa_results_ci.json`، `qa-pytest.log`،
+  `full.pdf`، `out.pdf`، `rtl.pdf`، `scan_out.pdf`، `big_out.pdf`، `b.epub` (~۳۴۳ KB)
