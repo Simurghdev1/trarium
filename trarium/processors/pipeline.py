@@ -1,21 +1,33 @@
-"""پایپلاین اصلی ترجمه کتاب."""
+"""Fault-tolerant, token-aware translation pipeline for books."""
+from __future__ import annotations
+
+import hashlib
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 from dataclasses import dataclass
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+from threading import Lock
 
+from rich.console import Console
+
+from trarium.cache import TranslationCache
+from trarium.checkpoint import CheckpointStore, stable_job_id
 from trarium.extractors.base import ExtractedBook
-from trarium.translators.base import BaseTranslator
+from trarium.placeholders import protect, restore
+from trarium.term_registry import TermRegistry
+from trarium.utils import clean_translation, estimate_tokens, probably_already_in_persian, is_nontranslatable_token
 from trarium.processors import TextChunker
-from trarium.utils import probably_already_in_persian
 
 console = Console()
 
+SYSTEM = (
+    "Translate the supplied literary text completely and faithfully into the requested target language. "
+    "Output only the translation. Preserve paragraph order, dialogue structure, names, numbers and meaning. "
+    "Do not summarize, omit, add commentary, or invent text."
+)
+
 @dataclass
 class TranslationResult:
-    """نتیجه ترجمه کامل."""
     title: str
     author: str
     original_lang: str
@@ -26,143 +38,165 @@ class TranslationResult:
     total_chars: int = 0
     translated_chars: int = 0
     elapsed_seconds: float = 0.0
-
+    failed_chunks: int = 0
+    cache_hits: int = 0
+    checkpoint_hits: int = 0
+    api_requests: int = 0
+    estimated_input_tokens: int = 0
+    estimated_output_tokens: int = 0
+    protected_spans: int = 0
 
 class TranslationPipeline:
-    """پایپلاین اصلی ترجمه کتاب."""
-
-    def __init__(
-        self,
-        translator: BaseTranslator,
-        target_lang: str = "fa",
-        chunk_size: int = 15000,
-        delay_between_requests: float = 0.0,
-        max_workers: int = 5,
-    ):
-        self.translator = translator
-        self.target_lang = target_lang
-        # Overlap is useful as model context only when the merge stage can
-        # remove duplicated output. This pipeline does not do that, so disable
-        # overlap here to prevent translated text from being duplicated.
-        self.chunker = TextChunker(max_chars=chunk_size, overlap=0)
-        self.delay = delay_between_requests
+    def __init__(self, translator, target_lang="fa", chunk_size=14000, delay_between_requests=0.0,
+                 max_workers=5, safe_optimization=True, protect_nontranslatable=True,
+                 use_checkpoint=True, translation_memory=True, adaptive_batch=True,
+                 registry: TermRegistry | None = None, checkpoint: CheckpointStore | None = None,
+                 cache: TranslationCache | None = None):
         if max_workers < 1:
             raise ValueError("max_workers باید حداقل 1 باشد")
-        if delay_between_requests < 0:
-            raise ValueError("delay_between_requests نمی‌تواند منفی باشد")
+        self.translator = translator
+        self.target_lang = target_lang
+        self.chunker = TextChunker(max_chars=max(2000, int(chunk_size)), overlap=0)
+        self.delay = max(0.0, float(delay_between_requests))
         self.max_workers = max_workers
+        self.safe_optimization = safe_optimization
+        self.protect_nontranslatable = protect_nontranslatable
+        self.use_checkpoint = use_checkpoint
+        self.translation_memory = translation_memory
+        self.adaptive_batch = adaptive_batch
+        self.registry = registry
+        self.checkpoint = checkpoint or CheckpointStore()
+        self.cache = cache or TranslationCache()
+        self.stats = {"cache_hits":0,"checkpoint_hits":0,"api_requests":0,"in_tokens":0,"out_tokens":0,"protected_spans":0}
+        self._rate_lock = Lock()
+        self._next_request_at = 0.0
+
+    def _source_fingerprint(self, book: ExtractedBook) -> str:
+        h = hashlib.sha256()
+        h.update((book.title or "").encode("utf-8"))
+        for ch in book.chapters:
+            h.update(str(ch.get("title", "")).encode("utf-8"))
+            h.update(b"\0")
+            h.update(str(ch.get("content", "")).encode("utf-8"))
+            h.update(b"\0")
+        return h.hexdigest()
+
+    def _provider_name(self):
+        return str(getattr(self.translator, "provider", "") or getattr(self.translator, "last_provider", "") or self.translator.__class__.__name__)
+
+    def _model_name(self):
+        return str(getattr(self.translator, "model", "") or getattr(self.translator, "model_name", ""))
+
+    def _wait_rate_limit(self):
+        if not self.delay:
+            return
+        with self._rate_lock:
+            now = time.monotonic()
+            wait = max(0.0, self._next_request_at - now)
+            self._next_request_at = max(now, self._next_request_at) + self.delay
+        if wait:
+            time.sleep(wait)
+
+    def _prepare(self, source: str):
+        value = source.replace("\r\n", "\n").replace("\r", "\n")
+        if self.safe_optimization:
+            value = re.sub(r"[ \t]+", " ", value)
+            value = re.sub(r"\n{3,}", "\n\n", value).strip()
+        p = protect(value) if self.protect_nontranslatable else type("P", (), {"text":value,"mapping":{}})()
+        if p.mapping:
+            self.stats["protected_spans"] += len(p.mapping)
+        return p.text, p.mapping
+
+    def _prompt(self, prepared: str, registry_prompt: str = ""):
+        """Build the user message only.
+
+        The provider layer already sends its own system prompt (and repeats the
+        target language), so re-sending the whole instruction block here doubled
+        the input tokens of every request without changing the output.
+        """
+        parts = []
+        if registry_prompt:
+            parts.append(registry_prompt)
+        if "__TRARIUM_PH_" in prepared:
+            parts.append("Preserve every __TRARIUM_PH_####__ token exactly.")
+        if not parts:
+            return prepared
+        return "\n".join(parts) + "\n\n" + prepared
+
+    def _translated(self, source: str, key: str, prompt: str):
+        provider = self._provider_name(); model = self._model_name()
+        if self.translation_memory:
+            hit = self.cache.get(source, self.target_lang, provider, model)
+            if hit is not None:
+                self.stats["cache_hits"] += 1
+                return hit, True
+        if self.use_checkpoint:
+            # Checkpoint keys are unique to normalized source + config.
+            stored = self.checkpoint.load(key)
+            if "0" in stored:
+                self.stats["checkpoint_hits"] += 1
+                return stored["0"], True
+        self._wait_rate_limit()
+        self.stats["api_requests"] += 1
+        out = self.translator.translate(prompt, self.target_lang)
+        usage = getattr(self.translator, "last_usage", {}) or {}
+        self.stats["in_tokens"] += int(usage.get("input_tokens") or estimate_tokens(prompt))
+        self.stats["out_tokens"] += int(usage.get("output_tokens") or estimate_tokens(str(out)))
+        out = clean_translation(str(out))
+        if self.translation_memory:
+            self.cache.put(source, out, self.target_lang, provider, model)
+        if self.use_checkpoint:
+            self.checkpoint.put(key, "0", out)
+        return out, False
 
     def run(self, book: ExtractedBook) -> TranslationResult:
-        """ترجمه کامل کتاب رو اجرا می‌کنه."""
-        start_time = time.time()
-
-        console.print("\n[bold cyan]📦 تقسیم‌بندی متن...[/]")
+        started = time.monotonic()
         chunks = self.chunker.chunk_by_chapters(book.chapters)
-        total_chunks = len(chunks)
-        if total_chunks == 0:
-            raise ValueError("متنی قابل ترجمه پیدا نشد (فصل یا محتوای معتبر وجود ندارد).")
+        if not chunks:
+            raise ValueError("متنی قابل ترجمه پیدا نشد.")
+        translated_parts = [None] * len(chunks)
+        job_id = stable_job_id(self._source_fingerprint(book), self.target_lang, self._provider_name(), self._model_name())
 
-        console.print(f"  📊 تعداد بخش‌ها: {total_chunks}")
-        console.print(f"  📏 اندازه هر بخش: حداکثر ~{self.chunker.max_chars:,} کاراکتر")
-        console.print(f"  ⚡ ترجمه موازی: {self.max_workers} درخواست همزمان")
+        def translate_one(idx, chunk):
+            source = str(chunk.get("content", "") or "")
+            if not source.strip():
+                return idx, {"title":chunk.get("title","متن"),"content":"","failed":False,"error":""}
+            if (self.target_lang == "fa" and probably_already_in_persian(source)) or is_nontranslatable_token(source):
+                return idx, {"title":chunk.get("title","متن"),"content":source,"failed":False,"error":""}
+            prepared, mapping = self._prepare(source)
+            registry_prompt = self.registry.prompt(source, self.target_lang) if self.registry else ""
+            prompt = self._prompt(prepared, registry_prompt)
+            unit_hash = hashlib.sha256((job_id + "|" + prepared).encode("utf-8")).hexdigest()
+            try:
+                last = None
+                for attempt in range(3):
+                    try:
+                        output, reused = self._translated(prepared, unit_hash, prompt)
+                        output = restore(output, mapping)
+                        if not output.strip():
+                            raise RuntimeError("پاسخ ترجمه خالی بود")
+                        return idx, {"title":chunk.get("title","متن"),"content":output,"failed":False,"error":""}
+                    except Exception as exc:
+                        last = exc
+                        if attempt < 2:
+                            time.sleep(0.8 * (2 ** attempt))
+                raise RuntimeError(str(last or "ترجمه انجام نشد"))
+            except Exception as exc:
+                return idx, {"title":chunk.get("title","متن"),"content":source,"failed":True,"error":str(exc)}
 
-        translated_parts = [None] * total_chunks
-        completed_count = [0]
-        rate_lock = Lock()
-        next_request_at = [0.0]
+        # Each chunk is independent. Results are placed back by index, preserving document order.
+        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            futures = [pool.submit(translate_one, i, chunk) for i, chunk in enumerate(chunks)]
+            for future in as_completed(futures):
+                idx, result = future.result()
+                translated_parts[idx] = result
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task("ترجمه...", total=total_chunks)
-
-            def _translate_one(idx, chunk):
-                # Enforce delay between request starts without serializing the
-                # requests themselves when workers > 1.
-                if self.delay > 0:
-                    with rate_lock:
-                        now = time.monotonic()
-                        wait = max(0.0, next_request_at[0] - now)
-                        next_request_at[0] = max(now, next_request_at[0]) + self.delay
-                    if wait:
-                        time.sleep(wait)
-                t0 = time.time()
-                try:
-                    source_text = chunk["content"]
-                    if self.target_lang == "fa" and probably_already_in_persian(source_text):
-                        translated = source_text
-                    else:
-                        translated = self.translator.translate(source_text, self.target_lang)
-                    elapsed = time.time() - t0
-                    return idx, {
-                        "title": chunk["title"],
-                        "content": translated,
-                        "failed": False,
-                    }, elapsed
-                except Exception as e:
-                    elapsed = time.time() - t0
-                    return idx, {
-                        "title": chunk["title"],
-                        "content": "",
-                        "failed": True,
-                        "error": str(e),
-                    }, elapsed
-
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {
-                    executor.submit(_translate_one, i, chunk): i
-                    for i, chunk in enumerate(chunks)
-                }
-
-                for future in as_completed(futures):
-                    idx, part, elapsed = future.result()
-                    translated_parts[idx] = part
-                    completed_count[0] += 1
-                    progress.update(
-                        task,
-                        advance=1,
-                        description=f"ترجمه بخش {completed_count[0]}/{total_chunks}",
-                    )
-
-        successful_parts = [p for p in translated_parts if p is not None and not p.get("failed")]
-        failed_parts = [p for p in translated_parts if p is not None and p.get("failed")]
-        translated_text = "\n\n".join(
-            f"--- {part['title']} ---\n\n{part['content']}"
-            for part in successful_parts
-        )
-
-        elapsed = time.time() - start_time
-
-        result = TranslationResult(
-            title=book.title,
-            author=book.author,
-            original_lang="auto",
-            target_lang=self.target_lang,
-            translated_text=translated_text,
-            total_chunks=total_chunks,
-            translated_chunks=len(successful_parts),
-            total_chars=book.total_chars,
-            translated_chars=len(translated_text),
-            elapsed_seconds=elapsed,
-        )
-
-        if failed_parts:
-            console.print(f"[yellow]⚠️ {len(failed_parts)} بخش ترجمه نشد.[/]")
-        self._print_summary(result)
-        return result
-
-    def _print_summary(self, result: TranslationResult):
-        status = "✅ ترجمه کامل شد!" if result.translated_chunks == result.total_chunks else "⚠️ ترجمه با خطا تمام شد"
-        console.print(f"\n[bold green]{status}[/]")
-        console.print(f"  📖 کتاب: {result.title}")
-        console.print(f"  ✍️  نویسنده: {result.author}")
-        console.print(f"  📊 بخش‌ها: {result.translated_chunks}/{result.total_chunks}")
-        console.print(f"  📏 کاراکتر اصلی: {result.total_chars:,}")
-        console.print(f"  📏 کاراکتر ترجمه: {result.translated_chars:,}")
-        console.print(f"  ⏱️  زمان: {result.elapsed_seconds:.1f} ثانیه")
-        console.print(f"  💰 هزینه: $0 (رایگان)\n")
+        failed = [p for p in translated_parts if p and p.get("failed")]
+        translated_text = "\n\n".join(f"--- {p['title']} ---\n\n{p['content']}" for p in translated_parts if p)
+        return TranslationResult(
+            title=book.title, author=book.author, original_lang="auto", target_lang=self.target_lang,
+            translated_text=translated_text, total_chunks=len(chunks), translated_chunks=len(chunks)-len(failed),
+            total_chars=book.total_chars, translated_chars=len(translated_text), elapsed_seconds=time.monotonic()-started,
+            failed_chunks=len(failed), cache_hits=self.stats["cache_hits"], checkpoint_hits=self.stats["checkpoint_hits"],
+            api_requests=self.stats["api_requests"], estimated_input_tokens=self.stats["in_tokens"],
+            estimated_output_tokens=self.stats["out_tokens"], protected_spans=self.stats["protected_spans"])

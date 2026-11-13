@@ -1,77 +1,67 @@
 """ابزارهای مشترک تراریوم."""
+from __future__ import annotations
+
 import re
-
-# زبان‌هایی که از راست به چپ نوشته می‌شوند
-RTL_LANGS = {"fa", "ar", "he", "ur", "ps", "ckb"}
-
-
-def is_rtl_lang(lang: str) -> bool:
-    """آیا زبان مقصد راست‌به‌چپ است؟"""
-    return (lang or "").lower() in RTL_LANGS
-
-
-def reshape_rtl(text: str) -> str:
-    """تبدیل متن فارسی/عربی به ترتیب بصری.
-
-    PyMuPDF هنگام نوشتن با insert_text/insert_textbox شکل‌دهی حروف و
-    راست‌به‌چپ‌سازی را انجام نمی‌دهد؛ پس متن باید پیش از نوشتن reshaped شود.
-    اگر کتابخانهٔ arabic-reshaper نصب نباشد، bidi تنها اجرا می‌شود و در
-    نهایت متن اصلی برگردانده می‌شود (ترجمه هرگز از بین نمی‌رود).
-    """
-    if not text:
-        return text
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        return get_display(arabic_reshaper.reshape(text))
-    except ImportError:
-        try:
-            from bidi.algorithm import get_display
-            return get_display(text)
-        except ImportError:
-            return text
-    except Exception:
-        return text
 
 
 def clean_translation(text: str) -> str:
-    """پاک‌سازی محافظه‌کارانه خروجی ترجمه بدون حذف کلمات واقعی متن."""
+    """Conservative cleanup that removes obvious meta chatter without deleting story text."""
     if not text:
         return ""
-
     lines = []
-    metadata_line = re.compile(
-        r"^\s*(?:user\s*safety|let\s+me\s+think|here(?:'s| is)\s+the\s+translation|"
-        r"translation|output(?:\s+only)?|response|answer|note|important|warning)\s*:\s*$",
-        re.IGNORECASE,
+    meta = re.compile(
+        r"^\s*(?:here(?:'s| is)\s+the\s+translation|translation|output(?:\s+only)?|response|answer|note|warning)\s*:\s*$",
+        re.I,
     )
-    for line in text.splitlines():
+    for line in str(text).splitlines():
         stripped = line.strip()
-        # Remove only explicit meta lines, not words occurring inside the translation.
-        if metadata_line.match(stripped):
+        if meta.match(stripped):
             continue
-        if re.fullmatch(r"```(?:text|plaintext|translation)?", stripped, re.IGNORECASE):
+        if re.fullmatch(r"```(?:text|plaintext|translation)?", stripped, re.I):
             continue
         if re.fullmatch(r"```", stripped):
             continue
-        if re.fullmatch(r"\[?(?:user\s+safety|keep\s+unchanged|do\s+not\s+change|preserve)\]?", stripped, re.IGNORECASE):
-            continue
-        lines.append(line)
-
+        lines.append(line.rstrip())
     result = "\n".join(lines).strip()
     result = re.sub(r"\n{3,}", "\n\n", result)
-    # Normalize spaces on each line while preserving newlines and punctuation.
-    result = "\n".join(re.sub(r"[ \t]{2,}", " ", line).rstrip() for line in result.split("\n"))
-    return result.strip() if result.strip() else text.strip()
+    result = "\n".join(re.sub(r"[ \t]{2,}", " ", line) for line in result.split("\n"))
+    return result.strip() or str(text).strip()
 
 
 def probably_already_in_persian(text: str) -> bool:
-    """تشخیص محافظه‌کارانه متن فارسی برای جلوگیری از ترجمه مجدد."""
+    """Conservative detection used only to avoid translating already-Persian input."""
     if not text or len(text) < 40:
         return False
     letters = [c for c in text if c.isalpha()]
     if not letters:
         return False
-    arabic_letters = sum(1 for c in letters if "\u0600" <= c <= "\u06ff")
-    persian_specific = sum(1 for c in text if c in "پچژگک")
-    return arabic_letters / len(letters) >= 0.88 and persian_specific >= 1
+    arabic_script = sum("\u0600" <= c <= "\u06ff" for c in letters)
+    persian_specific = sum(c in "پچژگک" for c in text)
+    return arabic_script / len(letters) >= 0.88 and persian_specific >= 1
+
+
+def is_nontranslatable_token(text: str) -> bool:
+    """Detect tiny tokens that do not deserve an API request."""
+    value = (text or "").strip()
+    if not value:
+        return True
+    if len(value) <= 2:
+        return True
+    if re.fullmatch(r"(?:https?://|www\.)\S+", value, re.I):
+        return True
+    if re.fullmatch(r"[\d\s.,:/#()\-–—]+", value):
+        return True
+    if re.fullmatch(r"(?:page|pp?\.?)[\s\d\-–—]+", value, re.I):
+        return True
+    return False
+
+
+def estimate_tokens(text: str) -> int:
+    """Best-effort tokenizer; uses tiktoken when installed and a conservative heuristic otherwise."""
+    value = str(text or "")
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return max(1, len(enc.encode(value)))
+    except Exception:
+        return max(1, (len(value) + 2) // 3)

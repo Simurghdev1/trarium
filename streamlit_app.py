@@ -1,960 +1,530 @@
-"""
-🌿 تراریوم - رابط وب با Streamlit
-اجرا: streamlit run streamlit_app.py
-"""
+"""🌿 Trarium 2.17 — clean Streamlit UI for book and web-novel translation."""
+from __future__ import annotations
+
+import hashlib
+import io
 import os
 import tempfile
 import time
-import threading
+import zipfile
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
-from trarium.output import save_as_pdf, save_as_text
-from trarium.processors.pipeline import TranslationResult
+from trarium import __version__
+from trarium.output import save_as_epub, save_as_html, save_as_pdf, save_as_text
+from trarium.processors.pipeline import TranslationPipeline
 from trarium.translators import get_translator
 from trarium.translators.openrouter import FREE_MODELS
+from trarium.translators.gemini import GEMINI_MODELS
+from trarium.translators.groq import GROQ_MODELS
+from trarium.translators.router9 import MODELS_9ROUTER
 from trarium.pdf_optimized import OPENROUTER_VISION_MODELS
-from trarium.processors import TextChunker
-from trarium.extractors import get_extractor
-from trarium.utils import probably_already_in_persian
+from trarium.cache import CachedTranslator, TranslationCache
+from trarium.scheduler import FallbackTranslator
 
-st.set_page_config(page_title="🌿 تراریوم", page_icon="🌿", layout="wide")
+st.set_page_config(page_title="Trarium", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-    .stButton > button { width: 100%; border-radius: 10px; font-size: 1.1rem; font-weight: bold; }
+:root { --trarium-red:#e50914; --trarium-black:#080808; }
+html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] { background:#080808; }
+.block-container { max-width:1180px; padding-top:1.4rem; padding-bottom:4rem; }
+[data-testid="stSidebar"] { background:#0d0d0d; border-right:1px solid #3a0b0d; }
+[data-testid="stSidebar"] * { color:#f2f2f2; }
+.hero { padding:30px 32px; border-radius:22px; background:linear-gradient(145deg,#0b0b0b,#1a0506); border:1px solid #5a1116; margin-bottom:20px; box-shadow:0 16px 42px rgba(0,0,0,.35); }
+.hero h1 { margin:0 0 8px; font-size:2.45rem; color:#fff !important; text-shadow:0 2px 18px rgba(229,9,20,.25); }
+.hero p { margin:0; color:#d7d7d7; font-size:1.05rem; }
+.card { padding:18px 20px; border:1px solid #2b1516; border-radius:16px; background:#121212; }
+.small-muted { color:#a6a6a6; font-size:.92rem; }
+div.stButton > button { border-radius:12px; font-weight:700; min-height:2.7rem; }
+button[kind="primary"] { background:linear-gradient(135deg,#e50914,#b30710) !important; border-color:#e50914 !important; color:#fff !important; }
+button[kind="secondary"] { border-color:#4a1c1f !important; background:#171717 !important; color:#f0f0f0 !important; }
+[data-baseweb="tab"] { color:#bcbcbc; }
+[aria-selected="true"][data-baseweb="tab"] { color:#fff !important; border-bottom-color:#e50914 !important; }
+.status-pill { display:inline-block; padding:5px 10px; border-radius:999px; background:#2a080b; color:#ff7077; font-size:.85rem; font-weight:700; border:1px solid #621118; }
+div[data-testid="stMetricValue"] { color:#fff; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("# 🌿 تراریوم (Trarium)")
-st.markdown("### ترجمه خودکار کتاب با هوش مصنوعی — کاملاً رایگان")
+LANGUAGES = {"فارسی": "fa", "English": "en", "العربية": "ar", "Türkçe": "tr", "中文": "zh", "日本語": "ja", "한국어": "ko", "Русский": "ru"}
 
-# ============================================================
-# سایدبار
-# ============================================================
-with st.sidebar:
-    st.markdown("## ⚙️ تنظیمات")
 
-    from trarium.translators.router9 import MODELS_9ROUTER
+def _safe_name(name: str) -> str:
+    return "".join(c for c in (name or "") if c.isalnum() or c in " _-").strip() or "translated"
 
-    provider = st.selectbox("🤖 ارائه‌دهنده",
-        ["OpenRouter (رایگان)", "9Router (localhost)", "Google Gemini"])
 
-    if "9Router" in provider:
-        provider_key = "router9"
-        api_key = "9router"
-        st.info("💡 9Router روی localhost:20128 اجرا میشه")
-        model_name = st.selectbox("🤖 مدل", list(MODELS_9ROUTER.keys()), index=0)
-        model = MODELS_9ROUTER[model_name]
-        custom_model = st.text_input("✏️ مدل سفارشی (اختیاری)",
-            placeholder="مثلاً: gemini-2.5-flash یا combo-1")
-        if custom_model.strip():
-            model = custom_model.strip()
-    elif "OpenRouter" in provider:
-        provider_key = "openrouter"
-        api_key = st.text_input("🔑 OpenRouter API Key", type="password",
-                                value=os.environ.get("OPENROUTER_API_KEY", ""))
-        model_name = st.selectbox("🤖 مدل", list(FREE_MODELS.keys()), index=0)
-        model = FREE_MODELS[model_name]
-        custom_model = st.text_input("✏️ مدل سفارشی (اختیاری)",
-            placeholder="مثلاً: google/gemini-2.5-flash:free")
-        if custom_model.strip():
-            model = custom_model.strip()
-    else:
-        provider_key = "gemini"
-        api_key = st.text_input("🔑 Google API Key", type="password",
-                                value=os.environ.get("GOOGLE_API_KEY", ""))
-        model = st.selectbox("🤖 مدل", ["gemini-2.5-flash", "gemini-2.5-pro"])
-        custom_model = st.text_input("✏️ مدل سفارشی (اختیاری)",
-            placeholder="مثلاً: gemini-2.5-flash-preview")
-        if custom_model.strip():
-            model = custom_model.strip()
+def _tmp_from_session(suffix: str) -> str:
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    Path(path).write_bytes(st.session_state["file_bytes"])
+    return path
 
-    if not api_key:
-        st.warning("API Key لازمه!")
 
-    st.divider()
-    languages = {
-        "فارسی": "fa", "انگلیسی": "en", "عربی": "ar", "فرانسوی": "fr",
-        "آلمانی": "de", "اسپانیایی": "es", "ترکی": "tr", "ژاپنی": "ja",
-        "کره‌ای": "ko", "چینی": "zh", "روسی": "ru",
-    }
-    target_lang_name = st.selectbox("🌍 زبان مقصد", list(languages.keys()))
-    target_lang = languages[target_lang_name]
-
-    st.divider()
-    with st.expander("🔧 تنظیمات پیشرفته"):
-        chunk_size = st.slider("اندازه بخش", 2000, 30000, 15000, 500, key="chunk_size")
-        delay = st.slider("تاخیر (ثانیه)", 0.0, 5.0, 0.0, 0.5, key="delay")
-        max_workers = st.slider("ترجمه موازی (درخواست همزمان)", 1, 15, 5, 1, key="max_workers")
-
-        from trarium.pdf_optimized import (
-            _has_easyocr, _is_tesseract_installed,
-            _has_paddleocr, _has_surya,
-        )
-        easyocr_ok = False  # B8: EasyOCR disabled
-        tesseract_ok = _is_tesseract_installed()
-        paddleocr_ok = _has_paddleocr()
-        surya_ok = _has_surya()
-
-        # ── وضعیت کتابخونه‌ها ──
-        st.markdown("**📦 وضعیت کتابخونه‌ها:**")
-        libs_status = [
-            ("PaddleOCR", paddleocr_ok, "pip install paddleocr paddlepaddle"),
-            ("Surya OCR", surya_ok, "pip install surya-ocr"),
-            ("Tesseract", tesseract_ok, "pip install pytesseract"),
-            ("OpenCV", True, ""),
-            ("NumPy", True, ""),
-        ]
-        all_installed = all(ok for _, ok, _ in libs_status)
-        if all_installed:
-            st.success("✅ همه کتابخونه‌ها نصب هستن!")
-        else:
-            not_installed = [name for name, ok, _ in libs_status if not ok]
-            st.warning(f"⚠️ نصب نشده: {', '.join(not_installed)}")
-            for name, ok, cmd in libs_status:
-                if ok:
-                    st.markdown(f"  ✅ {name}")
-                else:
-                    st.markdown(f"  ❌ {name}")
-                    if cmd:
-                        st.code(cmd, language="bash")
-
-        batch_size = st.slider("ترجمه دسته‌ای", 1, 20, 5, 1, key="batch_size")
-
-        st.divider()
-        st.markdown("**🖼️ مدل OCR Vision**")
-        vision_model_name = st.selectbox("🤖 مدل Vision", list(OPENROUTER_VISION_MODELS.keys()), index=0)
-        vision_model = OPENROUTER_VISION_MODELS[vision_model_name]
-
-        st.divider()
-        st.markdown("**🔑 API Key OCR Vision (اختیاری)**")
-        st.caption("اگه API Key بذاری، OpenRouter Vision هم فعال میشه")
-        vision_api_key = st.text_input(
-            "🔑 OpenRouter API Key برای OCR", type="password",
-            value=os.environ.get("OPENROUTER_API_KEY", ""),
-            key="vision_api_key_settings",
-        )
-
-# ============================================================
-# آپلود فایل
-# ============================================================
-st.markdown("## 📖 فایل کتاب رو آپلود کنید")
-uploaded = st.file_uploader("PDF, EPUB یا TXT", type=["pdf", "epub", "txt"])
-
-if uploaded:
-    st.info(f"**فایل:** {uploaded.name} | **اندازه:** {uploaded.size / 1024:.1f} KB")
-    import hashlib
-    uploaded_bytes = uploaded.getvalue()
-    file_hash = hashlib.sha256(uploaded_bytes).hexdigest()
-    if st.session_state.get("file_hash") != file_hash:
-        st.session_state["file_bytes"] = uploaded_bytes
-        st.session_state["file_name"] = uploaded.name
-        st.session_state["file_hash"] = file_hash
-        # پاک کردن آنالیز قبلی وقتی فایل جدید آپلود میشه
-        for k in [
-            "analysis", "analysis_file", "analysis_file_hash", "mode_analyzed",
-            "novel_text", "novel_images", "novel_url", "novel_title",
-            "novel_site_type", "chapter_urls", "auto_urls", "pattern_found",
-            "last_novel_input_url",
+def _store_uploaded(uploaded):
+    data = uploaded.getvalue()
+    digest = hashlib.sha256(data).hexdigest()
+    if st.session_state.get("file_hash") != digest:
+        for key in [
+            "file_hash", "file_bytes", "file_name", "text_result",
+            "layout_hash", "layout_analysis", "layout_ocr", "layout_result",
+            "novel_results", "novel_translation",
         ]:
-            st.session_state.pop(k, None)
-        uploaded.seek(0)
+            st.session_state.pop(key, None)
+        st.session_state["file_hash"] = digest
+        st.session_state["file_bytes"] = data
+        st.session_state["file_name"] = uploaded.name
+    return digest
 
-mode = st.radio("🎯 حالت ترجمه", [
-    "📄 متن ساده (فقط متن ترجمه)",
-    "🎨 حفظ قالب (ترجمه در جای اصلی)",
-    "🌿 وب‌نول (ترجمه از سایت)"
-], horizontal=True)
-is_hybrid = "حفظ قالب" in mode
-is_webnovel = "وب‌نول" in mode
 
-# اگه حالت عوض شد، state مربوط به حالت قبلی رو پاک کن
-if st.session_state.get("mode_name") != mode:
-    for k in [
-        "analysis", "analysis_file", "analysis_file_hash", "mode_analyzed",
-        "novel_text", "novel_images", "novel_url", "novel_title",
-        "novel_site_type", "chapter_urls", "auto_urls", "pattern_found",
-        "last_novel_input_url", "ocr_method_choice",
-    ]:
-        st.session_state.pop(k, None)
-    st.session_state["mode_name"] = mode
 
-# مقدار پیش‌فرض برای ocr_lang
-ocr_lang = "fas+eng"
-if is_webnovel:
-    out_fmt = st.radio("📤 فرمت خروجی", ["PDF", "TXT", "EPUB", "HTML"], horizontal=True)
-elif not is_hybrid:
-    out_fmt = st.radio("📤 فرمت خروجی", ["TXT", "PDF"], horizontal=True)
-else:
-    out_fmt = "PDF_HYBRID"
+def _show_direct_provider_test(provider: str, api_key: str, model: str, base_url: str = ""):
+    if not st.button("🧪 تست درخواست", key=f"test_{provider}"):
+        return
+    if not api_key and provider != "router9":
+        st.error("API Key وارد نشده است.")
+        return
+    try:
+        if provider == "gemini":
+            t = get_translator("gemini", api_key=api_key, model_name=model)
+        elif provider == "groq":
+            t = get_translator("groq", api_key=api_key, model_name=model)
+        elif provider == "openai_compatible":
+            t = get_translator("openai_compatible", api_key=api_key, model_name=model, base_url=base_url, provider_name="OpenAI-compatible")
+        else:
+            raise RuntimeError("تست مستقیم برای این ارائه‌دهنده در دسترس نیست.")
+        answer=t.translate("Reply only with: OK", "en")
+        st.success(f"درخواست موفق بود: {answer[:80]}")
+    except Exception as exc:
+        st.error(f"درخواست ناموفق بود: {exc}")
 
-st.divider()
 
-# ============================================================
-# Helper: ساخت فایل موقت از session_state
-# ============================================================
-def _make_tmp_file(suffix=".pdf"):
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(st.session_state["file_bytes"])
-    tmp.close()
-    return tmp.name
+def _translator_settings():
+    def provider_config(label: str, suffix: str = ""):
+        custom_base = ""
+        if label == "OpenRouter":
+            provider = "openrouter"
+            api_key = st.text_input(f"OpenRouter API Key{suffix}", value=os.environ.get("OPENROUTER_API_KEY", ""), type="password", key=f"or_key{suffix}")
+            model_label = st.selectbox(f"مدل OpenRouter{suffix}", list(FREE_MODELS.keys()), key=f"or_model{suffix}")
+            model = FREE_MODELS[model_label]
+        elif label == "Google Gemini":
+            provider = "gemini"
+            api_key = st.text_input(f"Google API Key{suffix}", value=os.environ.get("GOOGLE_API_KEY", ""), type="password", key=f"ge_key{suffix}")
+            model_label = st.selectbox(f"مدل Gemini{suffix}", list(GEMINI_MODELS.keys()), key=f"ge_model{suffix}")
+            model = GEMINI_MODELS[model_label]
+        elif label == "Groq":
+            provider = "groq"
+            api_key = st.text_input(f"Groq API Key{suffix}", value=os.environ.get("GROQ_API_KEY", ""), type="password", key=f"gr_key{suffix}")
+            model_label = st.selectbox(f"مدل Groq{suffix}", list(GROQ_MODELS.keys()), key=f"gr_model{suffix}")
+            model = GROQ_MODELS[model_label]
+        elif label == "9Router":
+            provider = "router9"; api_key = "9router"
+            model_label = st.selectbox(f"مدل 9Router{suffix}", list(MODELS_9ROUTER.keys()), key=f"r9_model{suffix}")
+            model = MODELS_9ROUTER[model_label]
+        else:
+            provider = "openai_compatible"
+            api_key = st.text_input(f"API Key{suffix}", value=os.environ.get("TRARIUM_API_KEY", ""), type="password", key=f"oa_key{suffix}")
+            custom_base = st.text_input(f"Base URL{suffix}", value=os.environ.get("TRARIUM_BASE_URL", ""), placeholder="https://example.com/v1", key=f"oa_base{suffix}")
+            model = st.text_input(f"Model ID{suffix}", value=os.environ.get("TRARIUM_MODEL", ""), placeholder="model-id", key=f"oa_model{suffix}")
+        return provider, api_key, model, custom_base
 
-# ============================================================
-# 🌿 وب‌نول — آدرس URL
-# ============================================================
-if is_webnovel:
-    st.markdown("## 🌿 آدرس وب‌نول رو وارد کنید")
-    novel_url = st.text_input(
-        "🔗 URL فصل وب‌نول",
-        placeholder="https://example.com/chapter-1/",
-        help="آدرس صفحه فصل وب‌نول رو اینجا بزنید"
-    )
+    with st.sidebar:
+        st.markdown("## ⚙️ تنظیمات ترجمه")
+        labels = ["OpenRouter", "Google Gemini", "Groq", "9Router", "OpenAI-compatible"]
+        primary_label = st.selectbox("ارائه‌دهنده اصلی", labels, key="primary_provider")
+        provider, api_key, model, custom_base = provider_config(primary_label)
 
-    if novel_url:
-        if st.session_state.get("last_novel_input_url") not in (None, novel_url):
-            for k in ["novel_text", "novel_images", "novel_url", "novel_title",
-                      "novel_site_type", "chapter_urls", "auto_urls", "pattern_found"]:
-                st.session_state.pop(k, None)
-        st.session_state["last_novel_input_url"] = novel_url
+        fallback_label = st.selectbox("ارائه‌دهنده پشتیبان", ["خاموش"] + labels, key="fallback_provider")
+        fallback_cfg = None
+        if fallback_label != "خاموش":
+            fallback_cfg = provider_config(fallback_label, " (پشتیبان)")
+            st.caption("در صورت خطا، Trarium ارائه‌دهنده پشتیبان را امتحان می‌کند؛ تقسیم کورکورانه صفحات انجام نمی‌شود.")
 
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            use_browser = st.checkbox("🌐 استفاده از مرورگر", value=False,
-                help="برای سایت‌هایی که JS دارن")
-        with col2:
-            download_images = st.checkbox("🖼️ دانلود عکس‌ها", value=True)
+        target_label = st.selectbox("زبان مقصد", list(LANGUAGES.keys()), index=0)
+        target_lang = LANGUAGES[target_label]
+        st.divider(); st.markdown("### 🧠 صرفه‌جویی و پایداری")
+        safe_opt = st.checkbox("Safe Optimization (بدون دستکاری محتوای داستان)", value=True)
+        protect_spans = st.checkbox("حفاظت URL/ایمیل/تگ/کد با Placeholder", value=True)
+        use_memory = st.checkbox("Translation Memory + Cache", value=True)
+        use_checkpoint = st.checkbox("Checkpoint برای ادامه بعد از توقف/خاموشی", value=True)
+        adaptive_batch = st.checkbox("Adaptive Batch + Token-aware splitting", value=True)
+        do_probe = st.checkbox("Pre-flight Probe + برآورد Token", value=False)
+        smart_routing = st.checkbox("Smart model routing (دیالوگ ساده → سریع، متن پیچیده → اصلی)", value=False, disabled=False)
 
-        if st.button("🔍 تحلیل صفحه", type="primary", key="analyze_novel"):
-            with st.spinner("در حال تحلیل..."):
-                try:
-                    from trarium.novel.scraper import NovelScraper
+        st.divider(); st.markdown("### 📚 فرهنگ واژه و شخصیت")
+        registry_text = st.text_area("هر خط: English = فارسی", value="", height=110, placeholder="Subaru = سوبارو\nEmilia = امیلیا")
+        from trarium.term_registry import TermRegistry
+        registry = TermRegistry()
+        if registry_text.strip():
+            for line in registry_text.splitlines():
+                if "=" in line:
+                    src, dst = line.split("=", 1)
+                    registry.items[src.strip()] = dst.strip()
+            registry.save()
+        st.caption(f"{len(registry.items)} اصطلاح ذخیره شده است.")
 
-                    scraper = NovelScraper(use_browser=use_browser)
-                    result = scraper.scrape_chapter(novel_url)
+        st.divider(); st.markdown("### ⚡ سرعت")
+        chunk_size = st.slider("اندازه Batch (کاراکتر)", 4000, 24000, 14000, 1000)
+        workers = st.slider("درخواست همزمان", 1, 10, 4)
+        delay = st.slider("تاخیر بین درخواست‌ها", 0.0, 3.0, 0.0, 0.1)
+        if st.button("🧹 پاک کردن Translation Memory", key="clear_translation_cache"):
+            TranslationCache().clear(); st.success("حافظه ترجمه پاک شد.")
+        if st.button("🧹 پاک کردن Checkpointها", key="clear_checkpoints"):
+            from trarium.checkpoint import CheckpointStore
+            CheckpointStore().clear(); st.success("Checkpointها پاک شد.")
+        return (provider, api_key, model, target_lang, chunk_size, workers, delay,
+                use_memory, custom_base, fallback_cfg, safe_opt, protect_spans,
+                use_checkpoint, adaptive_batch, do_probe, smart_routing, registry)
 
-                    if result.text:
-                        if download_images and result.images:
-                            result.images = NovelScraper.download_all_images(result.images)
-                        st.session_state["novel_text"] = result.text
-                        st.session_state["novel_images"] = [
-                            {"url": img.url, "alt": img.alt, "data": img.data, "filename": img.filename}
-                            for img in result.images
-                        ]
-                        st.session_state["novel_url"] = novel_url
-                        st.session_state["novel_title"] = result.title
-                        st.session_state["novel_site_type"] = result.site_type
 
-                        st.success(
-                            f"✅ پیدا شد! "
-                            f"{len(result.text):,} کاراکتر + "
-                            f"{len(result.images)} عکس | "
-                            f"نوع سایت: {result.site_type}"
-                        )
+provider, api_key, model, target_lang, chunk_size, workers, delay, use_cache, custom_base, fallback_cfg, safe_opt, protect_spans, use_checkpoint, adaptive_batch, do_probe, smart_routing, registry = _translator_settings()
 
-                        if result.title:
-                            st.info(f"📖 عنوان: {result.title}")
+def _make_translator(cfg):
+    p, key, mdl, base = cfg
+    if p == "openai_compatible":
+        return get_translator(p, api_key=key, model_name=mdl, base_url=base, provider_name="OpenAI-compatible")
+    return get_translator(p, api_key=key, model_name=mdl)
 
-                        st.text_area("پیش‌نمایش متن", result.text[:1000] + "...", height=200)
+primary_cfg = (provider, api_key, model, custom_base)
+st.markdown(f'<div class="hero"><h1>🌿 Trarium</h1><p>ترجمه‌ی کتاب، PDF و وب‌ناول با تمرکز روی سرعت، حفظ قالب و جلوگیری از توقف‌های بی‌دلیل.</p><span class="status-pill">v{__version__}</span></div>', unsafe_allow_html=True)
 
-                        # نمایش عکس‌ها
-                        if result.images:
-                            st.markdown(f"### 🖼️ {len(result.images)} عکس پیدا شد")
-                            for i, img in enumerate(result.images[:5]):
-                                st.image(img.url, caption=img.alt or f"عکس {i+1}", width=300)
-                            if len(result.images) > 5:
-                                st.caption(f"... و {len(result.images) - 5} عکس دیگر")
+book_tab, layout_tab, web_tab = st.tabs(["📄 ترجمه متنی", "🎨 حفظ قالب PDF", "🌐 وب‌ناول"])
 
-                            if download_images:
-                                import io as _io
-                                import zipfile as _zipfile
-                                image_files = [img for img in result.images if img.data]
-                                if image_files:
-                                    _zip_buffer = _io.BytesIO()
-                                    with _zipfile.ZipFile(_zip_buffer, "w", _zipfile.ZIP_DEFLATED) as _zf:
-                                        for img in image_files:
-                                            _zf.writestr(img.filename, img.data)
-                                    st.download_button(
-                                        "⬇️ دانلود عکس‌های این فصل (ZIP)",
-                                        _zip_buffer.getvalue(),
-                                        "chapter_images.zip",
-                                        "application/zip",
-                                        key="download_novel_images",
-                                    )
+
+def render_upload(accepted):
+    return st.file_uploader("فایل را انتخاب کنید", type=accepted, key=f"uploader_{accepted[0]}_{accepted[-1]}")
+
+
+with book_tab:
+    st.markdown("### 📄 ترجمه متنی")
+    st.caption("برای PDF متنی، TXT یا EPUB. صفحه‌آرایی اصلی هدف نیست و هر خروجی یک بخش پایانی «ترجمه شده توسط تراریوم» دارد.")
+    uploaded = render_upload(["pdf", "epub", "txt"])
+    if uploaded:
+        digest = _store_uploaded(uploaded)
+        suffix = Path(uploaded.name).suffix.lower()
+        if st.button("🔍 تحلیل و ترجمه", type="primary", key="translate_text"):
+            from trarium.extractors import get_extractor
+            path = _tmp_from_session(suffix)
+            try:
+                with st.spinner("در حال استخراج متن..."):
+                    book = get_extractor(path, use_ocr=True).extract(path)
+                st.info(f"📖 {book.title} — {book.total_chars:,} کاراکتر — {len(book.chapters)} بخش")
+                if not book.chapters:
+                    st.error("هیچ متن قابل ترجمه‌ای پیدا نشد.")
+                elif not api_key:
+                    st.error("API Key لازم است.")
+                else:
+                    primary_tr = _make_translator(primary_cfg)
+                    if fallback_cfg:
+                        fallback_tr = _make_translator(fallback_cfg)
+                        if smart_routing:
+                            from trarium.smart_router import SmartRoutingTranslator
+                            translator = SmartRoutingTranslator(primary_tr, fallback_tr)
+                        else:
+                            translator = FallbackTranslator([(provider, primary_tr), (fallback_label, fallback_tr)])
                     else:
-                        st.error("❌ محتوا پیدا نشد!")
-                except Exception as e:
-                    st.error(f"❌ خطا: {e}")
+                        translator = primary_tr
+                    if use_cache and not isinstance(translator, (FallbackTranslator,)):
+                        translator = CachedTranslator(translator, provider, model)
+                    pipe = TranslationPipeline(translator, target_lang, chunk_size, delay, workers,
+                                               safe_optimization=safe_opt, protect_nontranslatable=protect_spans,
+                                               use_checkpoint=use_checkpoint, translation_memory=use_memory,
+                                               adaptive_batch=adaptive_batch, registry=registry)
+                    if do_probe:
+                        from trarium.preflight import probe as run_probe, estimate_book
+                        total_tokens, estimated_batches = estimate_book([str(c.get("content", "")) for c in book.chapters], batch_chars=chunk_size)
+                        report = run_probe(translator, target_lang)
+                        if not report.ok:
+                            raise RuntimeError(f"Pre-flight ناموفق بود: {report.error}")
+                        st.success(f"✅ Pre-flight موفق — سقف توکن اعلام‌شده: {report.token_limit:,} · متن کتاب: حدود {total_tokens:,} توکن · حدود {estimated_batches:,} Batch")
+                    progress = st.progress(0.0, text="شروع ترجمه...")
+                    with st.spinner("ترجمه در حال انجام است..."):
+                        result = pipe.run(book)
+                    progress.progress(1.0, text="✅ تمام شد")
+                    st.session_state["text_result"] = result
+            except Exception as exc:
+                st.error(f"❌ {exc}")
+            finally:
+                try: os.unlink(path)
+                except OSError: pass
 
-    # ── تشخیص الگوی لینک ──
-    if "novel_url" in st.session_state and st.session_state["novel_url"]:
-        from trarium.novel.scraper import ChapterPatternDetector
-        detected = ChapterPatternDetector.detect_and_generate(st.session_state["novel_url"])
-        if detected:
-            st.info(f"🔗 الگوی لینک کشف شد! لینک‌های بعدی: {detected[0][:50]}...")
-            st.session_state["auto_urls"] = detected
-            st.session_state["pattern_found"] = True
-        else:
-            st.session_state["pattern_found"] = False
-            st.session_state["auto_urls"] = []
-
-    # ── ادامه خودکار یا ورود دستی ──
-    if "pattern_found" in st.session_state:
-        st.divider()
-        if st.session_state["pattern_found"]:
-            st.markdown("### 🔗 ادامه خودکار")
-            auto_count = st.selectbox(
-                "چند چپتر بعدی ترجمه بشه?",
-                [2, 5, 10, 15, 20], key="auto_count"
-            )
-            st.session_state["chapter_urls"] = [st.session_state["novel_url"]] + \
-                st.session_state["auto_urls"][:auto_count]
-        else:
-            st.markdown("### ✏️ ورود دستی لینک‌ها")
-            st.caption("الگوی لینک کشف نشد — لینک‌ها رو دستی وارد کنید")
-            manual_urls = st.text_area(
-                "لینک هر چپتر در یک خط",
-                placeholder="https://example.com/chapter/1\nhttps://example.com/chapter/2\nhttps://example.com/chapter/3",
-                height=150, key="manual_urls"
-            )
-            if manual_urls:
-                urls = [u.strip() for u in manual_urls.strip().split("\n") if u.strip()]
-                st.session_state["chapter_urls"] = urls
-                st.info(f"📝 {len(urls)} لینک وارد شد")
-            else:
-                st.session_state["chapter_urls"] = [st.session_state.get("novel_url", "")]
-
-    # ── دکمه ترجمه وب‌نول ──
-    if "novel_text" in st.session_state and st.session_state["novel_text"]:
-        st.divider()
-        chapter_urls = st.session_state.get("chapter_urls", [st.session_state.get("novel_url", "")])
-        if len(chapter_urls) > 1:
-            st.markdown(f"### 🚀 ترجمه {len(chapter_urls)} چپتر")
-        else:
-            st.markdown("### 🚀 آماده ترجمه!")
-
-        with st.expander("⚙️ تنظیمات ترجمه", expanded=False):
-            _lang_map = {"فارسی": "fa", "عربی": "ar", "ترکی": "tr", "چینی": "zh", "ژاپنی": "ja"}
-            _lang_label = st.selectbox("🌐 زبان مقصد", list(_lang_map.keys()),
-                                       key="novel_target_lang")
-            target_lang = _lang_map[_lang_label]
-            chunk_size_novel = st.slider("اندازه بخش", 2000, 30000, 15000, 500, key="novel_chunk")
-
-        if st.button("🚀 شروع ترجمه!", type="primary", key="start_novel_translate") and api_key:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            from trarium.translators import get_translator
-            from trarium.processors import TextChunker
-            from trarium.novel.scraper import NovelScraper
-
-            translator = get_translator(provider_key, api_key=api_key, model_name=model)
-            chapter_urls = st.session_state.get("chapter_urls", [st.session_state.get("novel_url", "")])
-            all_chapters_text = []
-            rate_lock = threading.Lock()
-            next_request_at = [0.0]
-
-            # ── ترجمه هر چپتر ──
-            progress = st.progress(0, text="شروع...")
-            status_text = st.empty()
-
-            for ch_idx, ch_url in enumerate(chapter_urls):
-                status_text.markdown(f"**📖 چپتر {ch_idx + 1}/{len(chapter_urls)}**")
-
-                try:
-                    # دریافت متن چپتر
-                    cached_url = st.session_state.get("novel_url")
-                    if ch_idx == 0 and ch_url == cached_url and "novel_text" in st.session_state:
-                        text = st.session_state["novel_text"]
-                    else:
-                        scraper = NovelScraper(use_browser=use_browser)
-                        result = scraper.scrape_chapter(ch_url)
-                        text = result.text
-
-                    if not text:
-                        all_chapters_text.append(f"[چپتر {ch_idx + 1}: محتوا خالی]")
-                        continue
-
-                    # تقسیم و ترجمه
-                    chunker = TextChunker(max_chars=chunk_size_novel, overlap=0)
-                    raw_chunks = chunker.chunk_text(text)
-                    chunks = [{"title": f"بخش {i+1}", "content": ch} for i, ch in enumerate(raw_chunks)]
-
-                    translated_parts = [None] * len(chunks)
-                    failed_count = 0
-
-                    def _translate_novel_chunk(i, chunk):
-                        try:
-                            source_text = chunk["content"]
-                            if target_lang == "fa" and probably_already_in_persian(source_text):
-                                return i, source_text, None
-                            if delay > 0:
-                                with rate_lock:
-                                    now = time.monotonic()
-                                    wait = max(0.0, next_request_at[0] - now)
-                                    next_request_at[0] = max(now, next_request_at[0]) + delay
-                                if wait:
-                                    time.sleep(wait)
-                            return i, translator.translate(source_text, target_lang), None
-                        except Exception as exc:
-                            return i, "", str(exc)
-
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        futures = [executor.submit(_translate_novel_chunk, i, chunk) for i, chunk in enumerate(chunks)]
-                        for done_idx, future in enumerate(as_completed(futures), 1):
-                            i, tr, err = future.result()
-                            translated_parts[i] = tr if not err else "[ترجمه نشد]"
-                            if err:
-                                failed_count += 1
-                            pct = (ch_idx + done_idx / max(len(chunks), 1)) / max(len(chapter_urls), 1)
-                            progress.progress(min(pct, 1.0), text=f"چپتر {ch_idx+1} - بخش {done_idx}/{len(chunks)}...")
-
-                    chapter_text = "\n\n".join(p for p in translated_parts if p is not None)
-                    all_chapters_text.append(chapter_text)
-
-                except Exception as e:
-                    all_chapters_text.append(f"[چپتر {ch_idx + 1}: خطا - {e}]")
-
-            progress.progress(1.0, text="✅ تمام!")
-
-            # ── نمایش نتایج ──
+        result = st.session_state.get("text_result")
+        if result:
             st.divider()
-            st.markdown("### 📊 آمار ترجمه")
-            c1, c2 = st.columns(2)
-            c1.metric("تعداد چپتر", len(chapter_urls))
-            total_chars = sum(len(t) for t in all_chapters_text)
-            c2.metric("کل کاراکتر ترجمه", f"{total_chars:,}")
-
-            # ── جدول دانلود ──
-            st.markdown("### ⬇️ دانلود فایل‌ها")
-
-            # دانلود تکی
-            for i, ch_text in enumerate(all_chapters_text):
-                col1, col2, col3 = st.columns([1, 4, 2])
-                col1.write(f"**{i+1}**")
-                col2.write(f"Chapter {i+1}")
-                col3.download_button(
-                    "⬇️ دانلود", ch_text,
-                    f"chapter_{i+1}.txt", "text/plain",
-                    key=f"dl_ch_{i}"
-                )
-
-            # فایل ترکیبی
-            if len(all_chapters_text) > 1:
-                combined = "\n\n".join([
-                    f"═══════════════════════════════════════════\n"
-                    f"         Chapter {i+1}\n"
-                    f"═══════════════════════════════════════════\n\n"
-                    + ch_text
-                    for i, ch_text in enumerate(all_chapters_text)
-                ])
-
-                st.divider()
-                col1, col2, col3 = st.columns([1, 4, 2])
-                col1.write("**All**")
-                col2.write(f"Chapters 1–{len(all_chapters_text)} Combined")
-                col3.download_button(
-                    "⬇️ دانلود ترکیبی", combined,
-                    f"chapters_1_to_{len(all_chapters_text)}_combined.txt", "text/plain",
-                    key="dl_combined", type="primary"
-                )
-
-            st.success("🎉 ترجمه تموم شد!")
-
-# ============================================================
-# اگه فایلی آپلود شده
-# ============================================================
-if uploaded:
-    suffix = Path(uploaded.name).suffix
-
-    if is_hybrid and suffix.lower() != ".pdf":
-        st.error("ترجمه ترکیبی فقط برای PDF!")
-        st.stop()
-
-    # ── آنالیز خودکار ──
-    if "analysis" not in st.session_state or st.session_state.get("analysis_file_hash") != file_hash:
-        tmp_path = _make_tmp_file(suffix)
-
-        if is_hybrid:
-            import pymupdf
-            from trarium.pdf_optimized import extract_text_blocks
-
-            doc = pymupdf.open(tmp_path)
-            total = len(doc)
-            text_pages = []
-            scanned_pages = []
-
-            progress = st.progress(0, text="تحلیل صفحات...")
-            for i in range(total):
-                if i % 10 == 0 or i == total - 1:
-                    progress.progress((i + 1) / total, text=f"صفحه {i + 1}/{total}...")
-                try:
-                    blocks = extract_text_blocks(doc[i])
-                except Exception:
-                    blocks = []
-                # صفحه متنی: حداقل یه بلاک متنی با حداقل ۵ کاراکتر
-                has_text = any(len(b.get("text", "")) >= 5 for b in blocks)
-                if has_text:
-                    text_pages.append(i + 1)
-                else:
-                    scanned_pages.append(i + 1)
-            progress.progress(1.0, text="✅ تمام شد!")
-            doc.close()
-
-            st.session_state["analysis"] = {
-                "total": total,
-                "text_pages": text_pages,
-                "scanned_pages": scanned_pages,
-                "ocr_results": {},
-                "ocr_done": False,
-            }
-            st.session_state["analysis_file"] = uploaded.name
-            st.session_state["analysis_file_hash"] = file_hash
-            st.session_state["mode_analyzed"] = is_hybrid
-
-            st.success(f"📊 **{len(text_pages)}** صفحه متنی | **{len(scanned_pages)}** صفحه اسکن‌شده")
-        else:
-            extractor = get_extractor(tmp_path, use_ocr=False)
-            book = extractor.extract(tmp_path)
-            st.session_state["analysis"] = {
-                "mode": "simple",
-                "book": book,
-            }
-            st.session_state["analysis_file"] = uploaded.name
-            st.session_state["analysis_file_hash"] = file_hash
-            st.session_state["mode_analyzed"] = is_hybrid
-            st.success(f"📖 **عنوان:** {book.title} | **کاراکتر:** {book.total_chars:,}")
-
-        # پاک کردن فایل موقت
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
-
-    # ── نمایش و اجرا ──
-    analysis = st.session_state.get("analysis")
-    if analysis:
-
-        # ╔══════════════════════════════════════════════╗
-        # ║  حالت متن ساده (EPUB/TXT/PDF ساده)          ║
-        # ╚══════════════════════════════════════════════╝
-        if not is_hybrid and "book" in analysis:
-            book = analysis["book"]
-
-            if book.chapters:
-                st.markdown("### 🚫 فصل‌هایی که نیازی به ترجمه ندارن")
-                st.caption("تیک بزنید تا اون فصل‌ها فقط حفظ بشن")
-                skip_chapters = set()
-                for i, ch in enumerate(book.chapters):
-                    title = ch.get("title", f"بخش {i + 1}")[:50]
-                    chars = len(ch.get("content", ""))
-                    label = f"📖 {title} ({chars:,} کاراکتر)"
-                    if st.checkbox(label, key=f"skip_ch_{i}", value=False):
-                        skip_chapters.add(i)
-                if skip_chapters:
-                    st.session_state["analysis"]["skip_chapters"] = skip_chapters
-                    st.warning(f"⚠️ {len(skip_chapters)} فصل رد میشه")
-
-            if st.button("🚀 شروع ترجمه!", type="primary") and api_key:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    translator = get_translator(provider_key, api_key=api_key, model_name=model)
-                    chunker = TextChunker(max_chars=chunk_size, overlap=0)
-                    skip_ch = analysis.get("skip_chapters", set())
-                    active_chapters = [ch for i, ch in enumerate(book.chapters) if i not in skip_ch]
-                    if not active_chapters:
-                        st.error("❌ همه فصل‌ها رد شدن!")
-                        st.stop()
-                    chunks = chunker.chunk_by_chapters(active_chapters)
-                    total = len(chunks)
-                    from concurrent.futures import ThreadPoolExecutor, as_completed
-                    progress = st.progress(0, text="شروع...")
-                    translated_parts = [None] * total
-                    # ── آمار ترجمه ──
-                    stats = {
-                        "timings": [0.0] * total, "tokens_est": 0,
-                        "original_chars": sum(len(ch.get("content", "")) for ch in active_chapters),
-                    }
-                    completed_count = [0]
-                    rate_lock = threading.Lock()
-                    next_request_at = [0.0]
-
-                    def _translate_one(idx, ch):
-                        t0 = time.time()
-                        try:
-                            source_text = ch["content"]
-                            if target_lang == "fa" and probably_already_in_persian(source_text):
-                                tr = source_text
-                            else:
-                                if delay > 0:
-                                    with rate_lock:
-                                        now = time.monotonic()
-                                        wait = max(0.0, next_request_at[0] - now)
-                                        next_request_at[0] = max(now, next_request_at[0]) + delay
-                                    if wait:
-                                        time.sleep(wait)
-                                tr = translator.translate(source_text, target_lang)
-                            elapsed = time.time() - t0
-                            return idx, {"title": ch["title"], "content": tr}, elapsed
-                        except Exception as e:
-                            return idx, {"title": ch["title"], "content": "", "failed": True, "error": str(e)}, time.time() - t0
-
-                    # از تنظیم کاربر استفاده کن، نه مقدار hard-code شده بر اساس provider.
-                    max_workers_val = max_workers
-
-                    with ThreadPoolExecutor(max_workers=max_workers_val) as executor:
-                        futures = {executor.submit(_translate_one, i, ch): i for i, ch in enumerate(chunks)}
-                        for future in as_completed(futures):
-                            idx, part, elapsed = future.result()
-                            translated_parts[idx] = part
-                            stats["timings"][idx] = elapsed
-                            stats["tokens_est"] += len(chunks[idx]["content"]) // 4 + len(part["content"]) // 2
-                            completed_count[0] += 1
-                            progress.progress(completed_count[0] / total, text=f"ترجمه {completed_count[0]}/{total}...")
-
-                    progress.progress(1.0, text="✅ تمام!")
-                    failed_parts = [p for p in translated_parts if p and p.get("failed")]
-                    translated_text = "\n\n".join(
-                        f"--- {p['title']} ---\n\n{p['content']}" for p in translated_parts if p
-                    )
-                    st.divider()
-                    # ── نمایش آمار ──
-                    st.markdown("### 📊 آمار ترجمه")
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("بخش‌ها", total)
-                    c2.metric("کاراکتر اصلی", f"{stats['original_chars']:,}")
-                    c3.metric("کاراکتر ترجمه", f"{len(translated_text):,}")
-                    c4.metric("توکن تقریبی", f"{stats['tokens_est']:,}")
-                    if stats["timings"]:
-                        valid = [t for t in stats["timings"] if t > 0]
-                        if valid:
-                            c5, c6, c7 = st.columns(3)
-                            c5.metric("سریع‌ترین", f"{min(valid):.1f}s")
-                            c6.metric("کندترین", f"{max(valid):.1f}s")
-                            c7.metric("میانگین", f"{sum(valid)/len(valid):.1f}s")
-                    # بررسی نکات نگارشی
-                    literary_checks = [
-                        ("بدون em-dash", "—" not in translated_text),
-                        ("گیومه فارسی", "«" in translated_text or "»" in translated_text),
-                        ("نیم‌فاصله", "‌" in translated_text),
-                    ]
-                    st.markdown("**📝 رعایت نکات نگارشی:**")
-                    lc1, lc2, lc3 = st.columns(3)
-                    for col, (name, ok) in zip([lc1, lc2, lc3], literary_checks):
-                        col.metric(name, "✅" if ok else "⚠️")
-                    safe = "".join(c for c in book.title if c.isalnum() or c in " _-").strip() or "translated"
-                    if out_fmt == "PDF":
-                        result_obj = TranslationResult(
-                            title=book.title, author=book.author, original_lang="auto",
-                            target_lang=target_lang, translated_text=translated_text,
-                            total_chunks=total, translated_chunks=sum(1 for p in translated_parts if p and not p.get("failed")),
-                            total_chars=book.total_chars, translated_chars=len(translated_text),
-                        )
-                        pdf_path = os.path.join(tmpdir, "output.pdf")
-                        save_as_pdf(result_obj, pdf_path)
-                        with open(pdf_path, "rb") as f:
-                            pdf_bytes = f.read()
-                        st.download_button("⬇️ دانلود PDF", pdf_bytes,
-                                           f"{safe}_{target_lang}.pdf", "application/pdf", type="primary")
-                    else:
-                        st.download_button("⬇️ دانلود TXT", translated_text,
-                                           f"{safe}_{target_lang}.txt", "text/plain", type="primary")
-                    if failed_parts:
-                        st.warning(f"⚠️ ترجمه تمام شد، اما {len(failed_parts)} بخش ناموفق بود.")
-                    else:
-                        st.success("🎉 ترجمه تموم شد!")
-
-        # ╔══════════════════════════════════════════════╗
-        # ║  حالت ترکیبی (PDF حفظ قالب)                 ║
-        # ╚══════════════════════════════════════════════╝
-        elif is_hybrid and "scanned_pages" in analysis:
-            total = analysis["total"]
-            text_pages = analysis["text_pages"]
-            scanned_pages = analysis["scanned_pages"]
-            ocr_results = analysis.get("ocr_results", {})
-
-            # ── تنظیمات OCR (فقط در حالت ترکیبی) ──
-            ocr_languages = {
-                "فارسی+انگلیسی": "fas+eng",
-                "عربی+انگلیسی": "ara+eng",
-                "ژاپنی": "jpn",
-                "چینی ساده": "chi_sim",
-                "فقط انگلیسی": "eng",
-            }
-            ocr_lang_name = st.selectbox("🌐 زبان متن کتاب (OCR)", list(ocr_languages.keys()))
-            ocr_lang = ocr_languages[ocr_lang_name]
-
-            # ── خلاصه ──
-            st.markdown("### 📊 خلاصه تحلیل")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("📄 صفحات متنی", len(text_pages))
-            c2.metric("🔍 صفحات اسکن‌شده", len(scanned_pages))
-            c3.metric("✅ OCR شده", len([p for p in ocr_results if ocr_results[p]]))
-
-            skip_pages_ui = set()
-            if not scanned_pages:
-                # همه صفحات متنی هستن — نیازی به OCR نیست
-                st.success("🎉 همه صفحات متنی هستن — نیازی به OCR نیست!")
-                analysis["ocr_done"] = True
+            a, b, c, d = st.columns(4)
+            a.metric("بخش‌ها", f"{result.translated_chunks}/{result.total_chunks}")
+            b.metric("زمان", f"{result.elapsed_seconds:.1f} ثانیه")
+            c.metric("Cache/Resume", f"{result.cache_hits + result.checkpoint_hits}")
+            d.metric("درخواست API", result.api_requests)
+            st.caption(f"توکن ورودی تقریبی/واقعی: {result.estimated_input_tokens:,} · خروجی: {result.estimated_output_tokens:,} · Placeholder: {result.protected_spans}")
+            st.text_area("پیش‌نمایش", result.translated_text[:12000], height=300)
+            if result.translated_chunks == 0 and result.failed_chunks > 0:
+                st.error("❌ هیچ بخش ترجمه نشد؛ خروجی قابل دانلود ساخته نمی‌شود.")
             else:
-                # ── صفحات اسکن‌شده — انتخاب صفحات رد شده ──
-                st.markdown("### 🔍 صفحات اسکن‌شده")
-                st.caption("تیک بزنید تا صفحاتی که نیازی به ترجمه ندارن رد بشن")
+                fmt = st.radio("فرمت خروجی", ["TXT", "PDF", "EPUB", "HTML"], horizontal=True, key="text_format")
+                with tempfile.TemporaryDirectory() as td:
+                    out = str(Path(td) / f"{_safe_name(result.title)}_fa.{fmt.lower()}")
+                    if fmt == "TXT": save_as_text(result, out); mime = "text/plain"
+                    elif fmt == "PDF": save_as_pdf(result, out); mime = "application/pdf"
+                    elif fmt == "EPUB": save_as_epub(result, out); mime = "application/epub+zip"
+                    else: save_as_html(result, out); mime = "text/html"
+                    st.download_button("⬇️ دانلود خروجی", Path(out).read_bytes(), Path(out).name, mime, type="primary", key="download_text_result")
 
-                skip_pages_ui = set()
-                for p in scanned_pages:
-                    is_done = (p - 1) in ocr_results and ocr_results.get(p - 1)
-                    if is_done:
-                        label = f"✅ صفحه {p} — OCR انجام شد"
+with layout_tab:
+    st.markdown("### 🎨 حفظ قالب PDF")
+    st.caption("متن اصلی در نواحی خودش جایگزین می‌شود. OCR کاملاً اختیاری است؛ PDFهای متنی و PDFهای OCR‌شده مستقیماً قابل استفاده‌اند.")
+    st.info("💡 اگر فایل قبلاً با PDF24/iLovePDF OCR شده، OCR را دوباره روشن نکن؛ Trarium ابتدا لایه متن موجود را استفاده می‌کند.")
+    uploaded = render_upload(["pdf"])
+    if uploaded:
+        digest = _store_uploaded(uploaded)
+        if st.session_state.get("layout_hash") != digest:
+            st.session_state["layout_hash"] = digest
+            st.session_state.pop("layout_analysis", None)
+            st.session_state.pop("layout_ocr", None)
+            st.session_state.pop("layout_result", None)
+
+        if "layout_analysis" not in st.session_state:
+            path = _tmp_from_session(".pdf")
+            try:
+                import pymupdf
+                from trarium.pdf_optimized import extract_text_blocks
+                doc = pymupdf.open(path)
+                text_pages, scanned_pages = [], []
+                for i, page in enumerate(doc):
+                    try:
+                        blocks = extract_text_blocks(page)
+                    except Exception:
+                        blocks = []
+                    if any(len(b.get("text", "")) >= 4 for b in blocks): text_pages.append(i + 1)
+                    else: scanned_pages.append(i + 1)
+                doc.close()
+                st.session_state["layout_analysis"] = {"total": len(text_pages) + len(scanned_pages), "text": text_pages, "scanned": scanned_pages}
+            finally:
+                try: os.unlink(path)
+                except OSError: pass
+
+        analysis = st.session_state["layout_analysis"]
+        x, y, z = st.columns(3)
+        x.metric("کل صفحات", analysis["total"])
+        y.metric("صفحات دارای لایه متن", len(analysis["text"]))
+        z.metric("صفحات بدون لایه متن", len(analysis["scanned"]))
+
+        if analysis["scanned"]:
+            st.markdown("#### 🔍 OCR")
+            ocr_on = st.checkbox("فعال‌کردن OCR برای صفحات بدون متن", value=False)
+            if not ocr_on:
+                st.warning("OCR خاموش است؛ صفحات اسکن‌شده بدون تغییر در خروجی باقی می‌مانند. اگر PDF را با PDF24/iLovePDF قبلاً OCR کرده‌اید، دوباره OCR لازم نیست.")
+            else:
+                from trarium.pdf_optimized import _has_paddleocr, _has_surya, _has_easyocr, _is_tesseract_installed
+                options = ["auto"]
+                labels = {"auto": "خودکار (PaddleOCR → Surya → EasyOCR → Vision)"}
+                if _has_paddleocr(): options.append("paddleocr"); labels["paddleocr"] = "PaddleOCR"
+                if _has_surya(): options.append("surya"); labels["surya"] = "Surya"
+                if _has_easyocr(): options.append("easyocr"); labels["easyocr"] = "EasyOCR"
+                if api_key: options.append("openrouter"); labels["openrouter"] = "OpenRouter Vision"
+                if _is_tesseract_installed(): options.append("tesseract"); labels["tesseract"] = "Tesseract"
+                method = st.selectbox("موتور OCR", options, format_func=lambda x: labels[x])
+                ocr_lang = st.selectbox("زبان صفحه", ["eng", "fas+eng", "jpn", "ara+eng"], index=0)
+                b1, b2 = st.columns(2)
+                with b1:
+                    run_ocr = st.button("🔎 اجرای OCR", type="primary", key="layout_ocr_run")
+                with b2:
+                    benchmark_ocr_now = st.button("⚡ بنچمارک ۱۰ صفحه", key="layout_ocr_benchmark")
+
+                if benchmark_ocr_now:
+                    from trarium.pdf_optimized import _has_paddleocr, _has_surya, _has_easyocr, _is_tesseract_installed
+                    from trarium.benchmark import benchmark_ocr
+                    selected_methods = []
+                    for candidate, available in [
+                        ("paddleocr", _has_paddleocr()),
+                        ("surya", _has_surya()),
+                        ("easyocr", _has_easyocr()),
+                        ("tesseract", _is_tesseract_installed()),
+                    ]:
+                        if available:
+                            selected_methods.append(candidate)
+                    if api_key:
+                        selected_methods.append("openrouter")
+                    if not selected_methods:
+                        st.warning("هیچ موتور OCR قابل اجرا پیدا نشد. ابتدا یک موتور OCR اختیاری نصب کنید یا برای Vision کلید API وارد کنید.")
                     else:
-                        label = f"🔍 صفحه {p} — نیاز به OCR"
-                    if st.checkbox(label, key=f"skip_p_{p}", value=False):
-                        skip_pages_ui.add(p)
-
-                pending_pages = [p for p in scanned_pages
-                                 if p not in skip_pages_ui and not (ocr_results.get(p - 1))]
-
-                if not pending_pages:
-                    st.success("🎉 همه صفحات آماده ترجمه!")
-                    analysis["ocr_done"] = True
-                else:
-                    st.markdown(f"### 🔍 OCR — {len(pending_pages)} صفحه باقی‌مانده")
-
-                    from trarium.pdf_optimized import (
-                        _has_easyocr, _is_tesseract_installed,
-                        _has_paddleocr, _has_surya,
-                        extract_ocr_blocks, extract_ocr_blocks_batch_openrouter,
-                    )
-
-                    easyocr_ok = False  # B8: EasyOCR disabled
-                    tesseract_ok = _is_tesseract_installed()
-                    paddleocr_ok = _has_paddleocr()
-                    surya_ok = _has_surya()
-
-                    if not surya_ok:
-                        st.caption("ℹ️ Surya اختیاری است و فقط وقتی وابستگی‌هایش کامل نصب باشند در لیست ظاهر می‌شود.")
-
-                    # ── لیست تمام روش‌های OCR موجود ──
-                    available_methods = []
-                    available_keys = []
-                    if paddleocr_ok:
-                        available_methods.append("PaddleOCR (دقیق‌ترین)")
-                        available_keys.append("paddleocr")
-                    if surya_ok:
-                        available_methods.append("Surya OCR (اختیاری)")
-                        available_keys.append("surya")
-                    if tesseract_ok:
-                        available_methods.append("Tesseract (سریع‌ترین)")
-                        available_keys.append("tesseract")
-                    # OpenRouter Vision — همیشه موجود
-                    available_methods.append("OpenRouter Vision (نیاز به API Key)")
-                    available_keys.append("openrouter")
-
-                    # ── انتخاب روش OCR ──
-                    ocr_choice = st.selectbox(
-                        "🔍 روش OCR",
-                        ["خودکار (پیشنهادی)"] + available_methods,
-                        index=0,
-                        key="ocr_method_choice"
-                    )
-
-                    if ocr_choice == "خودکار (پیشنهادی)":
-                        # اولویت: PaddleOCR > Surya > Tesseract > OpenRouter
-                        if paddleocr_ok:
-                            ocr_method = "paddleocr"
-                        elif surya_ok:
-                            ocr_method = "surya"
-                        elif tesseract_ok:
-                            ocr_method = "tesseract"
-                        else:
-                            ocr_method = "openrouter"
-                    else:
-                        idx = available_methods.index(ocr_choice)
-                        ocr_method = available_keys[idx]
-
-                    # ── API Key OCR Vision (اختیاری) ──
-                    vision_key = vision_api_key if 'vision_api_key' in dir() else os.environ.get("OPENROUTER_API_KEY", "")
-                    if ocr_method == "openrouter":
-                        if not vision_key:
-                            st.warning("⚠️ OpenRouter Vision نیاز به API Key داره!")
-                            st.info("💡 می‌تونید API Key رو توی تنظیمات پیشرفته سایدبار بذارید (اختیاری)")
-                        else:
-                            st.info(f"🔍 روش: **OpenRouter Vision** — مدل: {vision_model_name}")
-
-                    # ── دکمه OCR ──
-                    if ocr_method == "openrouter":
-                        if vision_key:
-                            if st.button("▶️ اجرای OpenRouter Vision", type="primary", key="run_vision"):
-                                tmp_path = _make_tmp_file(suffix)
-                                with st.spinner(f"OCR {len(pending_pages)} صفحه با Vision..."):
-                                    import pymupdf
-                                    doc = pymupdf.open(tmp_path)
-                                    pages_for_vision = [(p - 1, doc[p - 1]) for p in pending_pages]
-                                    ocr_batch = extract_ocr_blocks_batch_openrouter(
-                                        pages_for_vision, api_key=vision_key,
-                                        model_name=vision_model, batch_size=3,
-                                    )
-                                    for p in pending_pages:
-                                        ocr_results[p - 1] = ocr_batch.get(p - 1, [])
-                                    doc.close()
-                                analysis["ocr_results"] = ocr_results
-                                try:
-                                    os.unlink(tmp_path)
-                                except Exception:
-                                    pass
-                                st.rerun()
-
-                    elif ocr_method == "paddleocr":
-                        st.info("🔍 روش: **PaddleOCR** — محلی، دقیق‌ترین، صفر توکن")
-                        from trarium.pdf_optimized import extract_ocr_blocks_paddleocr
-                        if st.button("▶️ اجرای PaddleOCR", type="primary", key="run_paddleocr"):
-                            tmp_path = _make_tmp_file(suffix)
-                            with st.spinner(f"OCR {len(pending_pages)} صفحه با PaddleOCR..."):
-                                import pymupdf
-                                doc = pymupdf.open(tmp_path)
-                                for p in pending_pages:
-                                    try:
-                                        blocks = extract_ocr_blocks_paddleocr(doc[p - 1], lang=ocr_lang)
-                                        ocr_results[p - 1] = blocks
-                                    except Exception as e:
-                                        st.warning(f"خطا صفحه {p}: {e}")
-                                        ocr_results[p - 1] = []
-                                doc.close()
-                            analysis["ocr_results"] = ocr_results
-                            try:
-                                os.unlink(tmp_path)
-                            except Exception:
-                                pass
-                            st.rerun()
-
-                    elif ocr_method == "surya":
-                        st.info("🔍 روش: **Surya OCR** — محلی، جدیدترین مدل، صفر توکن")
-                        from trarium.pdf_optimized import extract_ocr_blocks_surya
-                        if st.button("▶️ اجرای Surya OCR", type="primary", key="run_surya"):
-                            tmp_path = _make_tmp_file(suffix)
-                            with st.spinner(f"OCR {len(pending_pages)} صفحه با Surya OCR..."):
-                                import pymupdf
-                                doc = pymupdf.open(tmp_path)
-                                for p in pending_pages:
-                                    try:
-                                        blocks = extract_ocr_blocks_surya(doc[p - 1], lang=ocr_lang)
-                                        ocr_results[p - 1] = blocks
-                                    except Exception as e:
-                                        st.warning(f"خطا صفحه {p}: {e}")
-                                        ocr_results[p - 1] = []
-                                doc.close()
-                            analysis["ocr_results"] = ocr_results
-                            try:
-                                os.unlink(tmp_path)
-                            except Exception:
-                                pass
-                            st.rerun()
-
-                    elif ocr_method == "tesseract":
-                        st.info("🔍 روش: **Tesseract** — محلی، سریع، صفر توکن")
-                        from trarium.pdf_optimized import extract_ocr_blocks_tesseract
-                        if st.button("▶️ اجرای Tesseract", type="primary", key="run_tesseract"):
-                            tmp_path = _make_tmp_file(suffix)
-                            with st.spinner(f"OCR {len(pending_pages)} صفحه با Tesseract..."):
-                                import pymupdf
-                                doc = pymupdf.open(tmp_path)
-                                for p in pending_pages:
-                                    try:
-                                        blocks = extract_ocr_blocks_tesseract(doc[p - 1], lang=ocr_lang)
-                                        ocr_results[p - 1] = blocks
-                                    except Exception as e:
-                                        st.warning(f"خطا صفحه {p}: {e}")
-                                        ocr_results[p - 1] = []
-                                doc.close()
-                            analysis["ocr_results"] = ocr_results
-                            try:
-                                os.unlink(tmp_path)
-                            except Exception:
-                                pass
-                            st.rerun()
-
-                    # ── دکمه کافیه ──
-                    if ocr_results:
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.button("✅ کافیه — شروع ترجمه", type="primary", key="done_ocr"):
-                                analysis["ocr_done"] = True
-                                st.rerun()
-                        with col2:
-                            method_order = ["paddleocr", "surya", "tesseract", "openrouter"]
-                            method_names = {
-                                "paddleocr": "PaddleOCR",
-                                "surya": "Surya OCR",
-                                "tesseract": "Tesseract",
-                                "openrouter": "OpenRouter Vision",
-                            }
-                            idx = method_order.index(ocr_method) if ocr_method in method_order else -1
-                            if idx >= 0 and idx < len(method_order) - 1:
-                                next_key = method_order[idx + 1]
-                                next_name = method_names.get(next_key, next_key)
-                                if st.button(f"➡️ روش بعدی ({next_name})", key="next_method"):
-                                    for p in pending_pages:
-                                        ocr_results[p - 1] = []
-                                    analysis["ocr_results"] = ocr_results
-                                    st.rerun()
-
-            # ── دکمه شروع ترجمه ──
-            if analysis.get("ocr_done"):
-                st.divider()
-                st.markdown("### 🚀 آماده ترجمه!")
-                if st.button("🚀 شروع ترجمه!", type="primary", key="start_translate") and api_key:
-                    tmp_path = _make_tmp_file(suffix)
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        translator = get_translator(provider_key, api_key=api_key, model_name=model)
-                        out_path = os.path.join(tmpdir, "output.pdf")
-
-                        with st.status("🔄 ترجمه...", expanded=True) as status:
-                            from trarium.pdf_optimized import translate_pdf_optimized
-
-                            hybrid_progress = st.progress(0, text="شروع...")
-
-                            def hybrid_callback(pct, msg):
-                                hybrid_progress.progress(pct, text=msg)
-
-                            user_skip = {p - 1 for p in skip_pages_ui}
-
-                            result_path = translate_pdf_optimized(
-                                tmp_path, translator, target_lang, out_path, batch_size,
-                                ocr_lang=ocr_lang,
-                                api_key=vision_key if 'vision_key' in dir() else None,
-                                vision_model=vision_model,
-                                skip_pages=user_skip,
-                                precomputed_ocr={k: v for k, v in ocr_results.items()},
-                                progress_callback=hybrid_callback,
-                            )
-
-                            hybrid_progress.progress(1.0, text="✅ تمام!")
-                            if not result_path or not os.path.isfile(result_path):
-                                raise RuntimeError("ساخت PDF خروجی شکست خورد")
-                            with open(result_path, "rb") as f:
-                                pdf_bytes = f.read()
-                            status.update(label="✅ تمام شد!", state="complete")
-
+                        bench_path = _tmp_from_session(".pdf")
                         try:
-                            os.unlink(tmp_path)
-                        except Exception:
-                            pass
+                            rows = benchmark_ocr(bench_path, selected_methods, [p - 1 for p in analysis["scanned"][:10]], lang=ocr_lang)
+                            st.dataframe(rows, use_container_width=True, hide_index=True)
+                        except Exception as exc:
+                            st.error(f"❌ بنچمارک OCR: {exc}")
+                        finally:
+                            try: os.unlink(bench_path)
+                            except OSError: pass
 
-                        safe = "".join(
-                            c for c in Path(uploaded.name).stem if c.isalnum() or c in " _-"
-                        ).strip() or "translated"
-                        st.download_button(
-                            "⬇️ دانلود PDF ترجمه‌شده", pdf_bytes,
-                            f"{safe}_{target_lang}.pdf", "application/pdf", type="primary",
-                        )
-                        # ── آمار ترجمه ترکیبی ──
-                        st.markdown("### 📊 آمار ترجمه")
-                        total_text_pages = len(text_pages)
-                        total_scanned = len(scanned_pages)
-                        ocr_done = len([p for p in ocr_results if ocr_results.get(p)])
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("صفحات متنی", total_text_pages)
-                        c2.metric("صفحات OCR شده", ocr_done)
-                        c3.metric("کل صفحات", total_text_pages + total_scanned)
-                        st.success("🎉 ترجمه تموم شد!")
+                if run_ocr:
+                    import pymupdf
+                    from trarium.pdf_optimized import extract_ocr_blocks, extract_ocr_blocks_batch_openrouter
+                    path = _tmp_from_session(".pdf")
+                    result_map = {}
+                    try:
+                        doc = pymupdf.open(path)
+                        if method == "openrouter":
+                            result_map = extract_ocr_blocks_batch_openrouter([(p - 1, doc[p - 1]) for p in analysis["scanned"]], api_key=api_key, model_name=OPENROUTER_VISION_MODELS["Auto (رایگان)"], batch_size=3)
+                        else:
+                            bar = st.progress(0.0)
+                            for j, p in enumerate(analysis["scanned"], 1):
+                                result_map[p - 1] = extract_ocr_blocks(doc[p - 1], lang=ocr_lang, api_key=api_key, vision_model=OPENROUTER_VISION_MODELS["Auto (رایگان)"], ocr_method=method)
+                                bar.progress(j / len(analysis["scanned"]), text=f"OCR صفحه {p}/{analysis['total']}...")
+                            bar.empty()
+                        doc.close()
+                        st.session_state["layout_ocr"] = result_map
+                        st.success(f"✅ OCR برای {sum(bool(v) for v in result_map.values())} صفحه نتیجه داد.")
+                    except Exception as exc:
+                        st.error(f"❌ OCR: {exc}")
+                    finally:
+                        try: os.unlink(path)
+                        except OSError: pass
+
+        ocr_results = st.session_state.get("layout_ocr", {})
+        skip = st.multiselect("صفحات بدون ترجمه (اختیاری)", list(range(1, analysis["total"] + 1)), key="layout_skip")
+        if st.button("🚀 شروع ترجمه PDF", type="primary", key="layout_translate"):
+            if not api_key:
+                st.error("API Key لازم است.")
+            else:
+                path = _tmp_from_session(".pdf")
+                out = Path(tempfile.gettempdir()) / f"trarium_{digest[:10]}_translated.pdf"
+                try:
+                    primary_tr = _make_translator(primary_cfg)
+                    if fallback_cfg:
+                        fallback_tr = _make_translator(fallback_cfg)
+                        if smart_routing:
+                            from trarium.smart_router import SmartRoutingTranslator
+                            translator = SmartRoutingTranslator(primary_tr, fallback_tr)
+                        else:
+                            translator = FallbackTranslator([(provider, primary_tr), (fallback_label, fallback_tr)])
+                    else:
+                        translator = primary_tr
+                    if use_cache and not isinstance(translator, (FallbackTranslator,)):
+                        translator = CachedTranslator(translator, provider, model)
+                    from trarium.pdf_optimized import translate_pdf_optimized
+                    bar = st.progress(0.0)
+                    def cb(p, msg): bar.progress(min(max(p, 0), 1), text=msg)
+                    _, stats = translate_pdf_optimized(path, translator, target_lang, str(out),
+                                           skip_pages={p - 1 for p in skip},
+                                           precomputed_ocr=ocr_results,
+                                           enable_ocr=False,
+                                           translation_workers=workers,
+                                           translation_batch_chars=chunk_size,
+                                           progress_callback=cb,
+                                           return_stats=True,
+                                           safe_optimization=safe_opt,
+                                           protect_nontranslatable=protect_spans,
+                                           adaptive_batch=adaptive_batch,
+                                           use_checkpoint=use_checkpoint,
+                                           use_cache=use_cache)
+                    st.session_state["layout_result"] = Path(out).read_bytes()
+                    if stats.translated_blocks == 0 or stats.pages_written == 0:
+                        st.session_state.pop("layout_result", None)
+                        try: Path(out).unlink(missing_ok=True)
+                        except Exception: pass
+                        st.error("❌ هیچ بلاکی با موفقیت در PDF جایگزین نشد؛ خروجی خام ساخته/تحویل داده نشد.")
+                    elif stats.failed_blocks or stats.write_failures:
+                        detail = []
+                        if stats.failed_blocks: detail.append(f"{stats.failed_blocks} بلاک بدون ترجمه")
+                        if stats.write_failures: detail.append(f"{stats.write_failures} خطای درج")
+                        st.warning(f"⚠️ PDF ساخته شد؛ {stats.translated_blocks} بلاک نوشته شد؛ {' و '.join(detail)}. متن اصلیِ ناموفق حفظ شد.")
+                        if stats.first_write_error:
+                            st.caption(f"جزئیات اولین خطای درج: {stats.first_write_error}")
+                    else:
+                        st.success(f"🎉 PDF آماده شد؛ {stats.translated_blocks} بلاک ترجمه و {stats.pages_written} صفحه بازنویسی شد.")
+                    st.caption(f"Cache/Checkpoint: {stats.cache_hits + stats.checkpoint_hits} · درخواست API: {stats.api_requests} · توکن ورودی: {stats.input_tokens:,} · خروجی: {stats.output_tokens:,} · Placeholder: {stats.protected_spans}")
+                except Exception as exc:
+                    from trarium.translators.openrouter_http import OpenRouterSecurityBlockError
+                    if isinstance(exc, OpenRouterSecurityBlockError) and exc.source == "waf":
+                        st.error("❌ OpenRouter اتصال را در لایهٔ امنیتی/WAF مسدود کرد. این مشکل از PDF، OCR یا متن ترجمه نیست و retry بیشتر فقط زمان هدر می‌دهد. از تست اتصال بالا استفاده کنید یا ارائه‌دهندهٔ دیگری را انتخاب کنید.")
+                    else:
+                        st.error(f"❌ {exc}")
+                finally:
+                    try: os.unlink(path)
+                    except OSError: pass
+
+        if st.session_state.get("layout_result"):
+            st.download_button("⬇️ دانلود PDF ترجمه‌شده", st.session_state["layout_result"], f"{_safe_name(uploaded.name.rsplit('.',1)[0])}_fa.pdf", "application/pdf", type="primary", key="layout_download")
+
+with web_tab:
+    st.markdown("### 🌐 ترجمه وب‌ناول")
+    st.caption("از لینک واقعی Next Chapter جلو می‌رود؛ URL فصل‌های بعدی را حدس نمی‌زند و خروجی یک صفحه/بخش پایانی «ترجمه شده توسط تراریوم» دارد.")
+    url = st.text_input("لینک فصل شروع", placeholder="https://example.com/chapter-1/")
+    c1, c2, c3 = st.columns(3)
+    with c1: count = st.selectbox("تعداد فصل", [1, 2, 5, 10, 20], index=2)
+    with c2: use_browser = st.checkbox("مرورگر برای سایت‌های JS", value=False)
+    with c3: with_images = st.checkbox("دانلود عکس‌ها", value=False)
+
+    if st.button("🔎 دریافت فصل‌ها", type="primary", key="scrape_novel") and url.strip():
+        from trarium.novel.scraper import NovelScraper
+        try:
+            scraper = NovelScraper(use_browser=use_browser, delay=0.5, max_chapters=count)
+            with st.spinner("در حال دریافت فصل‌ها..."):
+                chapters = scraper.scrape_chain(url.strip(), count)
+            if not chapters:
+                st.error("هیچ فصل قابل استفاده‌ای پیدا نشد.")
+            else:
+                st.session_state["novel_results"] = chapters
+                st.success(f"✅ {len(chapters)} فصل پیدا شد.")
+        except Exception as exc:
+            st.error(f"❌ {exc}")
+
+    chapters = st.session_state.get("novel_results", [])
+    if chapters:
+        for ch in chapters[:3]:
+            st.markdown(f"**{ch.number or '؟'} — {ch.title or 'بدون عنوان'}** · {ch.word_count:,} کلمه")
+            st.text_area(f"پیش‌نمایش فصل {ch.number or ''}", ch.text[:2500], height=140, key=f"preview_{ch.url}")
+        if len(chapters) > 3: st.caption(f"... و {len(chapters) - 3} فصل دیگر")
+
+        if with_images and st.button("🖼️ دانلود عکس‌ها", key="novel_images"):
+            from trarium.novel.scraper import NovelScraper
+            images = []
+            for ch in chapters: images.extend(ch.images)
+            with st.spinner("در حال دانلود عکس‌ها..."):
+                downloaded = NovelScraper.download_all_images(images)
+            if downloaded:
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for img in downloaded: zf.writestr(img.filename, img.data)
+                st.download_button("⬇️ دانلود ZIP عکس‌ها", buf.getvalue(), "novel_images.zip", "application/zip", key="novel_images_download")
+            else:
+                st.info("عکسی دانلود نشد.")
+
+        if st.button("🚀 ترجمه وب‌ناول", type="primary", key="translate_novel"):
+            if not api_key:
+                st.error("API Key لازم است.")
+            else:
+                from trarium.extractors.base import ExtractedBook
+                book = ExtractedBook(title=chapters[0].title or "Web Novel", author="", chapters=[{"title": f"فصل {c.number or i+1}: {c.title}", "content": c.text} for i, c in enumerate(chapters) if c.text])
+                try:
+                    translator = get_translator(provider, api_key=api_key, model_name=model, base_url=custom_base, provider_name="OpenAI-compatible") if provider == "openai_compatible" else get_translator(provider, api_key=api_key, model_name=model)
+                    if use_cache:
+                        translator = CachedTranslator(translator, provider, model)
+                    result = TranslationPipeline(translator, target_lang, chunk_size, delay, workers).run(book)
+                    st.session_state["novel_translation"] = result
+                except Exception as exc:
+                    st.error(f"❌ {exc}")
+
+        result = st.session_state.get("novel_translation")
+        if result:
+            st.divider()
+            a, b = st.columns(2)
+            a.metric("تعداد بخش‌ها", f"{result.translated_chunks}/{result.total_chunks}")
+            b.metric("بخش ناموفق", result.failed_chunks)
+            if result.translated_chunks == 0 and result.failed_chunks > 0:
+                st.error("❌ هیچ فصل/بخشی ترجمه نشد؛ خروجی قابل دانلود ساخته نمی‌شود.")
+            else:
+                fmt = st.radio("فرمت خروجی وب‌ناول", ["TXT", "PDF", "EPUB", "HTML"], horizontal=True, key="novel_format")
+                with tempfile.TemporaryDirectory() as td:
+                    out = str(Path(td) / f"{_safe_name(result.title)}_translated.{fmt.lower()}")
+                    if fmt == "TXT": save_as_text(result, out); mime = "text/plain"
+                    elif fmt == "PDF": save_as_pdf(result, out); mime = "application/pdf"
+                    elif fmt == "EPUB": save_as_epub(result, out); mime = "application/epub+zip"
+                    else: save_as_html(result, out); mime = "text/html"
+                    st.download_button("⬇️ دانلود خروجی", Path(out).read_bytes(), Path(out).name, mime, type="primary", key="novel_download")
 
 st.divider()
-st.caption("🌿 تراریوم v2.16.0 | ترجمه خودکار کتاب")
+st.caption("Trarium — OCR اختیاری • ترجمه مقاوم • حفظ قالب PDF • فونت Sahel")

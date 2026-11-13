@@ -3,14 +3,6 @@
 import re
 from html import unescape
 from ebooklib import epub
-
-# ebooklib این ثابت‌ها را در ریشهٔ پکیج نگه می‌دارد؛ ebooklib.epub آن‌ها را
-# صادر نمی‌کند و استفاده از epub.ITEM_DOCUMENT باعث AttributeError می‌شد.
-try:  # ebooklib >= 0.18
-    from ebooklib import ITEM_DOCUMENT as _ITEM_DOCUMENT
-except ImportError:  # نسخه‌های بسیار قدیمی
-    from ebooklib.epub import ITEM_DOCUMENT as _ITEM_DOCUMENT
-
 from trarium.extractors.base import BaseExtractor, ExtractedBook
 
 
@@ -44,7 +36,7 @@ class EPUBExtractor(BaseExtractor):
                 spine_items.append(item)
 
         for item in spine_items:
-            if item.get_type() == _ITEM_DOCUMENT:
+            if item.get_type() == epub.ITEM_DOCUMENT:
                 content = item.get_content().decode("utf-8", errors="replace")
                 # B20: Better HTML handling — preserve line breaks
                 content = re.sub(r"<br\s*/?>", "\n", content)

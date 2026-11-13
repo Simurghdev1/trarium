@@ -1,0 +1,77 @@
+name: Trarium QA
+
+on:
+  push:
+    branches: ["qa/v2.17.0-audit", "main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install core dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run project tests
+        run: python -m pytest tests -q -p no:cacheprovider
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-tests-${{ matrix.python }}
+          path: |
+            **/*.pdf
+            **/*.epub
+          if-no-files-found: ignore
+          retention-days: 14
+
+  qa-suite:
+    name: End-to-end QA (mock provider, no API key)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest requests tiktoken
+      - name: Run QA suite (real HTTP against local mock provider)
+        env:
+          TRARIUM_TARGET: ${{ github.workspace }}
+          QA_TMP: ${{ runner.temp }}/qa
+          QA_LABEL: ci
+        run: |
+          set -o pipefail
+          python -m pytest qa/qa_suite.py -q -p no:cacheprovider --basetemp "$QA_TMP/pytest" 2>&1 | tee qa-pytest.log
+      - name: Collect artifacts
+        if: always()
+        env:
+          QA_TMP: ${{ runner.temp }}/qa
+        run: |
+          mkdir -p qa-artifacts
+          cp -f qa/qa_results_*.json qa-artifacts/ 2>/dev/null || true
+          cp -f qa-pytest.log qa-artifacts/ 2>/dev/null || true
+          find "$QA_TMP" -type f \( -name '*.pdf' -o -name '*.epub' -o -name '*.json' \) -exec cp {} qa-artifacts/ \; 2>/dev/null || true
+          ls -la qa-artifacts
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trarium-qa-results
+          path: qa-artifacts
+          if-no-files-found: warn
+          retention-days: 30

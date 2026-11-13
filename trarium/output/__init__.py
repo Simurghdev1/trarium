@@ -1,174 +1,217 @@
-"""ذخیره نتیجه ترجمه در فایل."""
+"""Output helpers for text, PDF, EPUB and HTML results."""
+from __future__ import annotations
 
+import html
 import re
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime
 from xml.sax.saxutils import escape as xml_escape
+
 from rich.console import Console
 
-from trarium.utils import is_rtl_lang, reshape_rtl
-
 console = Console()
-
-_FONT_DIR = Path(__file__).parent.parent / "fonts"
-_FONT_PATH = _FONT_DIR / "Sahel.ttf"
-_FONT_NAME = "Sahel"
+_FONT_PATH = Path(__file__).parent.parent / "fonts" / "Sahel.ttf"
+ATTRIBUTION_TEXT = "ترجمه شده توسط تراریوم"
 
 
-def _safe_stem(title: str) -> str:
-    return "".join(c for c in (title or "") if c.isalnum() or c in " _-").strip() or "translated"
+def _safe_name(value: str, fallback: str = "translated") -> str:
+    name = "".join(c for c in (value or "") if c.isalnum() or c in " _-").strip()
+    return name or fallback
 
 
-def save_as_text(result, output_path: str = None) -> str:
-    if output_path is None:
-        output_path = f"{_safe_stem(result.title)}_translated.txt"
-    path = Path(output_path)
-    path.write_text(f"{result.translated_text}\n\n---\nترجمه شده با Trarium\n", encoding="utf-8")
-    console.print(f"  💾 ذخیره شد: [bold green]{path}[/] ({path.stat().st_size:,} بایت)")
+def save_as_text(result, output_path: str | None = None) -> str:
+    path = Path(output_path or f"{_safe_name(result.title)}_translated.txt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = result.translated_text.rstrip() + "\n\n" + ("=" * 64) + "\n" + ATTRIBUTION_TEXT + "\n"
+    path.write_text(content, encoding="utf-8")
     return str(path)
 
 
-def _wrap_lines(font, text: str, width: float, fontsize: float) -> list[str]:
-    """شکستن متن به خطوطی که با عرض داده‌شده جا می‌شوند."""
+def save_as_html(result, output_path: str | None = None) -> str:
+    path = Path(output_path or f"{_safe_name(result.title)}_translated.html")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = []
+    for section in re.split(r"\n---\s*", result.translated_text):
+        section = section.strip()
+        if not section:
+            continue
+        lines = section.split("\n", 1)
+        title = lines[0].strip().strip("-")
+        content = lines[1] if len(lines) > 1 else ""
+        paras = "".join(f"<p>{html.escape(p.strip())}</p>" for p in re.split(r"\n{2,}", content) if p.strip())
+        body.append(f"<section><h2>{html.escape(title)}</h2>{paras}</section>")
+    document = f'''<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(result.title)}</title><style>
+@font-face{{font-family:Sahel;src:url(data:font/ttf;base64,{_font_data()})}}
+body{{font-family:Sahel,Tahoma,sans-serif;max-width:900px;margin:40px auto;padding:0 24px;background:#f6f8f7;color:#1f2b2a;line-height:2.05}}
+main{{background:white;padding:36px;border-radius:18px;box-shadow:0 8px 35px rgba(0,0,0,.06)}}h1{{text-align:center}}h2{{margin-top:2em}}p{{white-space:pre-wrap}}.attribution{{min-height:70vh;display:flex;align-items:center;justify-content:center;page-break-before:always;font-size:2rem;font-weight:800;text-align:center;color:#c20c0c}}
+</style></head><body><main><h1>{html.escape(result.title)}</h1>{''.join(body)}<div class="attribution">{html.escape(ATTRIBUTION_TEXT)}</div></main></body></html>'''
+    path.write_text(document, encoding="utf-8")
+    return str(path)
+
+
+def _font_data() -> str:
+    import base64
+    if _FONT_PATH.exists():
+        return base64.b64encode(_FONT_PATH.read_bytes()).decode("ascii")
+    return ""
+
+
+def _wrap_lines(font, text: str, width: float, size: float) -> list[str]:
+    """Break text into lines that actually fit, measured with the real font."""
     lines: list[str] = []
     for raw in text.split("\n"):
-        words = raw.split(" ")
         current = ""
-        for word in words:
-            trial = word if not current else current + " " + word
-            if font.text_length(trial, fontsize) <= width:
-                current = trial
+        for word in raw.split(" "):
+            candidate = word if not current else current + " " + word
+            if font.text_length(candidate, size) <= width:
+                current = candidate
                 continue
             if current:
                 lines.append(current)
             current = word
-            # کلمهٔ بسیار بلند (URL یا واژهٔ بدون فاصله) را هم بشکن
-            while font.text_length(current, fontsize) > width and len(current) > 1:
+            while font.text_length(current, size) > width and len(current) > 1:
                 cut = len(current)
-                while cut > 1 and font.text_length(current[:cut], fontsize) > width:
+                while cut > 1 and font.text_length(current[:cut], size) > width:
                     cut -= 1
                 lines.append(current[:cut])
                 current = current[cut:]
         lines.append(current)
-    return [line for line in lines if line != ""] or [""]
+    return [line for line in lines if line.strip()] or [""]
 
 
-def save_as_pdf(result, output_path: str = None) -> str:
-    """ترجمه را به PDF می‌نویسد — با فونت یونیکد فارسی و چیدمان راست‌به‌چپ."""
+def save_as_pdf(result, output_path: str | None = None) -> str:
+    """Render a clean RTL PDF using the bundled Sahel font.
+
+    Pagination is measured with the embedded font instead of a character-count
+    guess: the previous heuristic silently dropped whole paragraphs (a 2000-char
+    paragraph produced 19 visible letters).
+    """
     import pymupdf
 
-    if output_path is None:
-        output_path = f"{_safe_stem(result.title)}_translated.pdf"
-
+    path = Path(output_path or f"{_safe_name(result.title)}_translated.pdf")
+    path.parent.mkdir(parents=True, exist_ok=True)
     if not _FONT_PATH.exists():
-        raise RuntimeError(f"فونت فارسی پیدا نشد: {_FONT_PATH}")
+        raise RuntimeError(f"فونت Sahel پیدا نشد: {_FONT_PATH}")
 
-    path = Path(output_path)
-    rtl = is_rtl_lang(getattr(result, "target_lang", "fa"))
+    rtl = (getattr(result, "target_lang", "fa") or "fa") in {"fa", "ar", "he", "ur"}
     font = pymupdf.Font(fontfile=str(_FONT_PATH))
-
-    page_w, page_h = 595.0, 842.0
-    margin, fontsize, leading = 56.0, 12.0, 19.0
-    usable = page_w - 2 * margin
+    width, height, margin = 595, 842, 52
+    body_size, leading = 12.5, 19.0
+    usable = width - 2 * margin
 
     doc = pymupdf.open()
-    page = doc.new_page(width=page_w, height=page_h)
+
+    def new_page():
+        page = doc.new_page(width=width, height=height)
+        page.insert_font(fontname="Sahel", fontfile=str(_FONT_PATH))
+        return page
+
+    page = new_page()
     y = margin
 
-    paragraphs = [p.strip() for p in (result.translated_text or "").split("\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = [""]
-
-    for para in paragraphs:
-        # برای فارسی/عربی متن پیش از نوشتن به ترتیب بصری تبدیل می‌شود؛
-        # فونت Sahel همراه فایل نوشته می‌شود تا هیچ گلیفی گم نشود.
-        display = reshape_rtl(para) if rtl else para
-        for line in _wrap_lines(font, display, usable, fontsize):
-            if y + leading > page_h - margin:
-                page = doc.new_page(width=page_w, height=page_h)
+    def write(text: str, size: float, color, space_after: float):
+        nonlocal page, y
+        display = _reshape_for_pdf(text) if rtl else text
+        for line in _wrap_lines(font, display, usable, size):
+            if y + size * 1.6 > height - margin:
+                page = new_page()
                 y = margin
-            if line:
-                x = (page_w - margin - font.text_length(line, fontsize)) if rtl else margin
-                page.insert_text(
-                    (x, y + fontsize),
-                    line,
-                    fontname=_FONT_NAME,
-                    fontfile=str(_FONT_PATH),
-                    fontsize=fontsize,
-                    color=(0.13, 0.13, 0.13),
-                )
-            y += leading
-        y += leading * 0.4
+            x = (width - margin - font.text_length(line, size)) if rtl else margin
+            page.insert_text((x, y + size), line, fontname="Sahel", fontfile=str(_FONT_PATH),
+                             fontsize=size, color=color)
+            y += size * 1.52
+        y += space_after
 
-    doc.set_metadata({
-        "title": result.title or "",
-        "author": result.author or "",
-        "producer": "Trarium",
-    })
-    doc.save(str(path))
+    sections = [s.strip() for s in re.split(r"\n---\s*", result.translated_text or "") if s.strip()]
+    if not sections:
+        sections = [result.translated_text or ""]
+
+    for section in sections:
+        lines = section.split("\n", 1)
+        title = lines[0].strip().strip("-").strip()
+        content = lines[1] if len(lines) > 1 else ""
+        if title:
+            # The title is reshaped too; otherwise Persian headings render as
+            # disconnected, reversed letters even though the body is correct.
+            write(title, 15.0, (0.05, 0.28, 0.23), 6.0)
+        for para in [p.strip() for p in re.split(r"\n{2,}", content) if p.strip()]:
+            write(para, body_size, (0.10, 0.10, 0.10), 8.0)
+
+    attr_page = new_page()
+    attr_rect = pymupdf.Rect(margin, height * 0.40, width - margin, height * 0.60)
+    if hasattr(attr_page, "insert_htmlbox"):
+        archive = pymupdf.Archive(str(_FONT_PATH.parent))
+        css = "@font-face{font-family:Sahel;src:url('Sahel.ttf')} body{font-family:Sahel;font-size:22pt;text-align:center;direction:rtl;color:#c20c0c;margin:0;}"
+        try:
+            spare, _scale = attr_page.insert_htmlbox(
+                attr_rect, f"<body>{html.escape(ATTRIBUTION_TEXT)}</body>", css=css, archive=archive, scale_low=0.5
+            )
+        except Exception:
+            spare = -1
+        if spare < 0:
+            attr_page.insert_textbox(attr_rect, _reshape_for_pdf(ATTRIBUTION_TEXT), fontname="Sahel",
+                                     fontsize=22, color=(0.78, 0.03, 0.03), align=pymupdf.TEXT_ALIGN_CENTER)
+    else:
+        attr_page.insert_textbox(attr_rect, _reshape_for_pdf(ATTRIBUTION_TEXT), fontname="Sahel",
+                                 fontsize=22, color=(0.78, 0.03, 0.03), align=pymupdf.TEXT_ALIGN_CENTER)
+
+    doc.set_metadata({"title": result.title or "", "author": result.author or "", "producer": "Trarium"})
+    doc.save(str(path), garbage=4, deflate=True, clean=True)
     doc.close()
-    console.print(f"  💾 ذخیره شد: [bold green]{path}[/] ({path.stat().st_size:,} بایت)")
     return str(path)
 
 
-def save_as_epub(result, output_path: str = None) -> str:
-    """ترجمه رو به EPUB ذخیره می‌کنه."""
-    if output_path is None:
-        output_path = f"{_safe_stem(result.title)}_translated.epub"
+def _reshape_for_pdf(text: str) -> str:
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(text))
+    except Exception:
+        return text
 
-    path = Path(output_path)
+
+def save_as_epub(result, output_path: str | None = None) -> str:
+    path = Path(output_path or f"{_safe_name(result.title)}_translated.epub")
+    path.parent.mkdir(parents=True, exist_ok=True)
     book_id = str(uuid.uuid4())
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-    title_safe = xml_escape(result.title or "")
-    lang = getattr(result, "target_lang", "fa") or "fa"
-    direction = "rtl" if is_rtl_lang(lang) else "ltr"
+    modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    title = xml_escape(result.title or "Trarium")
 
-    # مسیر فونت نسبت به OEBPS/style.css نوشته می‌شود (fonts/Sahel.ttf)؛
-    # «../fonts» به بیرون از OEBPS اشاره می‌کرد و فونت هرگز بارگذاری نمی‌شد.
-    css = (b"@font-face{font-family:Sahel;src:url(fonts/Sahel.ttf)} "
-           b"body{font-family:Sahel,Tahoma,Arial,sans-serif;line-height:1.8;margin:2em;"
-           b"color:#333;direction:RTL_DIR;text-align:ALIGN_TEXT}\n"
-           b"h1{text-align:center;color:#2c3e50}\n"
-           b"h2{color:#34495e}\n"
-           b"p{margin:.5em 0;text-align:ALIGN_TEXT}").replace(
-        b"RTL_DIR", direction.encode()
-    ).replace(b"ALIGN_TEXT", b"right" if direction == "rtl" else b"left")
-
-    sections = [s.strip() for s in re.split(r"\n---\s+", result.translated_text or "") if s.strip()]
-    chapter_files, nav_points, manifest_items, spine_refs = [], "", "", ""
-
-    for i, section in enumerate(sections):
+    sections = [s.strip() for s in re.split(r"\n---\s*", result.translated_text) if s.strip()]
+    chapters = []
+    for i, section in enumerate(sections, 1):
         lines = section.split("\n", 1)
-        ch_title = xml_escape(lines[0].strip().replace("---", "").strip() or f"بخش {i+1}")
-        fname = f"ch{i+1}.xhtml"
-        chapter_files.append(fname)
-        nav_points += f'<navPoint id="np{i+1}" playOrder="{i+1}"><navLabel><text>{ch_title}</text></navLabel><content src="{fname}"/></navPoint>\n'
-        manifest_items += f'<item id="ch{i+1}" href="{fname}" media-type="application/xhtml+xml"/>\n'
-        spine_refs += f'<itemref idref="ch{i+1}"/>\n'
+        ch_title = lines[0].strip().strip("-") or f"فصل {i}"
+        content = lines[1] if len(lines) > 1 else ""
+        chapters.append((i, ch_title, content))
+    chapters.append((len(chapters) + 1, ATTRIBUTION_TEXT, ""))
 
-    titles_list = [s.split("\n", 1)[0].strip().replace("---", "").strip() or f"بخش {j+1}" for j, s in enumerate(sections)]
-    nav_li = "".join(f'<li><a href="{chapter_files[i]}">{xml_escape(titles_list[i])}</a></li>\n' for i in range(len(titles_list)))
-
-    font_item = '<item id="font" href="fonts/Sahel.ttf" media-type="font/ttf"/>'
-
-    with zipfile.ZipFile(str(path), "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         zf.writestr("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
-        zf.writestr("OEBPS/content.opf", f'<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="BookId">urn:uuid:{book_id}</dc:identifier><dc:title>{title_safe}</dc:title><dc:language>{lang}</dc:language><dc:creator>Trarium</dc:creator><meta property="dcterms:modified">{now}</meta></metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="css" href="style.css" media-type="text/css"/>{font_item}<item id="tp" href="title.xhtml" media-type="application/xhtml+xml"/>{manifest_items}<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine toc="ncx"><itemref idref="tp"/>{spine_refs}</spine></package>')
-        zf.writestr("OEBPS/toc.ncx", f'<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><head><meta name="dtb:uid" content="urn:uuid:{book_id}"/></head><docTitle><text>{title_safe}</text></docTitle><navMap>{nav_points}</navMap></ncx>')
-        zf.writestr("OEBPS/style.css", css)
+        manifest = ['<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>', '<item id="css" href="style.css" media-type="text/css"/>']
         if _FONT_PATH.exists():
-            zf.write(str(_FONT_PATH), "OEBPS/fonts/Sahel.ttf")
-        zf.writestr("OEBPS/title.xhtml", f'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" dir="{direction}"><head><title>{title_safe}</title><link rel="stylesheet" href="style.css"/></head><body><h1>{title_safe}</h1></body></html>'.encode("utf-8"))
-        zf.writestr("OEBPS/nav.xhtml", f'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" dir="{direction}"><head><title>فهرست</title></head><body><nav epub:type="toc"><h1>فهرست</h1><ol>{nav_li}</ol></nav></body></html>'.encode("utf-8"))
-        for i, section in enumerate(sections):
-            lines = section.split("\n", 1)
-            ch_title = xml_escape(lines[0].strip().replace("---", "").strip() or f"بخش {i+1}")
-            content = lines[1].strip() if len(lines) > 1 else ""
-            paras = "".join(f"<p>{xml_escape(p.strip())}</p>\n" for p in content.split("\n") if p.strip())
-            zf.writestr(f"OEBPS/{chapter_files[i]}", f'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" dir="{direction}"><head><title>{ch_title}</title><link rel="stylesheet" href="style.css"/></head><body><h2>{ch_title}</h2>{paras}</body></html>'.encode("utf-8"))
-
-    console.print(f"  💾 ذخیره شد: [bold green]{path}[/] ({path.stat().st_size:,} بایت)")
+            # The font file was bundled but never declared, so readers ignored @font-face.
+            manifest.append('<item id="font" href="fonts/Sahel.ttf" media-type="font/ttf"/>')
+        spine = []
+        nav = []
+        for i, ch_title, _ in chapters:
+            href = f"chapter_{i}.xhtml"
+            manifest.append(f'<item id="c{i}" href="{href}" media-type="application/xhtml+xml"/>')
+            spine.append(f'<itemref idref="c{i}"/>')
+            nav.append(f'<li><a href="{href}">{xml_escape(ch_title)}</a></li>')
+        opf = f'''<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="bookid">urn:uuid:{book_id}</dc:identifier><dc:title>{title}</dc:title><dc:language>{xml_escape(result.target_lang or 'fa')}</dc:language><meta property="dcterms:modified">{modified}</meta></metadata><manifest>{''.join(manifest)}</manifest><spine>{''.join(spine)}</spine></package>'''
+        zf.writestr("OEBPS/content.opf", opf)
+        zf.writestr("OEBPS/style.css", "@font-face{font-family:Sahel;src:url(fonts/Sahel.ttf)}body{font-family:Sahel,Tahoma,sans-serif;direction:rtl;text-align:right;line-height:1.9;margin:1.5em}h1{text-align:center}p{margin:.6em 0}")
+        zf.writestr("OEBPS/nav.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" dir="rtl"><head><title>{title}</title></head><body><nav epub:type="toc"><ol>{"".join(nav)}</ol></nav></body></html>')
+        if _FONT_PATH.exists():
+            zf.write(_FONT_PATH, "OEBPS/fonts/Sahel.ttf")
+        for i, ch_title, content in chapters:
+            paras = "".join(f"<p>{xml_escape(p.strip())}</p>" for p in re.split(r"\n{2,}", content) if p.strip())
+            zf.writestr(f"OEBPS/chapter_{i}.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" dir="rtl"><head><title>{xml_escape(ch_title)}</title><link rel="stylesheet" href="style.css"/></head><body><h1>{xml_escape(ch_title)}</h1>{paras}</body></html>')
     return str(path)

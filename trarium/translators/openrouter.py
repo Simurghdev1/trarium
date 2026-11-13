@@ -1,49 +1,45 @@
 """ترجمه متن با OpenRouter."""
+from __future__ import annotations
+
 import math
 import threading
 import time
-import requests
 from trarium.translators.base import BaseTranslator
+from trarium.translators.openrouter_http import OpenRouterSecurityBlockError, post_json
 from trarium.utils import clean_translation as _clean_translation
 
 LANG_NAMES = {
-    "fa": "فارسی", "en": "انگلیسی", "ar": "عربی", "fr": "فرانسوی",
-    "de": "آلمانی", "es": "اسپانیایی", "tr": "ترکی", "ja": "ژاپنی",
-    "ko": "کره‌ای", "zh": "چینی", "ru": "روسی",
+    "fa": "فارسی", "en": "English", "ar": "العربية", "fr": "Français",
+    "de": "Deutsch", "es": "Español", "tr": "Türkçe", "ja": "日本語",
+    "ko": "한국어", "zh": "中文", "ru": "Русский",
 }
 
+# Keep explicit models that are currently listed as free; Auto remains the safest
+# long-term choice because OpenRouter selects among currently available free models.
 FREE_MODELS = {
     "Auto (پیشنهادی)": "openrouter/free",
-    "Nemotron 3 Ultra (قوی‌ترین)": "nvidia/nemotron-3-ultra:free",
-    "Nemotron 3 Super": "nvidia/nemotron-3-super:free",
-    "GPT-OSS 20B": "openai/gpt-oss-20b:free",
-    "Nemotron 3.5 Lightning": "nvidia/nemotron-3.5-lightning:free",
+    "Nemotron 3 Ultra 550B (free)": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "Gemma 4 31B (free)": "google/gemma-4-31b-it:free",
+    "Gemma 4 26B A4B (free)": "google/gemma-4-26b-a4b-it:free",
+    "Nemotron 3.5 Lightning (free)": "nvidia/nemotron-3.5-lightning:free",
+    "Dots 3 Note Preview (free)": "dots-studio/dots-3-note-preview:free",
+    "Cohere North Mini Code (free)": "cohere/north-mini-code:free",
+    "Nemotron 3.5 Super VL (free)": "nvidia/nemotron-3.5-super-vl:free",
 }
+
 
 SYSTEM_PROMPT = (
     "You are a professional literary translator. Translate completely and faithfully into the requested target language. "
-    "Output only the translation, with no commentary, metadata, safety notes, or reasoning. "
-    "Preserve names, numbers, URLs, paragraph order, and meaning."
+    "Output only the translation. Preserve names, numbers, URLs, paragraph order, and meaning. "
+    "Never summarize, omit, censor, or add commentary."
 )
-PERSIAN_RULES = " For Persian: use correct Persian نیم‌فاصله and quotation marks «…», and never use em dash or en dash."
-
-def _system_prompt(target_lang):
-    return SYSTEM_PROMPT + (PERSIAN_RULES if target_lang == "fa" else "")
-
-TRANSLATE_PROMPT = "Translate to {lang}. Output only the translation."
+PERSIAN_RULES = " For Persian, use natural Persian punctuation, correct نیم‌فاصله, and Persian quotation marks «…». Avoid em dash and en dash."
+TRANSLATE_PROMPT = "Translate to {lang}."
 _thread_local = threading.local()
 
 
-def _get_http_session():
-    session = getattr(_thread_local, "session", None)
-    if session is None:
-        session = requests.Session()
-        _thread_local.session = session
-    return session
-
-
 def _max_output_tokens(text: str) -> int:
-    return max(2048, min(20000, math.ceil(len(text) * 0.75)))
+    return max(4096, min(30000, math.ceil(len(text) * 1.15)))
 
 
 class OpenRouterTranslator(BaseTranslator):
@@ -52,46 +48,66 @@ class OpenRouterTranslator(BaseTranslator):
     def __init__(self, api_key=None, model_name=None):
         self.api_key = api_key
         self.model_name = model_name or FREE_MODELS["Auto (پیشنهادی)"]
+        self.last_error = ""
+        self.last_error_kind = ""
+        self.last_transport = ""
+        self.last_usage = {}
 
     def get_token_limit(self):
         return 128_000
 
+    def _headers(self) -> dict[str, str]:
+        # Avoid inventing a public GitHub URL for a local application.
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Trarium/2.17.0",
+        }
+
     def translate(self, text, target_lang="fa"):
-        lang_name = LANG_NAMES.get(target_lang, target_lang)
-        user_msg = TRANSLATE_PROMPT.format(lang=lang_name) + "\n\n" + text
+        if not self.api_key:
+            raise RuntimeError("OpenRouter API Key وارد نشده است.")
+        text = str(text)
+        lang = LANG_NAMES.get(target_lang, target_lang)
         payload = {
             "model": self.model_name,
             "messages": [
-                {"role": "system", "content": _system_prompt(target_lang)},
-                {"role": "user", "content": user_msg},
+                {"role": "system", "content": SYSTEM_PROMPT + (PERSIAN_RULES if target_lang == "fa" else "")},
+                {"role": "user", "content": TRANSLATE_PROMPT.format(lang=lang) + "\n\n" + text},
             ],
             "max_tokens": _max_output_tokens(text),
-            "temperature": 0.3,
+            "temperature": 0.2,
         }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/trarium",
-            "X-Title": "Trarium Translator",
-        }
+        self.last_error = ""
+        self.last_error_kind = ""
+        self.last_transport = ""
+        self.last_usage = {}
+        last_error = None
         for attempt in range(3):
             try:
-                response = _get_http_session().post(self.API_URL, headers=headers, json=payload, timeout=120)
-                response.raise_for_status()
-                data = response.json()
-                raw = data["choices"][0]["message"]["content"]
-                return _clean_translation(raw)
-            except requests.exceptions.HTTPError:
-                try:
-                    error_msg = response.json().get("error", {}).get("message", response.text[:200])
-                except Exception:
-                    error_msg = response.text[:200]
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
-                    continue
-                raise RuntimeError(f"خطا در ترجمه ({response.status_code}): {error_msg}")
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
-                    continue
-                raise RuntimeError(f"خطا در ترجمه: {e}")
+                response = post_json(self.API_URL, self._headers(), payload, timeout=180)
+                self.last_transport = response.transport
+                data = response.data
+                usage = data.get("usage") if isinstance(data, dict) else None
+                self.last_usage = {"input_tokens": int((usage or {}).get("prompt_tokens") or 0), "output_tokens": int((usage or {}).get("completion_tokens") or 0)}
+                choices = data.get("choices") if isinstance(data, dict) else None
+                choices = choices or []
+                if not choices:
+                    raise RuntimeError("OpenRouter پاسخ خالی برگرداند.")
+                content = choices[0].get("message", {}).get("content") if isinstance(choices[0], dict) else None
+                if not content:
+                    raise RuntimeError("OpenRouter متن ترجمه را برنگرداند.")
+                return _clean_translation(str(content))
+            except OpenRouterSecurityBlockError as exc:
+                self.last_error = str(exc)
+                self.last_error_kind = exc.source
+                # Security-policy blocks are deterministic for a given request/client.
+                # Retrying them 2 more times only wastes time and can trigger more throttling.
+                raise
+            except Exception as exc:
+                last_error = exc
+                self.last_error = str(exc)
+                self.last_error_kind = "request_error"
+            if attempt < 2:
+                time.sleep(1.5 * (2 ** attempt))
+        raise RuntimeError(str(last_error or "خطای نامشخص OpenRouter"))

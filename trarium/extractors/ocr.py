@@ -1,53 +1,31 @@
-"""OCR extractor."""
-from pathlib import Path
-from trarium.extractors.base import ExtractedBook, BaseExtractor
+"""Optional PDF OCR extractor using the same engine layer as layout mode."""
+from __future__ import annotations
+
+import pymupdf
+from trarium.extractors.base import BaseExtractor, ExtractedBook
+from trarium.pdf_optimized import extract_ocr_blocks
 
 
 class OCRExtractor(BaseExtractor):
-    """PDF اسکن‌شده رو با OCR متن‌خوان می‌کنه."""
-
-    def __init__(self, ocr_lang: str = "fas+eng"):
+    def __init__(self, ocr_lang: str = "eng", ocr_method: str = "auto"):
         self.ocr_lang = ocr_lang
+        self.ocr_method = ocr_method
 
     def extract(self, file_path: str) -> ExtractedBook:
+        path = self.validate_file(file_path)
+        doc = pymupdf.open(str(path))
+        chapters = []
+        parts = []
         try:
-            import pytesseract
-            from PIL import Image
-            import pymupdf
-        except ImportError:
-            raise ImportError("پکیج‌های لازم نصب نیستن: pip install pytesseract Pillow pymupdf")
-
-        doc = pymupdf.open(file_path)
-        try:
-            chapters = []
-            lang = self.ocr_lang
-
-            for i, page in enumerate(doc):
-                # فقط صفحاتی که متن قابل استخراج ندارند OCR می‌شوند.
-                text = page.get_text("text").strip()
-
-                if not text:
-                    pix = page.get_pixmap(dpi=300)
-                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                    try:
-                        text = pytesseract.image_to_string(img, lang=lang, config="--psm 3")
-                    finally:
-                        img.close()
-
-                if text.strip():
-                    chapters.append({
-                        "title": f"صفحه {i + 1}",
-                        "content": text.strip(),
-                    })
-
-            title = Path(file_path).stem
-            full_text = "\n\n".join(ch["content"] for ch in chapters)
-            return ExtractedBook(
-                title=title,
-                author="ناشناس",
-                chapters=chapters,
-                full_text=full_text,
-                total_chars=len(full_text),
-            )
+            title = (doc.metadata or {}).get("title") or path.stem
+            author = (doc.metadata or {}).get("author") or "ناشناس"
+            for idx, page in enumerate(doc):
+                blocks = extract_ocr_blocks(page, lang=self.ocr_lang, ocr_method=self.ocr_method)
+                text = "\n".join(b["text"] for b in blocks).strip()
+                if text:
+                    chapters.append({"title": f"صفحه {idx + 1}", "content": text})
+                    parts.append(text)
         finally:
             doc.close()
+        full = "\n\n".join(parts)
+        return ExtractedBook(title=title, author=author, chapters=chapters, full_text=full, total_chars=len(full))

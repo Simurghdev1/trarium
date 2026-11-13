@@ -1,157 +1,421 @@
-"""ترجمه بهینه — کمترین توکن ممکن."""
+"""PDF translation with optional OCR, resilient batching and layout preservation."""
+from __future__ import annotations
 
 import base64
-import io
 import json
 import os
 import re
 import time
-import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
+from typing import Callable
+from dataclasses import dataclass
+
+import requests
 from rich.console import Console
-from functools import lru_cache
 
 from trarium.utils import clean_translation as _clean_translation
 
 console = Console()
 
+ATTRIBUTION_TEXT = "ترجمه شده توسط تراریوم"
+
+@dataclass
+class PDFTranslationStats:
+    total_blocks: int = 0
+    translated_blocks: int = 0
+    failed_blocks: int = 0
+    write_failures: int = 0
+    pages_with_text: int = 0
+    pages_written: int = 0
+    source_chars: int = 0
+    translated_chars: int = 0
+    first_write_error: str = ""
+    first_translation_error: str = ""
+    cache_hits: int = 0
+    checkpoint_hits: int = 0
+    api_requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    protected_spans: int = 0
 _FONT_DIR = Path(__file__).parent / "fonts"
+if not _FONT_DIR.exists():
+    _FONT_DIR = Path(__file__).parent.parent / "trarium" / "fonts"
 _FONT_PATH = _FONT_DIR / "Sahel.ttf"
 
-_PADDLE_ENGINES = {}
-_SURYA_ENGINE = None
-
-# OCR Vision: تصویر صفحه با ۳۰۰dpi و PNG متنی معادل ده‌ها هزار توکن است.
-# تصویر کوچک‌تر و JPEG همان متن را خوانا نگه می‌دارد با کسری از توکن.
+# Vision OCR tokens scale with image pixels, not file size. A 300-dpi PNG of an
+# A4 page is ~8.7 MP; the same page at 180 dpi capped to 1700 px is ~2 MP, which
+# keeps every glyph readable at a fraction of the token cost.
 OCR_DPI = 180
 OCR_JPEG_QUALITY = 82
 OCR_MAX_SIDE = 1700
 
-_FONT_NAME = "Sahel"
-_RTL_TARGETS = {"fa", "ar", "he", "ur"}
-
-
-@lru_cache(maxsize=8)
-def _cached_tesseract_languages(tess_path: str):
-    import pytesseract
-    pytesseract.pytesseract.tesseract_cmd = tess_path
-    return frozenset(pytesseract.get_languages(config=""))
-
-def _get_paddle_engine(lang: str):
-    """Create/reuse PaddleOCR across both 2.x and 3.x APIs."""
-    import logging
-    import re as _re
-    import paddleocr as _paddleocr
-    from paddleocr import PaddleOCR
-
-    key = lang
-    engine = _PADDLE_ENGINES.get(key)
-    if engine is not None:
-        return engine
-
-    version_text = getattr(_paddleocr, "__version__", "3.0")
-    m = _re.match(r"(\d+)\.(\d+)", str(version_text))
-    version = (int(m.group(1)), int(m.group(2))) if m else (3, 0)
-
-    if version < (3, 0):
-        # PaddleOCR 2.x.
-        kwargs = {"lang": key, "use_angle_cls": True, "show_log": False}
-    else:
-        # PaddleOCR 3.x removed show_log/use_angle_cls. Disable expensive
-        # document preprocessing because Trarium already renders clean pages.
-        kwargs = {
-            "lang": key,
-            "use_doc_orientation_classify": False,
-            "use_doc_unwarping": False,
-            "use_textline_orientation": True,
-        }
-
-    logging.getLogger("paddleocr").setLevel(logging.ERROR)
-    engine = PaddleOCR(**kwargs)
-    _PADDLE_ENGINES[key] = engine
-    return engine
-
-def _get_surya_engine():
-    global _SURYA_ENGINE
-    if _SURYA_ENGINE is None:
-        from surya.inference import SuryaInferenceManager
-        from surya.recognition import RecognitionPredictor
-        manager = SuryaInferenceManager()
-        _SURYA_ENGINE = RecognitionPredictor(manager)
-    return _SURYA_ENGINE
-
-
-
-
-def _is_tesseract_installed():
-    from trarium.install_tesseract import _find_tesseract
-    return _find_tesseract() is not None
-
-
-def _has_easyocr():
-    """بررسی نصب بودن EasyOCR."""
-    try:
-        import easyocr
-        return True
-    except ImportError:
-        return False
-def _has_paddleocr():
-    """بررسی نصب بودن PaddleOCR."""
-    try:
-        import paddleocr
-        return True
-    except ImportError:
-        return False
-
-def _has_surya():
-    """بررسی نصب بودن Surya OCR."""
-    try:
-        import surya
-        return True
-    except ImportError:
-        return False
-
-def _preprocess_image(image):
-    """بهبود کیفیت تصویر قبل از OCR — افزایش کنتراست + حذف نویز."""
-    try:
-        import cv2
-        import numpy as np
-        from PIL import Image
-
-        if image.mode != "L":
-            gray = image.convert("L")
-        else:
-            gray = image
-
-        img_array = np.array(gray)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(img_array)
-        denoised = cv2.fastNlMeansDenoising(enhanced, h=10)
-        _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return Image.fromarray(binary)
-    except ImportError:
-        return image
-    except Exception:
-        return image
-
-
-
-# ── OpenRouter Vision OCR ──────────────────────────────────
+_PADDLE_ENGINES: dict[str, object] = {}
+_SURYA_ENGINE = None
 
 OPENROUTER_VISION_MODELS = {
-    "Auto (پیشنهادی)": "google/gemini-2.5-flash",
-    "Nemotron Nano 12B VL (بهترین OCR)": "nvidia/nemotron-nano-12b-v2-vl:free",
-    "Gemma 3 27B (چندزبانه)": "google/gemma-3-27b-it:free",
+    "Auto (رایگان)": "openrouter/free",
+    "Nemotron Nano 12B 2 VL (OCR)": "nvidia/nemotron-nano-12b-v2-vl:free",
+    "Nemotron 3 Nano Omni (جدیدتر)": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
     "Mistral Small 3.1 24B": "mistralai/mistral-small-3.1-24b-instruct:free",
 }
 
 
-def _vision_image_data_url(page, dpi: int = OCR_DPI) -> str:
-    """تصویر صفحه برای OCR — JPEG کوچک با همان خوانایی، به‌جای PNG سنگین.
+def _has_paddleocr() -> bool:
+    try:
+        import paddleocr  # noqa: F401
+        return True
+    except Exception:
+        return False
 
-    کاهش حجم تصویر مستقیماً هزینهٔ توکن Vision را کم می‌کند؛ برای یک صفحهٔ
-    A4 این تغییر معمولاً بیش از ۸۰٪ صرفه‌جویی می‌دهد.
-    """
+
+def _has_surya() -> bool:
+    try:
+        import surya  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _has_easyocr() -> bool:
+    try:
+        import easyocr  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _is_tesseract_installed() -> bool:
+    try:
+        from trarium.install_tesseract import _find_tesseract
+        return _find_tesseract() is not None
+    except Exception:
+        return False
+
+
+def _get_paddle_engine(lang: str):
+    """Create/reuse PaddleOCR for both legacy 2.x and current 3.x APIs."""
+    import inspect
+    import logging
+    import paddleocr as paddle_pkg
+    from paddleocr import PaddleOCR
+
+    key = lang or "en"
+    if key in _PADDLE_ENGINES:
+        return _PADDLE_ENGINES[key]
+
+    logging.getLogger("paddleocr").setLevel(logging.ERROR)
+    version_text = str(getattr(paddle_pkg, "__version__", "3.0"))
+    match = re.match(r"(\d+)\.(\d+)", version_text)
+    version = (int(match.group(1)), int(match.group(2))) if match else (3, 0)
+
+    if version >= (3, 0):
+        # These are deliberately disabled for clean book pages to reduce CPU time.
+        engine = PaddleOCR(
+            lang=key,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        )
+    else:
+        kwargs = {"lang": key, "use_angle_cls": True}
+        # Do not pass show_log: it broke on newer PaddleOCR versions.
+        try:
+            params = inspect.signature(PaddleOCR).parameters
+            kwargs = {k: v for k, v in kwargs.items() if k in params}
+        except Exception:
+            pass
+        engine = PaddleOCR(**kwargs)
+
+    _PADDLE_ENGINES[key] = engine
+    return engine
+
+
+def _paddle_language(lang: str) -> str:
+    first = re.split(r"[+,]", lang or "eng")[0].strip().lower()
+    return {
+        "fas": "fa", "persian": "fa", "fa": "fa",
+        "ara": "ar", "arabic": "ar", "ar": "ar",
+        "eng": "en", "english": "en", "en": "en",
+        "jpn": "japan", "japanese": "japan", "ja": "japan",
+        "chi_sim": "ch", "ch": "ch",
+    }.get(first, first or "en")
+
+
+def _pixmap_to_rgb_numpy(page, dpi: int = 300):
+    import numpy as np
+
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    if pix.n == 1:
+        image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w)
+    else:
+        image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)[:, :, :3]
+    return image, pix
+
+
+def _normalize_box(box):
+    if hasattr(box, "tolist"):
+        box = box.tolist()
+    if not box:
+        return None
+    try:
+        if len(box) == 4 and not isinstance(box[0], (list, tuple)):
+            x0, y0, x1, y1 = map(float, box)
+            return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        if len(box) >= 4:
+            return [(float(p[0]), float(p[1])) for p in box[:4]]
+    except (TypeError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _blocks_from_paddle_result(result, scale: float) -> list[dict]:
+    blocks: list[dict] = []
+
+    def add(box, text, score):
+        text = str(text or "").strip()
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            return
+        points = _normalize_box(box)
+        if len(text) < 2 or score < 0.35 or not points:
+            return
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        x0, x1 = min(xs) / scale, max(xs) / scale
+        y0, y1 = min(ys) / scale, max(ys) / scale
+        if x1 <= x0 or y1 <= y0:
+            return
+        blocks.append({
+            "bbox": (x0, y0, x1, y1),
+            "text": text,
+            "font_size": max((y1 - y0) * 0.75, 8),
+            "score": score,
+        })
+
+    for item in result or []:
+        rec_texts = getattr(item, "rec_texts", None)
+        rec_scores = getattr(item, "rec_scores", None)
+        rec_boxes = getattr(item, "rec_boxes", None)
+        rec_polys = getattr(item, "rec_polys", None)
+        if isinstance(item, dict):
+            rec_texts = item.get("rec_texts", rec_texts)
+            rec_scores = item.get("rec_scores", rec_scores)
+            rec_boxes = item.get("rec_boxes", rec_boxes)
+            rec_polys = item.get("rec_polys", rec_polys)
+
+        if rec_texts is not None and rec_scores is not None and (rec_boxes is not None or rec_polys is not None):
+            boxes = rec_boxes if rec_boxes is not None else rec_polys
+            for box, text, score in zip(boxes, rec_texts, rec_scores):
+                add(box, text, score)
+            continue
+
+        # PaddleOCR 2.x result: [[[points], (text, score)], ...]
+        if isinstance(item, (list, tuple)):
+            for line in item:
+                try:
+                    box, pair = line
+                    text, score = pair
+                except (TypeError, ValueError):
+                    continue
+                add(box, text, score)
+
+    blocks.sort(key=lambda b: (round(b["bbox"][1] / 4) * 4, b["bbox"][0]))
+    return blocks
+
+
+def extract_ocr_blocks_paddleocr(page, lang: str = "eng") -> list[dict]:
+    """Run PaddleOCR locally and return blocks in PDF-point coordinates."""
+    if not _has_paddleocr():
+        raise RuntimeError("PaddleOCR نصب نیست. برای OCR اختیاری نصبش کنید.")
+
+    import paddleocr as paddle_pkg
+
+    image, _ = _pixmap_to_rgb_numpy(page, dpi=300)
+    engine = _get_paddle_engine(_paddle_language(lang))
+    scale = 300 / 72
+
+    version_text = str(getattr(paddle_pkg, "__version__", "3.0"))
+    match = re.match(r"(\d+)\.(\d+)", version_text)
+    version = (int(match.group(1)), int(match.group(2))) if match else (3, 0)
+
+    if version >= (3, 0) and hasattr(engine, "predict"):
+        result = engine.predict(image)
+    else:
+        result = engine.ocr(image, cls=True) if hasattr(engine, "ocr") else engine.predict(image)
+    return _blocks_from_paddle_result(result, scale)
+
+
+def extract_ocr_blocks_tesseract(page, lang: str = "eng") -> list[dict]:
+    from trarium.install_tesseract import _find_tesseract
+    tess_path = _find_tesseract()
+    if not tess_path:
+        raise RuntimeError("Tesseract پیدا نشد.")
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("برای Tesseract به pytesseract و Pillow نیاز است.") from exc
+
+    pix = page.get_pixmap(dpi=300, alpha=False)
+    image = Image.frombytes("RGB", (pix.w, pix.h), pix.samples)
+    try:
+        pytesseract.pytesseract.tesseract_cmd = tess_path
+        data = pytesseract.image_to_data(image, lang=lang, config="--psm 6", output_type=pytesseract.Output.DICT)
+    finally:
+        image.close()
+
+    scale = 300 / 72
+    lines: dict[tuple[int, int, int, int], dict] = {}
+    for i, word in enumerate(data.get("text", [])):
+        word = str(word or "").strip()
+        try:
+            conf = float(data["conf"][i])
+        except Exception:
+            conf = -1
+        if len(word) < 1 or conf < 45:
+            continue
+        key = (
+            int(data["block_num"][i]),
+            int(data["par_num"][i]),
+            int(data["line_num"][i]),
+            int(data["page_num"][i]),
+        )
+        x = int(data["left"][i]) / scale
+        y = int(data["top"][i]) / scale
+        w = int(data["width"][i]) / scale
+        h = int(data["height"][i]) / scale
+        item = lines.setdefault(key, {"words": [], "bbox": [x, y, x + w, y + h], "h": h})
+        item["words"].append(word)
+        item["bbox"] = [
+            min(item["bbox"][0], x), min(item["bbox"][1], y),
+            max(item["bbox"][2], x + w), max(item["bbox"][3], y + h),
+        ]
+        item["h"] = max(item["h"], h)
+
+    blocks = []
+    for item in lines.values():
+        text = " ".join(item["words"]).strip()
+        if len(text) < 2:
+            continue
+        x0, y0, x1, y1 = item["bbox"]
+        blocks.append({"bbox": (x0, y0, x1, y1), "text": text, "font_size": max(item["h"] * 0.75, 8)})
+    blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    return blocks
+
+
+def extract_ocr_blocks_easyocr(page, languages=None) -> list[dict]:
+    try:
+        import easyocr
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("EasyOCR نصب نیست.") from exc
+    languages = languages or ["en"]
+    import numpy as np
+
+    reader = easyocr.Reader(languages, gpu=False, verbose=False)
+    pix = page.get_pixmap(dpi=300, alpha=False)
+    # easyocr rejects PIL images ("Invalid input type"); it needs a numpy array,
+    # bytes or a path. Passing the PIL image made the whole engine unusable.
+    array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+    try:
+        results = reader.readtext(array, detail=1, paragraph=False)
+    finally:
+        array = None
+    scale = 300 / 72
+    blocks = []
+    for box, text, score in results:
+        if float(score) < 0.35 or not str(text).strip():
+            continue
+        pts = _normalize_box(box)
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        blocks.append({
+            "bbox": (min(xs) / scale, min(ys) / scale, max(xs) / scale, max(ys) / scale),
+            "text": str(text).strip(),
+            "font_size": max((max(ys) - min(ys)) / scale * 0.75, 8),
+            "score": float(score),
+        })
+    blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    return blocks
+
+
+def _get_surya_engine():
+    global _SURYA_ENGINE
+    if _SURYA_ENGINE is None:
+        from surya.foundation import FoundationPredictor
+        from surya.recognition import RecognitionPredictor
+        foundation = FoundationPredictor()
+        _SURYA_ENGINE = RecognitionPredictor(foundation)
+    return _SURYA_ENGINE
+
+
+def extract_ocr_blocks_surya(page, lang: str = "eng") -> list[dict]:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("Pillow نصب نیست.") from exc
+    try:
+        from surya.detection import DetectionPredictor
+    except ImportError:
+        DetectionPredictor = None
+
+    pix = page.get_pixmap(dpi=300, alpha=False)
+    image = Image.frombytes("RGB", (pix.w, pix.h), pix.samples)
+    try:
+        recognition = _get_surya_engine()
+        langs = []
+        for raw in re.split(r"[+,]", lang or "eng"):
+            raw = raw.strip().lower()
+            langs.append("fa" if raw in {"fas", "fa", "persian"} else "en" if raw in {"eng", "en", "english"} else raw)
+        langs = [x for x in langs if x] or ["en"]
+        # Surya API differs by release; keep this optional and fail clearly.
+        if DetectionPredictor is None:
+            predictions = recognition([image], [langs])
+        else:
+            detection = DetectionPredictor()
+            det = detection([image])
+            predictions = recognition([image], [langs], det)
+    finally:
+        image.close()
+
+    scale = 300 / 72
+    pred = predictions[0] if predictions else None
+    blocks = []
+    for line in getattr(pred, "text_lines", []) or []:
+        text = str(getattr(line, "text", "") or "").strip()
+        bbox = getattr(line, "bbox", None)
+        if len(text) < 2 or not bbox or len(bbox) != 4:
+            continue
+        x0, y0, x1, y1 = map(float, bbox)
+        blocks.append({
+            "bbox": (x0 / scale, y0 / scale, x1 / scale, y1 / scale),
+            "text": text,
+            "font_size": max((y1 - y0) / scale * 0.75, 8),
+        })
+    blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    return blocks
+
+
+def _vision_prompt(multi: bool = False, page_nums: list[int] | None = None) -> str:
+    if not multi:
+        return (
+            "Extract all readable text from this scanned book page. Return ONLY a JSON array. "
+            'Each item must be {"text":"...","bbox":[x0,y0,x1,y1]}. '
+            "bbox is normalized left,top,right,bottom from 0 to 1. Group text by paragraph/line, preserve reading order, and keep original language."
+        )
+    return (
+        f"Extract all readable text from these {len(page_nums or [])} scanned book pages. Return ONLY a JSON object. "
+        f"Use these exact page keys: {page_nums}. Each value is a JSON array of items with "
+        '{"text":"...","bbox":[x0,y0,x1,y1]}. '
+        "bbox is normalized left,top,right,bottom from 0 to 1. Preserve reading order and original language."
+    )
+
+
+def _vision_image_data_url(page, dpi: int = OCR_DPI) -> str:
+    """Render one page for vision OCR as a compact JPEG data URL."""
     import pymupdf
 
     pix = page.get_pixmap(dpi=dpi, alpha=False)
@@ -160,56 +424,50 @@ def _vision_image_data_url(page, dpi: int = OCR_DPI) -> str:
         zoom = (OCR_MAX_SIDE / longest) * (dpi / 72.0)
         pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
     try:
-        data = pix.tobytes("jpeg", jpg_quality=OCR_JPEG_QUALITY)
+        blob = pix.tobytes("jpeg", jpg_quality=OCR_JPEG_QUALITY)
         mime = "image/jpeg"
     except Exception:
-        data = pix.tobytes("png")
+        blob = pix.tobytes("png")
         mime = "image/png"
-    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+    return f"data:{mime};base64,{base64.b64encode(blob).decode()}"
 
 
-def _openrouter_vision_request(api_key: str, model_name: str, image_data_urls: list[str],
-                              prompt: str, num_pages: int = 1) -> str | None:
-    """درخواست OCR به OpenRouter Vision — برای تک‌صفحه یا چندصفحه‌ای."""
+def _openrouter_vision_request(api_key: str, model_name: str, image_data_urls: list[str], prompt: str, num_pages: int = 1) -> str:
+    from trarium.translators.openrouter_http import post_json
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/trarium",
-        "X-Title": "Trarium OCR",
+        "HTTP-Referer": "http://localhost:8501",
+        "X-OpenRouter-Title": "Trarium OCR",
     }
-
     content = [{"type": "text", "text": prompt}]
     for data_url in image_data_urls:
         content.append({"type": "image_url", "image_url": {"url": data_url}})
-
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": content}],
-        "temperature": 0.1,
-        # سقف خروجی متناسب با تعداد صفحه‌ها، ولی نه بی‌نهایت
+        "temperature": 0.0,
         "max_tokens": max(1024, min(8000, 1800 * max(1, num_pages))),
     }
+    response = post_json("https://openrouter.ai/api/v1/chat/completions", headers, payload, timeout=180)
+    data = response.data
+    choices = data.get("choices") if isinstance(data, dict) else None
+    choices = choices or []
+    if not choices:
+        raise RuntimeError("مدل Vision پاسخ خالی داد.")
+    text = choices[0].get("message", {}).get("content") if isinstance(choices[0], dict) else None
+    if not text:
+        raise RuntimeError("مدل Vision متن برنگرداند.")
+    return str(text).strip()
 
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers=headers, json=payload, timeout=180,
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"].strip()
 
-
-def _parse_vision_json(result_text: str):
-    """پاسخ JSON مدل Vision رو با تحمل markdown/prose اضافی parse می‌کنه."""
-    if not result_text or not result_text.strip():
-        return []
-    cleaned = result_text.strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+def _parse_vision_json(text: str):
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\s*```$", "", cleaned).strip()
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        # بعضی مدل‌ها یک جمله کوتاه قبل/بعد JSON می‌آورند. فقط خود اولین
-        # ساختار کامل JSON را استخراج می‌کنیم؛ متن داستان دست‌کاری نمی‌شود.
         starts = [i for i in (cleaned.find("["), cleaned.find("{")) if i >= 0]
         if not starts:
             raise
@@ -220,955 +478,711 @@ def _parse_vision_json(result_text: str):
         return json.loads(cleaned[start:end + 1])
 
 
-def _bbox_to_blocks(items: list[dict], pw: float, ph: float) -> list[dict]:
-    """آیتم‌های JSON Vision رو به بلاک‌های متنی با bbox تبدیل می‌کنه."""
+def _bbox_to_blocks(items, pw: float, ph: float) -> list[dict]:
     blocks = []
+    if not isinstance(items, list):
+        return blocks
     for item in items:
-        text = item.get("text", "").strip()
-        if not text:
+        if not isinstance(item, dict):
             continue
-        bbox_raw = item.get("bbox", [])
-        if len(bbox_raw) != 4:
+        text = str(item.get("text", "") or "").strip()
+        bbox = item.get("bbox")
+        if len(text) < 2 or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             continue
         try:
-            x0, y0, x1, y1 = map(float, bbox_raw)
+            x0, y0, x1, y1 = [max(0.0, min(1.0, float(v))) for v in bbox]
         except (TypeError, ValueError):
             continue
-        # The prompt requests normalized coordinates. For out-of-range model
-        # responses, treat them as normalized and clamp rather than scaling by
-        # an arbitrary maximum coordinate (which distorts aspect ratio).
-        x0, x1 = sorted((max(0.0, min(1.0, x0)), max(0.0, min(1.0, x1))))
-        y0, y1 = sorted((max(0.0, min(1.0, y0)), max(0.0, min(1.0, y1))))
+        x0, x1 = sorted((x0, x1))
+        y0, y1 = sorted((y0, y1))
         if x1 <= x0 or y1 <= y0:
             continue
         blocks.append({
             "bbox": (x0 * pw, y0 * ph, x1 * pw, y1 * ph),
             "text": text,
-            "font_size": max((y1 - y0) * ph * 0.25, 10),
+            "font_size": max((y1 - y0) * ph * 0.25, 8),
         })
+    blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
     return blocks
 
 
-def extract_ocr_blocks_openrouter(page, api_key: str = None,
-                                  model_name: str = None) -> list[dict]:
-    """OCR تک‌صفحه با OpenRouter Vision."""
+def extract_ocr_blocks_openrouter(page, api_key: str | None = None, model_name: str | None = None) -> list[dict]:
+    api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        api_key = os.environ.get("OPENROUTER_API_KEY")
+        raise RuntimeError("OpenRouter API Key برای Vision OCR وارد نشده است.")
+    model_name = model_name or "openrouter/free"
+    response = _openrouter_vision_request(api_key, model_name, [_vision_image_data_url(page)], _vision_prompt())
+    return _bbox_to_blocks(_parse_vision_json(response), page.rect.width, page.rect.height)
+
+
+def extract_ocr_blocks_batch_openrouter(pages: list[tuple[int, object]], api_key: str | None = None,
+                                       model_name: str | None = None, batch_size: int = 3) -> dict[int, list[dict]]:
+    api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        console.print("  ⚠️ OpenRouter Vision: API Key نیست!")
-        return []
-    if not model_name:
-        model_name = "openrouter/free"
+        raise RuntimeError("OpenRouter API Key برای Vision OCR وارد نشده است.")
+    model_name = model_name or "openrouter/free"
+    batch_size = max(1, min(int(batch_size), 6))
+    result: dict[int, list[dict]] = {}
 
-    try:
-        image_data_url = _vision_image_data_url(page)
-
-        prompt = (
-            "Extract ALL text from this scanned page image. Return a JSON array.\n"
-            'Each item: {"text": "...", "bbox": [x0, y0, x1, y1]}'
-            " where bbox uses normalized coords 0.0-1.0 (left, top, right, bottom).\n"
-            "Group text by visual paragraphs/lines. Keep original language.\n"
-            "Return ONLY the JSON array, no other text. No markdown fences."
-        )
-
-        result_text = _openrouter_vision_request(api_key, model_name, [image_data_url], prompt)
-        items = _parse_vision_json(result_text)
-        return _bbox_to_blocks(items, page.rect.width, page.rect.height)
-    except json.JSONDecodeError:
-        console.print("  ⚠️ OpenRouter Vision: JSON parsing failed")
-        return []
-    except Exception as e:
-        console.print(f"  ⚠️ OpenRouter Vision OCR: {e}")
-        return []
-
-
-def extract_ocr_blocks_batch_openrouter(pages: list, api_key: str = None,
-                                       model_name: str = None,
-                                       batch_size: int = 3,
-                                       dpi: int = OCR_DPI) -> dict[int, list[dict]]:
-    """OCR دسته‌ای — چند صفحه رو توی یه درخواست بفرسته (صرفه‌جویی توکن).
-    pages: لیست (page_num, page_object)
-    خروجی: dict[int, list[dict]] — بلاک‌های هر صفحه.
-    """
-    import base64
-
-    if not api_key:
-        api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        console.print("  ⚠️ OpenRouter Vision: API Key نیست!")
-        return {}
-    if not model_name:
-        model_name = "openrouter/free"
-
-    result = {}
-
-    for batch_start in range(0, len(pages), batch_size):
-        batch = pages[batch_start:batch_start + batch_size]
-        batch_nums = [p[0] for p in batch]
-
+    for start in range(0, len(pages), batch_size):
+        batch = pages[start:start + batch_size]
+        nums = [n for n, _ in batch]
+        images = [_vision_image_data_url(page) for _, page in batch]
         try:
-            image_data_urls = []
-            for _, page_obj in batch:
-                image_data_urls.append(_vision_image_data_url(page_obj, dpi))
-
+            response = _openrouter_vision_request(api_key, model_name, images, _vision_prompt(len(batch) > 1, nums), len(batch))
+            parsed = _parse_vision_json(response)
             if len(batch) == 1:
-                prompt = (
-                    "Extract ALL text from this scanned page image. Return a JSON array.\n"
-                    'Each item: {"text": "...", "bbox": [x0, y0, x1, y1]}'
-                    " where bbox uses normalized coords 0.0-1.0 (left, top, right, bottom).\n"
-                    "Group text by visual paragraphs/lines. Keep original language.\n"
-                    "Return ONLY the JSON array, no other text. No markdown fences."
-                )
+                result[nums[0]] = _bbox_to_blocks(parsed, batch[0][1].rect.width, batch[0][1].rect.height)
             else:
-                prompt = (
-                    f"Extract ALL text from these {len(batch)} scanned page images. "
-                    f"Return a JSON object using these exact page keys: {batch_nums}. "
-                    "Each key maps to that page\'s text blocks.\n"
-                    'Each block: {"text": "...", "bbox": [x0, y0, x1, y1]}'
-                    " where bbox uses normalized coords 0.0-1.0 (left, top, right, bottom).\n"
-                    "Group text by visual paragraphs/lines. Keep original language.\n"
-                    "Return ONLY the JSON object, no other text. No markdown fences."
-                )
-
-            result_text = _openrouter_vision_request(api_key, model_name, image_data_urls, prompt)
-            parsed = _parse_vision_json(result_text)
-
-            if len(batch) == 1:
-                page_obj = batch[0][1]
-                result[batch_nums[0]] = _bbox_to_blocks(
-                    parsed, page_obj.rect.width, page_obj.rect.height
-                )
-            else:
-                for i, page_num in enumerate(batch_nums):
-                    page_num = batch_nums[i]
-                    page_items = parsed.get(str(page_num), parsed.get(page_num))
-                    if page_items is None:
-                        page_items = parsed.get(str(i + 1), parsed.get(i + 1, []))
-                    page_obj = batch[i][1]
-                    result[page_num] = _bbox_to_blocks(
-                        page_items, page_obj.rect.width, page_obj.rect.height
-                    )
-
-        except Exception as e:
-            console.print(f"  ⚠️ OpenRouter Vision batch OCR: {e}")
-            for page_num in batch_nums:
-                result[page_num] = []
-
+                for i, num in enumerate(nums):
+                    items = parsed.get(str(num), []) if isinstance(parsed, dict) else []
+                    if not items and isinstance(parsed, dict):
+                        items = parsed.get(str(i + 1), [])
+                    result[num] = _bbox_to_blocks(items, batch[i][1].rect.width, batch[i][1].rect.height)
+        except Exception as exc:
+            console.print(f"  ⚠️ Vision OCR batch {nums}: {exc}")
+            for num in nums:
+                result[num] = []
     return result
 
 
-def _reshape(text: str) -> str:
-    """تبدیل فارسی/عربی به شکل صحیح."""
-    if not text:
-        return text
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        reshaped = arabic_reshaper.reshape(text)
-        return get_display(reshaped)
-    except ImportError:
-        # اگه arabic_reshaper نصب نبود، حداقل bidi رو اجرا کن
+def extract_ocr_blocks(page, lang: str = "eng", api_key: str | None = None,
+                       vision_model: str | None = None, ocr_method: str = "auto") -> list[dict]:
+    """OCR one page with an explicit engine or sensible auto fallback."""
+    methods = [ocr_method] if ocr_method != "auto" else ["paddleocr", "surya", "easyocr", "openrouter"]
+    for method in methods:
         try:
-            from bidi.algorithm import get_display
-            return get_display(text)
-        except ImportError:
-            return text
-    except Exception:
-        return text
-
-
-def extract_text_blocks(page):
-    """همه بلاک‌های متنی را استخراج می‌کند و اگر بخش قابل‌توجهی خراب باشد OCR را فعال می‌کند."""
-    import pymupdf
-    blocks = []
-    total_chars = 0
-    garbled_chars = 0
-    data = page.get_text("dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
-
-    for block in data.get("blocks", []):
-        if block.get("type", 0) != 0:
-            continue
-
-        bbox = block["bbox"]
-        text_parts = []
-        font_sizes = []
-
-        for line in block.get("lines", []):
-            line_text = ""
-            for span in line.get("spans", []):
-                line_text += span.get("text", "")
-                font_sizes.append(span.get("size", 12))
-            text_parts.append(line_text.strip())
-
-        full_text = " ".join(text_parts).strip()
-        if not full_text:
-            continue
-        total_chars += len(full_text)
-        if _is_garbled(full_text):
-            garbled_chars += len(full_text)
-            continue
-
-        avg_size = sum(font_sizes) / len(font_sizes) if font_sizes else 12
-        blocks.append({
-            "bbox": bbox,
-            "text": full_text,
-            "font_size": round(avg_size, 1),
-        })
-
-    # اگر حداقل 25٪ متن استخراج‌شده خراب است، کل صفحه را برای OCR علامت بزن.
-    if total_chars and garbled_chars / total_chars >= 0.25:
-        return []
-    return blocks
-
-
+            if method == "paddleocr" and _has_paddleocr():
+                blocks = extract_ocr_blocks_paddleocr(page, lang=lang)
+            elif method == "surya" and _has_surya():
+                blocks = extract_ocr_blocks_surya(page, lang=lang)
+            elif method == "easyocr" and _has_easyocr():
+                easy_langs = ["en"] if "fas" not in lang and "fa" not in lang else ["fa", "en"]
+                blocks = extract_ocr_blocks_easyocr(page, easy_langs)
+            elif method == "openrouter" and api_key:
+                blocks = extract_ocr_blocks_openrouter(page, api_key, vision_model)
+            elif method == "tesseract" and _is_tesseract_installed():
+                blocks = extract_ocr_blocks_tesseract(page, lang=lang)
+            else:
+                continue
+            if blocks:
+                return blocks
+        except Exception as exc:
+            console.print(f"  ⚠️ {method}: {exc}")
+    raise RuntimeError("OCR با روش انتخاب‌شده موفق نشد.")
 
 
 def _is_garbled(text: str) -> bool:
-    """تشخیص متن خراب/غیرقابل خواندن."""
-    if not text or len(text.strip()) < 3:
+    if not text or len(text.strip()) < 2:
         return True
-    # درصد کاراکترهای غیرعادی
-    total = len(text)
-    if total == 0:
-        return True
-    bad = sum(1 for c in text if c in r"!@#$%^&*()[]{}|\<>~`")
-    if bad / total > 0.3:
-        return True
-    # خطوط خیلی کوتاه متوالی
-    lines = text.strip().split("\n")
-    short_lines = sum(1 for l in lines if len(l.strip()) < 3)
-    if len(lines) > 3 and short_lines / len(lines) > 0.5:
-        return True
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) >= 12:
+        latin = sum(c.isascii() and c.isalpha() for c in letters)
+        arabic = sum("\u0600" <= c <= "\u06ff" for c in letters)
+        if (latin + arabic) / len(letters) < 0.65:
+            return True
     return False
 
-def extract_text_first(page):
-    """استخراج متن PyMuPDF؛ متن خیلی کوتاه یا مشکوک به خرابی را معتبر نمی‌داند."""
-    text = page.get_text("text").strip()
-    if len(text) > 50 and not _is_garbled(text):
-        return text
-    return None
 
-def _safe_float(value, default=-1.0):
+def _box_tuple(value) -> tuple[float, float, float, float]:
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-def extract_ocr_blocks_tesseract(page, lang="fas+eng"):
-    """OCR با Tesseract — بدون فایل موقت (BytesIO)."""
-    from trarium.install_tesseract import _find_tesseract
-
-    tess_path = _find_tesseract()
-    if not tess_path:
-        raise RuntimeError("Tesseract پیدا نشد!")
-
-    try:
-        import pytesseract
-        from PIL import Image
-    except ImportError as e:
-        raise RuntimeError(f"پکیج pytesseract نصب نیست!\npip install pytesseract Pillow\n\n{e}")
-
-    pytesseract.pytesseract.tesseract_cmd = tess_path
-
-    requested_langs = [part.strip() for part in lang.split("+") if part.strip()]
-    try:
-        installed_langs = set(_cached_tesseract_languages(str(tess_path)))
-    except Exception as e:
-        raise RuntimeError(f"نتوانستم زبان‌های Tesseract را بررسی کنم: {e}") from e
-    missing_langs = [name for name in requested_langs if name not in installed_langs]
-    if missing_langs:
-        raise RuntimeError(
-            "زبان‌های Tesseract نصب نیستند: " + ", ".join(missing_langs) +
-            ". زبان‌های نصب‌شده: " + ", ".join(sorted(installed_langs))
-        )
-
-    blocks = []
-    pix = page.get_pixmap(dpi=300)
-    scale = 300 / 72
-
-    # تبدیل pixmap به numpy array → PIL Image
-    img = Image.frombytes("RGB", (pix.w, pix.h), pix.samples)
-
-    data = pytesseract.image_to_data(
-        img, lang=lang,
-        output_type=pytesseract.Output.DICT,
-        config="--psm 3"
-    )
-    valid_words = [
-        (t.strip(), float(c)) for t, c in zip(data.get("text", []), data.get("conf", []))
-        if t and t.strip()
-        for c in [str(c)]
-        if _safe_float(c, -1.0) >= 0
-    ]
-    mean_conf = (sum(c for _, c in valid_words) / len(valid_words)) if valid_words else 0
-    if len(valid_words) < 4 or mean_conf < 52:
-        try:
-            enhanced = _preprocess_image(img)
-            retry = pytesseract.image_to_data(
-                enhanced, lang=lang, output_type=pytesseract.Output.DICT, config="--psm 6"
-            )
-            retry_words = [
-                (t.strip(), _safe_float(c, -1.0)) for t, c in zip(retry.get("text", []), retry.get("conf", []))
-                if t and t.strip() and _safe_float(c, -1.0) >= 0
-            ]
-            retry_conf = (sum(c for _, c in retry_words) / len(retry_words)) if retry_words else 0
-            if len(retry_words) > len(valid_words) or (retry_words and retry_conf > mean_conf + 5):
-                data = retry
-        except Exception:
-            pass
-    img.close()
-
-    current_line = {"words": [], "bbox": None, "block_num": None, "line_num": None}
-
-    for j in range(len(data["text"])):
-        word = data["text"][j].strip()
-        try:
-            conf = float(data["conf"][j])
-        except (TypeError, ValueError):
-            conf = -1.0
-
-        if not word or conf < 50:  # Increased from 15 to filter garbled text
-            continue
-
-        x = data["left"][j] / scale
-        y = data["top"][j] / scale
-        w = data["width"][j] / scale
-        h = data["height"][j] / scale
-        block_num = data["block_num"][j]
-        line_num = data["line_num"][j]
-
-        if (current_line["words"] and
-            (current_line.get("block_num") != block_num or
-             current_line.get("line_num") != line_num)):
-            text = " ".join(current_line["words"])
-            if len(text) >= 2:
-                blocks.append({
-                    "bbox": current_line["bbox"],
-                    "text": text,
-                    "font_size": max(h * 0.75, 10),
-                })
-            current_line = {"words": [], "bbox": None, "block_num": block_num, "line_num": line_num}
-
-        current_line["words"].append(word)
-        current_line["block_num"] = block_num
-        current_line["line_num"] = line_num
-
-        if current_line["bbox"] is None:
-            current_line["bbox"] = (x, y, x + w, y + h)
-        else:
-            bx0, by0, bx1, by1 = current_line["bbox"]
-            current_line["bbox"] = (min(bx0, x), min(by0, y), max(bx1, x + w), max(by1, y + h))
-
-    if current_line["words"]:
-        text = " ".join(current_line["words"])
-        if len(text) >= 2:
-            blocks.append({
-                "bbox": current_line["bbox"],
-                "text": text,
-                "font_size": max(h * 0.75, 10),
-            })
-
-    return blocks
-
-def extract_ocr_blocks_easyocr(page, languages=["fa", "en"]):
-    """EasyOCR — غیرفعال؛ برای فارسی از PaddleOCR/Tesseract استفاده می‌شود."""
-    console.print("  ⚠️ EasyOCR غیرفعال شد — از PaddleOCR استفاده کنید")
-    return []
-
-def extract_ocr_blocks_paddleocr(page, lang="fas+eng"):
-    """OCR با PaddleOCR؛ سازگار با PaddleOCR 2.x و 3.x."""
-    try:
-        from paddleocr import PaddleOCR
-    except ImportError as e:
-        raise RuntimeError(
-            "پکیج PaddleOCR نصب نیست!\n"
-            "pip install paddleocr paddlepaddle\n\n" + str(e)
-        )
-
-    pix = page.get_pixmap(dpi=300, alpha=False)
-    scale = 300 / 72
-
-    paddle_lang = lang.split("+")[0] if "+" in lang else lang
-    lang_map = {
-        "fas": "fa", "fa": "fa", "ara": "ar", "ar": "ar",
-        "eng": "en", "en": "en", "jpn": "japan", "ja": "japan",
-        "chi_sim": "ch", "ch": "ch",
-    }
-    paddle_lang = lang_map.get(paddle_lang, paddle_lang or "en")
-
-    ocr = _get_paddle_engine(paddle_lang)
-
-    import numpy as np
-    try:
-        import paddleocr as _paddleocr_pkg
-        _paddle_version = tuple(int(x) for x in re.match(r"(\d+)\.(\d+)", getattr(_paddleocr_pkg, "__version__", "0.0")).groups())
+        x0, y0, x1, y1 = [float(v) for v in value]
+        return x0, y0, x1, y1
     except Exception:
-        _paddle_version = (3, 0)
-    img_data = np.frombuffer(pix.samples, dtype=np.uint8)
-    if pix.n == 1:
-        img_data = img_data.reshape(pix.h, pix.w)
-    else:
-        img_data = img_data.reshape(pix.h, pix.w, pix.n)[:, :, :3]
-        # PyMuPDF gives RGB. PaddleOCR 2.x follows the OpenCV/BGR convention,
-        # while the modern pipeline accepts the RGB numpy image directly.
-        if _paddle_version < (3, 0):
-            img_data = img_data[:, :, ::-1]
+        return 0.0, 0.0, 0.0, 0.0
 
-    # PaddleOCR 2.x accepts ``cls=True``; 3.x removed that argument.
-    try:
-        import inspect
-        ocr_sig = inspect.signature(ocr.ocr)
-        ocr_params = ocr_sig.parameters
-    except (TypeError, ValueError):
-        ocr_params = {}
-    if "cls" in ocr_params:
-        result = ocr.ocr(img_data, cls=True)
-    else:
-        result = ocr.ocr(img_data)
-    blocks = []
 
-    def add_block(box, text, conf):
-        try:
-            conf = float(conf)
-        except (TypeError, ValueError):
-            return
-        text = str(text or "").strip()
-        if conf < 0.30 or len(text) < 2 or not box:
-            return
-        try:
-            x0 = min(float(pt[0]) for pt in box) / scale
-            y0 = min(float(pt[1]) for pt in box) / scale
-            x1 = max(float(pt[0]) for pt in box) / scale
-            y1 = max(float(pt[1]) for pt in box) / scale
-        except (TypeError, ValueError, IndexError):
-            return
+def _normalise_layout_blocks(blocks: list[dict], page_rect=None) -> list[dict]:
+    """Normalize OCR/native blocks and merge adjacent OCR lines into paragraph-sized blocks."""
+    normal = []
+    for b in blocks or []:
+        text = str(b.get("text", "") or "").strip()
+        if not text:
+            continue
+        box = _box_tuple(b.get("bbox", (0, 0, 0, 0)))
+        x0, y0, x1, y1 = box
         if x1 <= x0 or y1 <= y0:
-            return
-        blocks.append({
-            "bbox": (x0, y0, x1, y1),
-            "text": text,
-            "font_size": max((y1 - y0) * 0.75, 10),
-        })
-
-    # PaddleOCR 3.x returns OCRResult objects/dicts with rec_texts,
-    # rec_scores and rec_boxes/rec_polys.
-    for item in result or []:
-        rec_texts = getattr(item, "rec_texts", None)
-        if rec_texts is None and isinstance(item, dict):
-            rec_texts = item.get("rec_texts")
-        rec_scores = getattr(item, "rec_scores", None)
-        if rec_scores is None and isinstance(item, dict):
-            rec_scores = item.get("rec_scores")
-        rec_boxes = getattr(item, "rec_boxes", None)
-        if rec_boxes is None and isinstance(item, dict):
-            rec_boxes = item.get("rec_boxes")
-        rec_polys = getattr(item, "rec_polys", None)
-        if rec_polys is None and isinstance(item, dict):
-            rec_polys = item.get("rec_polys")
-
-        if rec_texts is not None and rec_scores is not None and (rec_boxes is not None or rec_polys is not None):
-            boxes = rec_boxes if rec_boxes is not None else rec_polys
-            for box, text, conf in zip(boxes, rec_texts, rec_scores):
-                if hasattr(box, "tolist"):
-                    box = box.tolist()
-                # rec_boxes are [x0,y0,x1,y1], normalize to 4-point format.
-                if len(box) == 4 and not isinstance(box[0], (list, tuple)):
-                    x0, y0, x1, y1 = box
-                    box = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-                add_block(box, text, conf)
             continue
+        item = dict(b)
+        item["bbox"] = box
+        item["text"] = text
+        item["font_size"] = float(b.get("font_size") or max(8.0, (y1-y0)*0.75))
+        normal.append(item)
+    if not normal:
+        return []
 
-        # PaddleOCR 2.x: [[[points], (text, score)], ...]
-        lines = item
-        if isinstance(lines, dict):
-            continue
-        for line in lines or []:
-            try:
-                box, pair = line
-                text, conf = pair
-            except (TypeError, ValueError):
-                continue
-            add_block(box, text, conf)
+    # Merge line-level OCR boxes into paragraphs. Native PDF blocks are usually already paragraphs,
+    # but the same helper is safe for both cases and dramatically reduces API calls for OCR PDFs.
+    heights = sorted(max(1.0, b["bbox"][3]-b["bbox"][1]) for b in normal)
+    median_h = heights[len(heights)//2] if heights else 12.0
+    max_gap = max(5.0, median_h * 1.65)
+    normal.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
 
-    # Reading order: top-to-bottom, then left-to-right, with a small y bucket
-    # so words on the same line do not jump around due to tiny bbox differences.
-    blocks.sort(key=lambda b: (round(b["bbox"][1] / 4) * 4, b["bbox"][0]))
-    return blocks
-
-def extract_ocr_blocks_surya(page, lang="fas+eng"):
-    """OCR با Surya 0.22.x؛ اختیاری و فقط در صورت نصب صحیح."""
-    try:
-        from surya.inference import SuryaInferenceManager
-        from surya.recognition import RecognitionPredictor
-    except ImportError as e:
-        raise RuntimeError(
-            "Surya OCR در این محیط قابل استفاده نیست. Python 3.10+ و نصب کامل "
-            "surya-ocr لازم است.\n\n" + str(e)
-        )
-
-    from PIL import Image
-
-    pix = page.get_pixmap(dpi=300, alpha=False)
-    img = Image.frombytes("RGB", (pix.w, pix.h), pix.samples)
-    recognition = _get_surya_engine()
-    langs = []
-    for raw in re.split(r"[+,]", lang or "eng"):
-        raw = raw.strip().lower()
-        if raw in {"fas", "fa", "persian"}:
-            langs.append("fa")
-        elif raw in {"eng", "en", "english"}:
-            langs.append("en")
-        elif raw:
-            langs.append(raw)
-    if not langs:
-        langs = ["en"]
-
-    predictions = recognition([img], [langs])
-    blocks = []
-    scale = 300 / 72
-    try:
-        pred = predictions[0] if predictions else None
-        for line in getattr(pred, "text_lines", []) or []:
-            text = str(getattr(line, "text", "") or "").strip()
-            bbox = getattr(line, "bbox", None)
-            if len(text) < 2 or not bbox or len(bbox) != 4:
-                continue
-            x0, y0, x1, y1 = map(float, bbox)
-            blocks.append({
-                "bbox": (x0 / scale, y0 / scale, x1 / scale, y1 / scale),
-                "text": text,
-                "font_size": max((y1 - y0) / scale * 0.75, 10),
-            })
-    finally:
-        img.close()
-    blocks.sort(key=lambda b: (round(b["bbox"][1] / 4) * 4, b["bbox"][0]))
-    return blocks
-
-def extract_ocr_blocks(page, lang="fas+eng", api_key=None, vision_model=None, ocr_method="auto"):
-    """OCR خودکار یا انتخابی — بر اساس ocr_method."""
-    tesseract_to_easyocr = {
-        "fas": ["fa", "en"], "fas+eng": ["fa", "en"],
-        "ara+eng": ["ar", "en"], "jpn": ["ja"],
-        "chi_sim": ["ch_sim"], "eng": ["en"],
-    }
-
-    def _try_tesseract():
-        if _is_tesseract_installed():
-            try:
-                return extract_ocr_blocks_tesseract(page, lang=lang)
-            except Exception as e:
-                console.print(f"  ⚠️ Tesseract: {e}")
-        return None
-
-    def _try_paddleocr():
-        if _has_paddleocr():
-            try:
-                return extract_ocr_blocks_paddleocr(page, lang=lang)
-            except Exception as e:
-                console.print(f"  ⚠️ PaddleOCR: {e}")
-        return None
-
-    def _try_surya():
-        if _has_surya():
-            try:
-                return extract_ocr_blocks_surya(page, lang=lang)
-            except Exception as e:
-                console.print(f"  ⚠️ Surya OCR: {e}")
-        return None
-
-    def _try_easyocr():
-        if _has_easyocr():
-            try:
-                easyocr_langs = tesseract_to_easyocr.get(lang, ["fa", "en"])
-                return extract_ocr_blocks_easyocr(page, languages=easyocr_langs)
-            except Exception as e:
-                console.print(f"  ⚠️ EasyOCR: {e}")
-        return None
-
-    def _try_vision():
-        if api_key:
-            try:
-                blocks = extract_ocr_blocks_openrouter(page, api_key=api_key, model_name=vision_model)
-                if blocks:
-                    return blocks
-            except Exception as e:
-                console.print(f"  ⚠️ OpenRouter Vision: {e}")
-        return None
-
-    # انتخاب روش OCR
-    if ocr_method == "tesseract":
-        result = _try_tesseract()
-        if result: return result
-    elif ocr_method == "paddleocr":
-        result = _try_paddleocr()
-        if result: return result
-    elif ocr_method == "surya":
-        result = _try_surya()
-        if result: return result
-    elif ocr_method == "easyocr":
-        result = _try_easyocr()
-        if result: return result
-    elif ocr_method == "openrouter":
-        result = _try_vision()
-        if result: return result
-    else:
-        # حالت خودکار: اولویت با PaddleOCR (دقیق‌ترین)
-        for try_fn in [_try_paddleocr, _try_surya, _try_tesseract, _try_vision]:
-            result = try_fn()
-            if result: return result
-
-    raise RuntimeError("OCR پیدا نشد! pip install paddleocr یا surya-ocr یا pytesseract")
-
-
-_MARKER_RE = re.compile(r"\[\s*BLOCK[\s_]*(\d+)\s*\]", re.IGNORECASE)
-
-
-def _sanitize_block_text(text: str) -> str:
-    """جلوگیری از این‌که تگ‌های BLOCK داخل خود متن، پارس پاسخ را خراب کنند."""
-    return _MARKER_RE.sub(lambda m: m.group(1), text or "")
-
-
-def _parse_marker_output(result: str, count: int) -> list[str]:
-    """پاسخ مدل را بر اساس تگ‌های BLOCK به لیست هم‌تراز تبدیل می‌کند."""
-    translated = [""] * count
-    if not result:
-        return translated
-
-    parts = re.split(r"\[\s*BLOCK[\s_]*(\d+)\s*\]\s*", result, flags=re.IGNORECASE)
-    found = False
-    for j in range(1, len(parts), 2):
-        try:
-            idx = int(parts[j])
-        except (ValueError, IndexError):
-            continue
-        content = parts[j + 1].strip() if j + 1 < len(parts) else ""
-        if 0 <= idx < count and content:
-            translated[idx] = content
-            found = True
-
-    # فقط اگر مدل هیچ تگی نداد، تقسیم پاراگرافی را امتحان کن
-    if not found and not _MARKER_RE.search(result):
-        paragraphs = [p.strip() for p in result.split("\n\n") if p.strip()]
-        for i in range(min(len(paragraphs), count)):
-            translated[i] = paragraphs[i]
-    return translated
-
-
-def _translate_with_markers(translator, texts, target_lang):
-    """ترجمهٔ بلاک‌های یک صفحه با حفظ دقیق ترتیب.
-
-    اگر بخشی از بلاک‌ها بدون ترجمه بمانند (مدل تگ‌ها را گم کند)، همان بلاک‌ها
-    تک‌به‌تک دوباره ترجمه می‌شوند تا نه متنی گم شود و نه ترجمه‌ای جابه‌جا شود.
-    """
-    if not texts:
-        return texts
-
-    safe_texts = [_sanitize_block_text(t) for t in texts]
-    entries = [f"[BLOCK_{i}]\n{text}" for i, text in enumerate(safe_texts)]
-    combined = "\n\n".join(entries)
-
-    try:
-        result = translator.translate(combined, target_lang) or ""
-    except Exception as e:
-        console.print(f"  ⚠️ خطا: {e}")
-        result = ""
-
-    translated = _parse_marker_output(result, len(texts))
-    missing = [i for i, value in enumerate(translated) if not value.strip()]
-    if missing:
-        console.print(f"  ⚠️ {len(missing)} بلاک بدون ترجمه — تلاش مجدد تک‌به‌تک")
-        for i in missing:
-            try:
-                single = translator.translate(safe_texts[i], target_lang) or ""
-                if single.strip():
-                    translated[i] = single
-            except Exception as e:
-                console.print(f"  ⚠️ بلاک {i}: {e}")
-
-    return [_clean_translation(value) for value in translated]
-
-
-def _write_persian_text(page, rect, text, fontsize, font_path, target_lang="fa"):
-    """نوشتن متن فارسی/عربی در مستطیل — متن باید دقیقاً داخل باشه."""
-    import pymupdf
-
-    if not text or not text.strip():
-        return False
-
-    rect_height = rect.y1 - rect.y0
-    rect_width = rect.x1 - rect.x0
-    if rect_height < 3 or rect_width < 5:
-        return False
-
-    text = text.strip()
-    if target_lang in _RTL_TARGETS:
-        # insert_textbox نه شکل‌دهی حروف را انجام می‌دهد و نه راست‌به‌چپ‌سازی؛
-        # متن باید پیش از نوشتن به ترتیب بصری تبدیل شود.
-        text = _reshape(text)
-    font_path = str(font_path if font_path else _FONT_PATH)
-
-    # محاسبه سایز مناسب — متن باید داخل مستطیل جا بشه
-    # حداکثر فونت = ارتفاع / (تعداد خطوط * ضریب)
-    lines = text.split("\n")
-    num_lines = max(len(lines), 1)
-
-    # سایز مناسب: طوری باشه که متن کامل داخل مستطیل جا بشه
-    ideal_fontsize = rect_height / (num_lines * 1.4)
-    # محدوده معقول
-    ideal_fontsize = min(ideal_fontsize, 18)
-    ideal_fontsize = max(ideal_fontsize, 7)
-    # از fontsize اصلی هم بزرگتر نشه
-    ideal_fontsize = min(ideal_fontsize, max(fontsize, 7))
-
-    candidate_sizes = []
-    for fs in [ideal_fontsize, ideal_fontsize * 0.8, ideal_fontsize * 0.6, 7, 6, 5, 4]:
-        fs = max(4.0, float(fs))
-        if not any(abs(fs - prev) < 0.01 for prev in candidate_sizes):
-            candidate_sizes.append(fs)
-
-    for fs in candidate_sizes:
-        try:
-            rc = page.insert_textbox(
-                pymupdf.Rect(
-                    rect.x0 + 2, rect.y0 + 1,
-                    rect.x1 - 2, rect.y1 - 1
-                ),
-                text,
-                fontname=_FONT_NAME,
-                fontfile=str(font_path),
-                fontsize=fs,
-                color=(0, 0, 0),
-                align=(pymupdf.TEXT_ALIGN_RIGHT if target_lang in {"fa", "ar"} else pymupdf.TEXT_ALIGN_LEFT),
-            )
-            if rc >= 0:
-                return True
-        except Exception:
-            continue
-
-    return False
-
-
-def translate_pdf_optimized(input_path: str, translator, target_lang: str = "fa",
-                             output_path: str = None, batch_size: int = 5,
-                             ocr_lang: str = "fas+eng",
-                             api_key: str = None,
-                             vision_model: str = None,
-                             skip_pages: set = None,
-                             precomputed_ocr: dict = None,
-                             progress_callback=None,
-                             on_empty_page=None) -> str:
-    """ترجمه PDF — هر صفحه ترجمه در همون صفحه."""
-    import pymupdf
-
-    if output_path is None:
-        p = Path(input_path)
-        output_path = str(p.parent / f"{p.stem}_translated{p.suffix}")
-    if skip_pages is None:
-        skip_pages = set()
-    if precomputed_ocr is None:
-        precomputed_ocr = {}
-
-    try:
-        if Path(input_path).resolve() == Path(output_path).resolve():
-            raise ValueError("مسیر خروجی نباید با فایل ورودی یکسان باشد")
-    except FileNotFoundError:
-        # resolve(strict=False) is normally fine; retain a readable error path
-        # if a custom filesystem behaves differently.
-        if os.path.abspath(str(input_path)) == os.path.abspath(str(output_path)):
-            raise ValueError("مسیر خروجی نباید با فایل ورودی یکسان باشد")
-
-    if not _FONT_PATH.exists():
-        console.print(f"  ⚠️ فونت: {_FONT_PATH}")
-
-    doc = pymupdf.open(input_path)
-    total_pages = len(doc)
-
-    # مرحله ۱: استخراج
-    all_blocks = []
-    ocr_count = 0
-    need_ocr = False
-    scanned_pages = []  # صفحات اسکن‌شده برای OCR دسته‌ای
-
-    for page_num in range(total_pages):
-        page = doc[page_num]
-        if page_num in skip_pages:
-            all_blocks.append([])
-            continue
-
-        blocks = extract_text_blocks(page)
-
-        if not blocks:
-            if on_empty_page:
-                try:
-                    user_choice = on_empty_page(page_num)
-                except Exception:
-                    user_choice = True
-            else:
-                user_choice = True
-
-            if not user_choice:
-                skip_pages.add(page_num)
-                all_blocks.append([])
-                continue
-
-            # صفحه اسکن‌شده — برای OCR دسته‌ای جمع کن
-            scanned_pages.append((page_num, page))
-            all_blocks.append(None)  # موقت
-            continue
-
-        all_blocks.append(blocks)
-
-        if progress_callback and (page_num % 10 == 0 or page_num == total_pages - 1):
-            pct = (page_num + 1) / total_pages
-            progress_callback(pct, f"📄 تحلیل صفحه {page_num + 1}/{total_pages}...")
-
-    # OCR برای صفحات اسکن‌شده
-    if scanned_pages:
-        if precomputed_ocr:
-            # استفاده از نتایج OCR از پیش‌انجام‌شده
-            console.print(f"  🔍 استفاده از نتایج OCR از پیش‌انجام‌شده...")
-            for page_num, _ in scanned_pages:
-                blocks = precomputed_ocr.get(page_num, [])
-                all_blocks[page_num] = blocks
-                if blocks:
-                    ocr_count += 1
-                else:
-                    skip_pages.add(page_num)
-        elif _has_easyocr() or _has_paddleocr() or _has_surya() or _is_tesseract_installed():
-            # OCR محلی — تکی
-            ocr_engine = "EasyOCR" if _has_easyocr() else "Tesseract"
-            console.print(f"  🔍 OCR فعال شد ({ocr_engine})")
-
-            for page_num, page_obj in scanned_pages:
-                try:
-                    blocks = extract_ocr_blocks(page_obj, lang=ocr_lang, api_key=api_key, vision_model=vision_model)
-                    all_blocks[page_num] = blocks
-                    if blocks:
-                        ocr_count += 1
-                    else:
-                        skip_pages.add(page_num)
-                except Exception as e:
-                    console.print(f"  ⚠️ OCR صفحه {page_num + 1}: {e}")
-                    skip_pages.add(page_num)
-                    all_blocks[page_num] = []
+    merged=[]
+    for item in normal:
+        x0,y0,x1,y1=item["bbox"]
+        if not merged:
+            merged.append(item); continue
+        prev=merged[-1]
+        px0,py0,px1,py1=prev["bbox"]
+        gap=y0-py1
+        overlap=max(0.0, min(x1,px1)-max(x0,px0))
+        min_width=max(1.0,min(x1-x0,px1-px0))
+        horizontal_overlap=overlap/min_width
+        same_column = horizontal_overlap >= 0.20 or abs(x0-px0) <= max(18.0, median_h*2.5)
+        # Avoid swallowing titles / footers separated by a large vertical gap.
+        if 0 <= gap <= max_gap and same_column:
+            prev["text"] = (prev["text"] + " " + item["text"]).strip()
+            prev["bbox"] = (min(px0,x0), min(py0,y0), max(px1,x1), max(py1,y1))
+            prev["font_size"] = (prev.get("font_size", 11.0) + item.get("font_size", 11.0))/2
         else:
-            # OpenRouter Vision — دسته‌ای (صرفه‌جویی توکن)
-            console.print(f"  🔍 OCR Vision دسته‌ای ({len(scanned_pages)} صفحه)...")
-            ocr_results = extract_ocr_blocks_batch_openrouter(
-                scanned_pages, api_key=api_key, model_name=vision_model, batch_size=batch_size
-            )
-            for page_num, _ in scanned_pages:
-                blocks = ocr_results.get(page_num, [])
-                all_blocks[page_num] = blocks
-                if blocks:
-                    ocr_count += 1
-                else:
-                    skip_pages.add(page_num)
+            merged.append(item)
+    return merged
 
-    total_blocks = sum(len(b) for b in all_blocks)
-    console.print(f"  📊 {total_blocks} بلاک | {ocr_count} OCR | {len(skip_pages)} رد شد")
 
-    if total_blocks == 0 and not skip_pages:
-        doc.close()
-        raise ValueError("متنی پیدا نشد!")
-
-    # مرحله ۲: ترجمه
-    console.print("  📝 ترجمه...")
-    all_translated = {}
-
-    for page_num in range(total_pages):
-        if page_num in skip_pages:
+def _word_blocks_fallback(page) -> list[dict]:
+    """Fallback extractor for OCR text layers whose dict blocks are absent/oddly encoded."""
+    words = page.get_text("words") or []
+    if not words:
+        return []
+    grouped = {}
+    for w in words:
+        if len(w) < 7:
             continue
-        blocks = all_blocks[page_num]
-        if not blocks:
+        x0,y0,x1,y1,text,block_no,line_no,*rest = w
+        text=str(text or "").strip()
+        if not text:
             continue
+        key=(int(block_no), int(line_no))
+        grouped.setdefault(key, []).append((float(x0),float(y0),float(x1),float(y1),text))
+    lines=[]
+    for items in grouped.values():
+        items.sort(key=lambda x:x[0])
+        lines.append({
+            "bbox":(min(x[0] for x in items),min(x[1] for x in items),max(x[2] for x in items),max(x[3] for x in items)),
+            "text":" ".join(x[4] for x in items).strip(),
+            "font_size":max(8.0, max(x[3]-x[1] for x in items)*0.75),
+        })
+    return _normalise_layout_blocks(lines, page.rect)
 
-        texts = [b["text"] for b in blocks]
+
+def extract_text_blocks(page, strict: bool = False) -> list[dict]:
+    """Extract native/OCR text-layer blocks. Falls back to words for OCR-generated PDFs."""
+    import pymupdf
+    data = page.get_text("dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
+    blocks=[]
+    for block in data.get("blocks", []):
+        if block.get("type", 0) != 0:
+            continue
+        text_parts=[]; sizes=[]
+        for line in block.get("lines", []):
+            parts=[]
+            for span in line.get("spans", []):
+                value=str(span.get("text", "") or "")
+                if value:
+                    parts.append(value)
+                try: sizes.append(float(span.get("size",12)))
+                except Exception: pass
+            line_text="".join(parts).strip()
+            if line_text: text_parts.append(line_text)
+        text=" ".join(text_parts).strip()
+        if not text: continue
+        if strict and _is_garbled(text): continue
+        blocks.append({
+            "bbox": tuple(block.get("bbox", (0,0,0,0))),
+            "text": text,
+            "font_size": sum(sizes)/len(sizes) if sizes else 12,
+        })
+    if blocks:
+        # Native blocks are generally paragraph-level; do not aggressively merge named blocks.
+        blocks.sort(key=lambda b:(b["bbox"][1],b["bbox"][0]))
+        return blocks
+    return _word_blocks_fallback(page)
+
+def _reshape(text: str) -> str:
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(text))
+    except Exception:
         try:
-            translated = _translate_with_markers(translator, texts, target_lang)
-        except Exception as e:
-            raise RuntimeError(f"ترجمه صفحه {page_num + 1} شکست خورد: {e}") from e
-        if len(translated) != len(texts):
-            raise RuntimeError(
-                f"تعداد ترجمه‌های صفحه {page_num + 1} با تعداد بلاک‌ها برابر نیست "
-                f"({len(translated)} در برابر {len(texts)})."
-            )
-        empty_indexes = [i for i, value in enumerate(translated) if not value or not value.strip()]
-        if empty_indexes:
-            # یک بلاک خالی نباید کل کتاب را متوقف کند؛ متن اصلی همان بلاک
-            # حفظ می‌شود تا محتوا گم نشود و ترتیب بلاک‌ها جابه‌جا نشود.
-            for i in empty_indexes:
-                translated[i] = texts[i]
-            console.print(
-                f"  ⚠️ صفحه {page_num + 1}: {len(empty_indexes)} بلاک ترجمه نشد؛ "
-                "متن اصلی آن بلاک حفظ شد"
-            )
-        all_translated[page_num] = translated
+            from bidi.algorithm import get_display
+            return get_display(text)
+        except Exception:
+            return text
 
-        if progress_callback:
-            pct = (page_num + 1) / total_pages
-            progress_callback(pct, f"📝 ترجمه صفحه {page_num + 1}/{total_pages} ({len(texts)} بلاک)...")
 
-        # محدودیت سرعت باید توسط خود Translator/Pipeline مدیریت شود؛ اینجا delay ثابت نداریم.
+def _expand_rect(rect, page_rect, text: str, original_size: float) -> object:
+    import pymupdf
+    r=pymupdf.Rect(rect)
+    # OCR often reports the height of a single source line; translated Persian can need 2-4 lines.
+    extra_h=max(6.0, min(page_rect.height*0.08, len(text.split())*0.22 + r.height*0.55))
+    xpad=min(8.0, max(2.0, r.width*0.025))
+    candidate=pymupdf.Rect(max(page_rect.x0+2,r.x0-xpad), max(page_rect.y0+1,r.y0-extra_h*0.12),
+                           min(page_rect.x1-2,r.x1+xpad), min(page_rect.y1-1,r.y1+extra_h))
+    return candidate
 
-    # مرحله ۳: نوشتن ترجمه روی صفحات
-    # روش: redact متن اصلی + نوشتن ترجمه در همان موقعیت
-    console.print("  🎨 ساخت PDF...")
-    written_count = 0
 
-    for page_num in range(total_pages):
-        if page_num in skip_pages:
-            continue
-        blocks = all_blocks[page_num]
-        page_results = all_translated.get(page_num, [])
-        if not blocks or not page_results:
-            continue
+def _htmlbox_css(font_size: float, target_lang: str) -> str:
+    rtl=target_lang in {"fa","ar","he","ur"}
+    align="right" if rtl else "left"
+    direction="rtl" if rtl else "ltr"
+    return (f"@font-face{{font-family:Sahel;src:url('Sahel.ttf');}} *{{font-family:Sahel;"
+            f"font-size:{font_size:.2f}pt;line-height:1.18;}} body{{margin:0;padding:0;"
+            f"direction:{direction};text-align:{align};white-space:normal;}}")
 
-        page = doc[page_num]
 
-        # اول: علامت‌گذاری همه بلاک‌ها برای redact
-        for block in blocks:
-            bbox = block["bbox"]
-            # اضافه کردن کمی حاشیه برای پوشش کامل
-            rect = pymupdf.Rect(bbox)
-            rect.y0 -= 1
-            rect.y1 += 1
-            # fill=None: هیچ مستطیل سفیدی روی صفحه یا عکس کشیده نمیشود
-            page.add_redact_annot(rect, fill=None)
+def _preflight_htmlbox(rect, text: str, fontsize: float, target_lang: str, page_rect) -> tuple[bool,float]:
+    """Dry-run insertion on an in-memory page so we never redact source text before knowing the translation fits."""
+    import pymupdf, html as html_mod
+    tmp=pymupdf.open()
+    try:
+        pg=tmp.new_page(width=page_rect.width,height=page_rect.height)
+        arch=pymupdf.Archive(str(_FONT_DIR))
+        for scale_low in (0.45,0.30,0.20):
+            spare,scale=pg.insert_htmlbox(rect, f"<body>{html_mod.escape(text).replace(chr(10),'<br>')}</body>",
+                                          css=_htmlbox_css(fontsize,target_lang), archive=arch, scale_low=scale_low)
+            if spare >= 0:
+                return True,float(scale or 1.0)
+        return False,0.0
+    except Exception:
+        return False,0.0
+    finally:
+        tmp.close()
 
-        # اعمال redact — متن اصلی حذف میشه، عکس‌ها باقی میمونه
-        # فقط متن حذف میشود؛ تصاویر و خطوط گرافیکی صفحه دستنخورده میمانند
+
+def _write_text(page, rect, text, original_size: float, target_lang: str) -> tuple[bool,str]:
+    import pymupdf, html as html_mod
+    if not text or not text.strip():
+        return False,"متن ترجمه خالی است"
+    if not _FONT_PATH.exists():
+        return False,f"فونت Sahel پیدا نشد: {_FONT_PATH}"
+    page_rect=page.rect
+    inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
+    base_size=max(7.0,min(float(original_size or 11),18.0))
+    fits,_=_preflight_htmlbox(inset,text,base_size,target_lang,page_rect)
+    if not fits:
+        return False,"متن ترجمه داخل محدوده صفحه جا نشد"
+
+    # Redact only after the dry-run succeeded. This prevents the old bug where a failed write erased source text.
+    try:
+        # fill=None keeps the underlying page/illustration visible, and the flags
+        # stop PyMuPDF from rasterising or deleting images that intersect the box.
+        page.add_redact_annot(inset, fill=None)
         page.apply_redactions(
             images=pymupdf.PDF_REDACT_IMAGE_NONE,
             graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
         )
+        arch=pymupdf.Archive(str(_FONT_DIR))
+        html=f"<body>{html_mod.escape(text).replace(chr(10),'<br>')}</body>"
+        spare,scale=page.insert_htmlbox(inset,html,css=_htmlbox_css(base_size,target_lang),archive=arch,scale_low=0.20)
+        if spare < 0:
+            return False,"درج متن بعد از پاک‌سازی شکست خورد"
+        return True,""
+    except Exception as exc:
+        return False,str(exc)
 
-        # حالا: نوشتن ترجمه در موقعیت اصلی
-        for i, block in enumerate(blocks):
-            text = page_results[i] if i < len(page_results) else ""
-            if not text.strip():
+def _append_pdf_attribution_page(doc, target_lang: str = "fa") -> None:
+    import pymupdf
+    page = doc.new_page()
+    width, height = page.rect.width, page.rect.height
+    rect = pymupdf.Rect(50, height*0.40, width-50, height*0.60)
+    if _FONT_PATH.exists() and hasattr(page, "insert_htmlbox"):
+        archive = pymupdf.Archive(str(_FONT_DIR))
+        css = "@font-face{font-family:Sahel;src:url('Sahel.ttf')} body{font-family:Sahel;font-size:24pt;text-align:center;direction:rtl;color:#c20c0c;margin:0;}"
+        spare, scale = page.insert_htmlbox(rect, f"<body>{ATTRIBUTION_TEXT}</body>", css=css, archive=archive, scale_low=0.5)
+        if spare < 0:
+            raise RuntimeError("ساخت صفحهٔ انتساب ترجمه شکست خورد.")
+    else:
+        page.insert_textbox(rect, ATTRIBUTION_TEXT, fontsize=24, color=(0.78,0.03,0.03), align=pymupdf.TEXT_ALIGN_CENTER)
+
+
+def translate_pdf_optimized(
+    input_path: str,
+    translator,
+    target_lang: str = "fa",
+    output_path: str | None = None,
+    batch_size: int = 3,
+    ocr_lang: str = "eng",
+    api_key: str | None = None,
+    vision_model: str | None = None,
+    skip_pages: set[int] | None = None,
+    precomputed_ocr: dict[int, list[dict]] | None = None,
+    progress_callback: Callable | None = None,
+    on_empty_page: Callable | None = None,
+    enable_ocr: bool = False,
+    ocr_method: str = "auto",
+    translation_workers: int = 4,
+    translation_batch_chars: int = 14000,
+    return_stats: bool = False,
+    safe_optimization: bool = True,
+    protect_nontranslatable: bool = True,
+    adaptive_batch: bool = True,
+    use_checkpoint: bool = True,
+    use_cache: bool = True,
+) -> str | tuple[str, PDFTranslationStats]:
+    """Translate a PDF while preserving page positions; OCR is opt-in."""
+    import pymupdf
+
+    input_path = str(input_path)
+    if output_path is None:
+        p = Path(input_path)
+        output_path = str(p.with_name(f"{p.stem}_translated{p.suffix}"))
+    if os.path.abspath(input_path) == os.path.abspath(output_path):
+        raise ValueError("مسیر خروجی نباید با فایل ورودی یکسان باشد.")
+    skip_pages = set(skip_pages or set())
+    precomputed_ocr = precomputed_ocr or {}
+
+    doc = pymupdf.open(input_path)
+    try:
+        total_pages = len(doc)
+        all_blocks: list[list[dict]] = [[] for _ in range(total_pages)]
+        scanned_pages: list[tuple[int, object]] = []
+
+        # 1) Native text first. OCR only for pages that actually need it.
+        for page_num in range(total_pages):
+            if page_num in skip_pages:
+                continue
+            blocks = extract_text_blocks(doc[page_num])
+            if blocks:
+                all_blocks[page_num] = blocks
+            elif enable_ocr:
+                scanned_pages.append((page_num, doc[page_num]))
+            if progress_callback and (page_num + 1) % 10 == 0:
+                progress_callback((page_num + 1) / max(total_pages, 1) * 0.15, f"تحلیل صفحه {page_num + 1}/{total_pages}...")
+
+        if scanned_pages:
+            if precomputed_ocr:
+                for page_num, _ in scanned_pages:
+                    all_blocks[page_num] = _normalise_layout_blocks(list(precomputed_ocr.get(page_num, [])), doc[page_num].rect)
+            elif ocr_method == "openrouter":
+                ocr_map = extract_ocr_blocks_batch_openrouter(scanned_pages, api_key, vision_model, batch_size)
+                for page_num, _ in scanned_pages:
+                    all_blocks[page_num] = _normalise_layout_blocks(ocr_map.get(page_num, []), doc[page_num].rect)
+            else:
+                for i, (page_num, page) in enumerate(scanned_pages, 1):
+                    try:
+                        all_blocks[page_num] = _normalise_layout_blocks(extract_ocr_blocks(page, lang=ocr_lang, api_key=api_key, vision_model=vision_model, ocr_method=ocr_method), page.rect)
+                    except Exception as exc:
+                        console.print(f"  ⚠️ OCR صفحه {page_num + 1}: {exc}")
+                    if progress_callback:
+                        progress_callback(0.15 + 0.25 * i / max(len(scanned_pages), 1), f"OCR صفحه {page_num + 1}/{total_pages}...")
+
+        entries = []
+        for page_num, blocks in enumerate(all_blocks):
+            if page_num in skip_pages:
+                continue
+            for idx, block in enumerate(blocks):
+                text = str(block.get("text", "") or "").strip()
+                if safe_optimization:
+                    text = safe_normalize_text(text)
+                if text:
+                    entries.append((page_num, idx, text))
+
+        if not entries:
+            raise ValueError("هیچ متن قابل ترجمه‌ای پیدا نشد. OCR را فعال کنید یا PDF را با یک OCR خارجی پردازش کنید.")
+
+        stats = PDFTranslationStats(
+            total_blocks=len(entries),
+            pages_with_text=sum(bool(blocks) for blocks in all_blocks),
+        )
+
+        # 2) Translate in multi-page batches. Never abort the whole document for empty blocks.
+        translated, failures, first_translation_error, _tm_stats = _translate_blocks_resilient(
+            translator, entries, target_lang,
+            max_workers=max(1, int(translation_workers)),
+            max_chars=max(4000, int(translation_batch_chars)),
+            progress_callback=(lambda p, m: progress_callback(0.40 + p * 0.40, m)) if progress_callback else None,
+            return_stats=True, adaptive_batch=adaptive_batch,
+            use_cache=use_cache, use_checkpoint=use_checkpoint,
+            protect_nontranslatable=protect_nontranslatable,
+        )
+
+        # Make a per-page map. Failed blocks intentionally keep the original text.
+        page_outputs: dict[int, list[str]] = {}
+        for page_num, block_idx, source in entries:
+            page_outputs.setdefault(page_num, []).append(translated.get((page_num, block_idx), source))
+
+        # 3) Redact and replace only successfully translated blocks.
+        written = 0
+        failed_keys = {(p, i) for p, i, _ in failures}
+        stats.translated_blocks = sum(1 for p, i, source in entries if (p, i) in translated and translated[(p, i)].strip() and translated[(p, i)].strip() != source.strip() and (p, i) not in failed_keys)
+        stats.failed_blocks = len(failures)
+        stats.first_translation_error = first_translation_error
+        stats.cache_hits = _tm_stats.get("cache_hits", 0)
+        stats.checkpoint_hits = _tm_stats.get("checkpoint_hits", 0)
+        stats.api_requests = _tm_stats.get("api_requests", 0)
+        stats.input_tokens = _tm_stats.get("input_tokens", 0)
+        stats.output_tokens = _tm_stats.get("output_tokens", 0)
+        stats.protected_spans = _tm_stats.get("protected_spans", 0)
+        pages_written = set()
+        for page_num, blocks in enumerate(all_blocks):
+            if page_num in skip_pages or not blocks:
+                continue
+            page = doc[page_num]
+            to_replace = []
+            for idx, block in enumerate(blocks):
+                key = (page_num, idx)
+                out = translated.get(key)
+                if not out or key in failed_keys or out.strip() == str(block.get("text", "")).strip():
+                    continue
+                to_replace.append((idx, block, out))
+
+            if not to_replace:
                 continue
 
-            bbox = block["bbox"]
-            fontsize = block["font_size"]
-            rect = pymupdf.Rect(bbox)
+            for idx, block, out in to_replace:
+                ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang)
+                if ok:
+                    written += 1
+                    pages_written.add(page_num)
+                else:
+                    stats.write_failures += 1
+                    if not stats.first_write_error:
+                        stats.first_write_error = f"صفحه {page_num + 1}, بلاک {idx + 1}: {err}"
 
-            # تبدیل RTL داخل _write_persian_text انجام می‌شود (نه دو بار)
-            display_text = text
+            if progress_callback:
+                progress_callback(0.80 + 0.20 * (page_num + 1) / max(total_pages, 1), f"ساخت صفحه {page_num + 1}/{total_pages}...")
 
-            ok = _write_persian_text(page, rect, display_text, fontsize, _FONT_PATH, target_lang=target_lang)
-
-            if ok:
-                written_count += 1
-
-    console.print(f"  ✍️  {written_count}/{total_blocks} بلاک")
-
-    try:
-        doc.save(output_path)
-        console.print(f"  📄 ذخیره شد: [bold green]{output_path}[/]")
-        return output_path
-    except Exception as e:
-        console.print(f"  ❌ خطا در ذخیره: {e}")
-        return ""
+        stats.pages_written = len(pages_written)
+        stats.source_chars = sum(len(x[2]) for x in entries)
+        stats.translated_chars = sum(len(translated.get((x[0],x[1]), "")) for x in entries)
+        if written == 0:
+            reason = stats.first_translation_error or stats.first_write_error or "بررسی تنظیمات ترجمه و فونت را انجام دهید."
+            raise RuntimeError(f"هیچ ترجمه‌ای در PDF نوشته نشد. {stats.failed_blocks} بلاک ناموفق بود. علت: {reason}")
+        _append_pdf_attribution_page(doc, target_lang)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        doc.save(output_path, garbage=4, deflate=True, clean=True)
+        console.print(f"  ✍️ {written}/{len(entries)} بلاک نوشته شد؛ {len(failures)} بلاک ترجمه‌نشده؛ {stats.write_failures} خطای درج.")
+        return (output_path, stats) if return_stats else output_path
     finally:
         doc.close()
+
+# ---------------------------------------------------------------------------
+# Trarium 2.17 safe optimization layer (defined last to preserve compatibility
+# with older integrations that import the legacy helper names).
+# ---------------------------------------------------------------------------
+from trarium.cache import TranslationCache
+from trarium.checkpoint import CheckpointStore, stable_job_id
+from trarium.optimizer import safe_normalize_text
+from trarium.placeholders import protect as _protect_placeholders, restore as _restore_placeholders
+from trarium.utils import estimate_tokens, probably_already_in_persian, is_nontranslatable_token
+
+
+def _translation_chunks(entries: list[tuple[int, int, str]], max_chars: int = 14000, max_tokens: int | None = None):
+    """Token-aware packing at natural block boundaries; source text is never rewritten."""
+    limit_chars = max(2000, int(max_chars))
+    token_limit = max_tokens or max(256, int(limit_chars / 3))
+    batches, current = [], []
+    chars, tokens = 0, 0
+    for item in entries:
+        extra_chars = len(item[2]) + 24
+        extra_tokens = estimate_tokens(item[2]) + 8
+        if current and (chars + extra_chars > limit_chars or tokens + extra_tokens > token_limit):
+            batches.append(current)
+            current, chars, tokens = [], 0, 0
+        current.append(item)
+        chars += extra_chars
+        tokens += extra_tokens
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _parse_marked_translation(result: str, expected_count: int) -> dict[int, str]:
+    result = result or ""
+    marker_re = re.compile(r"\[TRARIUM_BLOCK_(\d+)\]", re.I)
+    matches = list(marker_re.finditer(result))
+    if not matches:
+        return {}
+    parsed = {}
+    for i, match in enumerate(matches):
+        idx = int(match.group(1))
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(result)
+        value = result[start:end].strip()
+        if 0 <= idx < expected_count and value:
+            parsed[idx] = _clean_translation(value)
+    return parsed
+
+
+def _translator_identity(translator):
+    provider = str(getattr(translator, "provider", "") or getattr(translator, "last_provider", "") or translator.__class__.__name__)
+    model = str(getattr(translator, "model", "") or getattr(translator, "model_name", ""))
+    return provider, model
+
+
+def _translate_marker_batch(translator, entries, target_lang, registry_prompt: str = "", protect_nontranslatable: bool = True):
+    prepared = []
+    mappings = []
+    for i, (_, _, text) in enumerate(entries):
+        p = _protect_placeholders(safe_normalize_text(text)) if protect_nontranslatable else type("P", (), {"text": safe_normalize_text(text), "mapping": {}})()
+        prepared.append(f"[TRARIUM_BLOCK_{i}]\n{p.text}")
+        mappings.append(p.mapping)
+    combined = "\n\n".join(prepared)
+    prompt = (
+        "Translate every marked block completely and faithfully. Output only translated blocks. "
+        "Keep [TRARIUM_BLOCK_n] markers exactly. Preserve every __TRARIUM_PH_####__ token exactly. "
+        "Do not summarize or omit text.\n"
+        + (registry_prompt + "\n" if registry_prompt else "")
+        + f"Target language: {target_lang}\n\n{combined}"
+    )
+    result = translator.translate(prompt, target_lang)
+    parsed = _parse_marked_translation(result, len(entries))
+    mapped = {}
+    for i, entry in enumerate(entries):
+        if i in parsed:
+            mapped[(entry[0], entry[1])] = _restore_placeholders(parsed[i], mappings[i])
+    return mapped
+
+
+def _valid_translation_output(value: str, source: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw or raw == str(source or "").strip():
+        return False
+    return not bool(re.search(r"TRARIUM_BLOCK_|Target language:|Translate this literary text|Output only the translation", raw, re.I))
+
+
+def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4, max_chars=14000,
+                                progress_callback=None, return_stats=False, adaptive_batch=True,
+                                use_cache=True, use_checkpoint=True, cache=None, checkpoint=None,
+                                registry=None, protect_nontranslatable=True):
+    """Batch + cache + checkpoint + placeholder translation with lossless recovery."""
+    provider, model = _translator_identity(translator)
+    cache = cache or TranslationCache()
+    checkpoint = checkpoint or CheckpointStore()
+    source_fingerprint = __import__("hashlib").sha256(
+        "\n".join(f"{p}:{i}:{safe_normalize_text(t)}" for p, i, t in entries).encode("utf-8")
+    ).hexdigest()
+    job_id = stable_job_id(source_fingerprint, target_lang, provider, model)
+    stats = {"cache_hits": 0, "checkpoint_hits": 0, "api_requests": 0, "input_tokens": 0, "output_tokens": 0, "protected_spans": 0}
+    done, pending = {}, []
+    checkpoint_values = checkpoint.load(job_id) if use_checkpoint else {}
+    duplicate_entries: dict[str, list[tuple[int,int,str]]] = {}
+
+    token_limit = max(256, int(max_chars / 3)) if adaptive_batch else max(256, int(max_chars / 2))
+    batches = _translation_chunks(entries, max_chars=max_chars, max_tokens=token_limit)
+
+    def resolve_reuse(entry):
+        p, i, text = entry
+        source = safe_normalize_text(text)
+        if ((target_lang == "fa" and probably_already_in_persian(source)) or is_nontranslatable_token(source)):
+            return source
+        if use_cache:
+            hit = cache.get(source, target_lang, provider, model)
+            if hit is not None and _valid_translation_output(hit, source):
+                stats["cache_hits"] += 1
+                return hit
+        unit_key = __import__("hashlib").sha256((f"{job_id}|{p}|{i}|{source}").encode("utf-8")).hexdigest()
+        if use_checkpoint:
+            hit = checkpoint_values.get(unit_key)
+            if hit is not None and _valid_translation_output(hit, source):
+                stats["checkpoint_hits"] += 1
+                return hit
+        stats["protected_spans"] += len(_protect_placeholders(source).mapping)
+        return None
+
+    remaining = []
+    seen_sources: dict[str, tuple[int,int,str]] = {}
+    for entry in entries:
+        reused = resolve_reuse(entry)
+        key = (entry[0], entry[1])
+        if reused is not None:
+            done[key] = reused
+            continue
+        source_key = safe_normalize_text(entry[2])
+        if source_key in seen_sources:
+            duplicate_entries.setdefault(source_key, []).append(entry)
+            continue
+        seen_sources[source_key] = entry
+        remaining.append(entry)
+
+    def save(entry, value):
+        p, i, text = entry
+        source = safe_normalize_text(text)
+        key = (p, i)
+        done[key] = value
+        if use_cache:
+            cache.put(source, value, target_lang, provider, model)
+        if use_checkpoint:
+            unit_key = __import__("hashlib").sha256((f"{job_id}|{p}|{i}|{source}").encode("utf-8")).hexdigest()
+            checkpoint.put(job_id, unit_key, value)
+        for dup in duplicate_entries.get(source, []):
+            dkey = (dup[0], dup[1])
+            done[dkey] = value
+            if use_checkpoint:
+                du = __import__("hashlib").sha256((f"{job_id}|{dup[0]}|{dup[1]}|{source}").encode("utf-8")).hexdigest()
+                checkpoint.put(job_id, du, value)
+
+    def batch_call(batch):
+        try:
+            glossary = registry.prompt("\n".join(t for _, _, t in batch), target_lang) if registry else ""
+            out = _translate_marker_batch(translator, batch, target_lang, glossary, protect_nontranslatable=protect_nontranslatable)
+            usage = getattr(translator, "last_usage", {}) or {}
+            stats["api_requests"] += 1
+            stats["input_tokens"] += int(usage.get("input_tokens") or estimate_tokens("\n\n".join(t for _, _, t in batch)))
+            stats["output_tokens"] += int(usage.get("output_tokens") or sum(estimate_tokens(v) for v in out.values()))
+            return batch, out, ""
+        except Exception as exc:
+            return batch, {}, str(exc)
+
+    first_error = ""
+    with ThreadPoolExecutor(max_workers=max(1, int(max_workers))) as pool:
+        futures = [pool.submit(batch_call, b) for b in _translation_chunks(remaining, max_chars=max_chars, max_tokens=token_limit)]
+        for future in as_completed(futures):
+            batch, out, err = future.result()
+            for entry in batch:
+                key = (entry[0], entry[1])
+                value = out.get(key)
+                if value and _valid_translation_output(value, entry[2]):
+                    save(entry, value)
+                else:
+                    pending.append(entry)
+            if err and not first_error:
+                first_error = err
+            if progress_callback:
+                progress_callback(len(done) / max(1, len(entries)), f"ترجمه {len(done)}/{len(entries)} بلاک...")
+
+    # Recovery: shrink aggressively. A provider/WAF/model can reject a large batch while accepting a single block.
+    def retry_one(entry):
+        p, i, text = entry
+        source = safe_normalize_text(text)
+        protected = _protect_placeholders(source) if protect_nontranslatable else type("P", (), {"text": source, "mapping": {}})()
+        prompt = (
+            "Translate this literary text completely and faithfully. Output only the translation. "
+            "Preserve __TRARIUM_PH_####__ tokens exactly. Do not summarize or omit.\n"
+            f"Target language: {target_lang}\n\n{protected.text}"
+        )
+        try:
+            out = translator.translate(prompt, target_lang)
+            usage = getattr(translator, "last_usage", {}) or {}
+            stats["api_requests"] += 1
+            stats["input_tokens"] += int(usage.get("input_tokens") or estimate_tokens(prompt))
+            stats["output_tokens"] += int(usage.get("output_tokens") or estimate_tokens(str(out)))
+            raw_out = str(out or "")
+            out = _restore_placeholders(_clean_translation(raw_out), protected.mapping)
+            looks_like_echo = bool(re.search(r"TRARIUM_BLOCK_|Target language:|Translate this literary text|Output only the translation", raw_out, re.I))
+            if not out.strip() or out.strip() == source.strip() or looks_like_echo:
+                return entry, None, "پاسخ خالی/تکراری یا echo پرامپت بود"
+            return entry, out, ""
+        except Exception as exc:
+            return entry, None, str(exc)
+
+    failures = []
+    if pending:
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(pending)))) as pool:
+            futures = [pool.submit(retry_one, e) for e in pending]
+            for future in as_completed(futures):
+                entry, value, err = future.result()
+                if value:
+                    save(entry, value)
+                else:
+                    failures.append(entry)
+                    if not first_error:
+                        first_error = err
+                if progress_callback:
+                    progress_callback(len(done) / max(1, len(entries)), f"بازیابی {len(done)}/{len(entries)} بلاک...")
+
+    if return_stats:
+        return done, failures, first_error, stats
+    return done, failures, first_error
