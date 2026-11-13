@@ -2,6 +2,8 @@
 
 [![Trarium QA](https://github.com/alimahamdarijanipro-stack/trarium-/actions/workflows/qa.yml/badge.svg?branch=qa%2Fv2.17.0-audit)](https://github.com/alimahamdarijanipro-stack/trarium-/actions/workflows/qa.yml)
 
+📦 **[خروجی‌های تست و اکشنز (Release)](https://github.com/alimahamdarijanipro-stack/trarium-/releases/tag/qa-2.17.0-2026-11-13)** — PDF گزارش، بستهٔ آرتیفکت و لاگ اجرا.
+
 📋 **[گزارش تست و ممیزی (QA_REPORT.md)](QA_REPORT.md)** — نتایج واقعی تست‌های واحد، مجموعهٔ QA، و گردش‌کار PDF با فایل‌های ورودی واقعی، عددهای اندازه‌گیری‌شده و تصویر صفحات.
 
 نسخهٔ جدید هستهٔ ترجمه با تمرکز روی حفظ متن، کاهش مصرف API و امکان ادامهٔ امن کار.

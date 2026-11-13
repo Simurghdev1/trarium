@@ -319,3 +319,13 @@ Failed tests: none in this module. Limitations that are *not* scored:
 
 - Translation quality: the provider is the local mock, so no metric is claimed.
 - OCR accuracy: same reason — marked N/A instead of invented.
+
+### خروجی‌های آماده برای دانلود
+
+| مورد | لینک |
+|---|---|
+| اجرای واقعی GitHub Actions | https://github.com/alimahamdarijanipro-stack/trarium-/actions/runs/43400846444 |
+| PDF گزارش تست‌ها (۱۰ صفحه) | https://github.com/alimahamdarijanipro-stack/trarium-/releases/download/qa-2.17.0-2026-11-13/Trarium_2.17.0_test_report.pdf |
+| بستهٔ آرتیفکت اکشنز (PDFهای ساخته‌شده + تصاویر صفحات + metrics.json) | https://github.com/alimahamdarijanipro-stack/trarium-/releases/download/qa-2.17.0-2026-11-13/trarium-pdf-workflow.zip |
+| لاگ کامل همان اجرا | https://github.com/alimahamdarijanipro-stack/trarium-/releases/download/qa-2.17.0-2026-11-13/pdf-qa.log |
+| صفحهٔ Release | https://github.com/alimahamdarijanipro-stack/trarium-/releases/tag/qa-2.17.0-2026-11-13 |
