@@ -5,3 +5,4 @@ qa/_tmp/
 qa/qa_results_*.json
 .env
 *.sqlite3
+qa/_pdf_out/

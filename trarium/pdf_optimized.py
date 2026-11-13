@@ -784,7 +784,13 @@ def _write_text(page, rect, text, original_size: float, target_lang: str) -> tup
 
 def _append_pdf_attribution_page(doc, target_lang: str = "fa") -> None:
     import pymupdf
-    page = doc.new_page()
+    # Match the document's own page size: a hard-coded A4 page next to Letter
+    # content printed with white margins and different paper.
+    if doc.page_count:
+        last = doc[-1].rect
+        page = doc.new_page(width=last.width, height=last.height)
+    else:
+        page = doc.new_page()
     width, height = page.rect.width, page.rect.height
     rect = pymupdf.Rect(50, height*0.40, width-50, height*0.60)
     if _FONT_PATH.exists() and hasattr(page, "insert_htmlbox"):

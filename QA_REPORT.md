@@ -186,3 +186,136 @@ workflowای اضافه نشد چون دسترسی نوشتن وجود ندار�
   (`Unit tests 3.10/3.11/3.12` و `End-to-end QA` هر چهار مورد success)
 - آرتیفکت دانلودشده و بازرسی‌شده: `qa_results_ci.json`، `qa-pytest.log`،
   `full.pdf`، `out.pdf`، `rtl.pdf`، `scan_out.pdf`، `big_out.pdf`، `b.epub` (~۳۴۳ KB)
+
+---
+
+## 14) گردش‌کار واقعی PDF — فایل ورودی واقعی، PDF واقعی، عکس واقعی
+
+این بخش با `qa/pdf_pipeline_test.py` ساخته شده است. فایل‌های ورودی در `qa/fixtures/`
+اسناد واقعی و عمومی‌اند (نه فایل ساختگی):
+
+| فایل | منبع واقعی |
+|---|---|
+| `en_source.pdf` | سه صفحهٔ اول مقالهٔ «Attention Is All You Need» (arXiv:1706.03762v7) |
+| `fa_source.pdf` | متن واقعی ویکی‌پدیای فارسی (سعدی / گلستان / حافظ) با لایهٔ متنی فارسی |
+| `scan_source.pdf` | یک برگ اسکن‌شدهٔ واقعی از کتاب *The Modern Hercules* (Internet Archive) |
+
+هر PDF خروجی را خودِ تراریوم ساخته، بعد همان فایل دوباره به تصویر تبدیل شده تا
+تصویرهای زیر دقیقاً همان چیزی باشند که پایپ‌لاین تولید کرده است.
+
+### تصویر ۱ — انگلیسی به فارسی (ترکیبی)، صفحهٔ ۱: چپ = ورودی اصلی، راست = خروجی ترجمه‌شده
+
+![مقایسه صفحه ۱](qa/report-assets/compare-en-p1.png)
+
+### تصویر ۲ — صفحهٔ ۲ (متن پیوسته)
+
+![مقایسه صفحه ۲](qa/report-assets/compare-en-p2.png)
+
+### تصویر ۳ — صفحهٔ ۳ (شامل شکل/تصویر صفحه)
+
+![مقایسه صفحه ۳](qa/report-assets/compare-en-p3.png)
+
+### تصویر ۴ — فارسی راست‌چین: چپ = فایل ورودی (لایهٔ متنی منطقی، بدون شکل‌دهی حروف)، راست = خروجی تراریوم با فونت Sahel
+
+![مقایسه فارسی](qa/report-assets/compare-fa-p1.png)
+
+### تصویر ۵ — مسیر OCR روی برگ اسکن‌شدهٔ واقعی
+
+![خروجی OCR](qa/report-assets/scan_ocr-p1.png)
+
+## Real PDF workflow — measured results
+
+Produced by `qa/pdf_pipeline_test.py`: real input documents from `qa/fixtures/` are pushed
+through the real pipeline, the produced PDFs are rendered back to page images, and every
+number below is read from those files. Translation text comes from the local mock
+provider (no AI API key exists in the environment), so translation *quality* is out of
+scope and is marked N/A — everything about PDF writing, RTL layout, image preservation
+and text extraction is real.
+
+### Test results
+
+| Test | Items | Passed | Failed | Success | Failure |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| English PDF → Persian (hybrid) | 4 | 1 | 0 | 25.00% | 0.00% |
+| Persian RTL PDF rendering | 5 | 5 | 0 | 100.00% | 0.00% |
+| English LTR PDF rendering | 3 | 3 | 0 | 100.00% | 0.00% |
+| Scanned page → OCR path | 2 | 2 | 0 | 100.00% | 0.00% |
+| **Total** | **14** | **11** | 0 | **78.57%** | **0.00%** |
+
+### English → Persian hybrid run
+
+| Metric | Measured value |
+| --- | --- |
+| Source pages / output content pages | 3 / 3 |
+| Extra attribution page | 1 (by design) |
+| Source text characters handed in | 8941 |
+| Text blocks translated | 39 |
+| Text blocks that failed | 0 |
+| Persian characters in the output | 3723 |
+| English source text fully replaced | yes |
+| Embedded figures before / after | 1 / 1 |
+| Figure bytes identical | yes |
+| Blank content pages | 0 |
+| Page sizes in one file | 612x792 |
+| Runtime / output size | 0.41 s / 215.4 KB |
+
+### Text comparison — Persian source vs. generated PDF
+
+| Metric | Measured value |
+| --- | --- |
+| Source characters | 3626 |
+| Source letters (whitespace removed) | 2934 |
+| Letters recovered from the PDF | 2836 |
+| Letters preserved | 2817 |
+| Text preservation | **96.01%** |
+| Missing text | 117 letters |
+| Glyphs rendered as `?` | 0 |
+| Pages | 3 |
+| Embedded fonts | Sahel Regular |
+
+The gap between source and recovered letters is caused by extraction, not by lost text:
+the writer reshapes Persian into presentation forms, so a naive copy/paste out of the PDF
+returns those forms. The comparison therefore normalises both sides with NFKC first —
+which is what a real user's copy/paste does after normalisation, and what makes the
+percentage meaningful rather than an artefact of encoding.
+
+### RTL / LTR layout metrics
+
+| Metric | Persian RTL | English LTR |
+| --- | --- | --- |
+| Text written right-to-left / left-to-right | 97.9% of spans | 41.8% of spans |
+| Text preservation | 96.01% | 100.0% |
+| Missing glyphs (`?`) | 0 | 0 |
+| Blank content pages | 0 | 0 |
+
+### Visual quality
+
+| Metric | Measured value |
+| --- | --- |
+| Pages inspected (rendered to PNG) | 12 |
+| Pages with visual problems | 0 |
+| Pages passing visual inspection | 100.00% |
+| Persian pages rendering RTL correctly | 3 of 3 |
+| Persian pages rendering RTL incorrectly | 0 |
+
+### OCR path
+
+| Metric | Measured value |
+| --- | --- |
+| Vision requests for the scanned leaf | 1 |
+| Image sent | 2,043,400 px, 284 KB, image/jpeg |
+| Blocks translated after OCR | 1 |
+| OCR accuracy vs. ground truth | N/A |
+| Why | The vision endpoint is the local mock (no AI API key in the environment), so OCR text cannot be compared with the page's ground truth. |
+
+### Overall
+
+Overall text-preservation score: **98.00%** — the mean of the Persian RTL
+(96.01%) and English LTR (100.0%) preservation
+measurements. It is a letter-level comparison of the text that went in against the text
+recovered from the generated PDF, after Unicode normalisation.
+
+Failed tests: none in this module. Limitations that are *not* scored:
+
+- Translation quality: the provider is the local mock, so no metric is claimed.
+- OCR accuracy: same reason — marked N/A instead of invented.

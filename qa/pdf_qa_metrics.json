@@ -1,0 +1,80 @@
+{
+  "en_to_fa": {
+    "source_pages": 3,
+    "output_pages": 4,
+    "output_content_pages": 3,
+    "attribution_page": true,
+    "output_page_sizes": [
+      "612x792"
+    ],
+    "source_text_chars": 8941,
+    "source_words": 1308,
+    "translated_blocks": 39,
+    "failed_blocks": 0,
+    "seconds": 0.41,
+    "output_kb": 215.4,
+    "persian_chars_in_output": 3723,
+    "source_text_removed": true,
+    "images_before": 1,
+    "images_after": 1,
+    "images_identical": true,
+    "api_requests": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "blank_pages": [],
+    "rendered_pages": 4
+  },
+  "fa_rtl": {
+    "source_chars": 3626,
+    "source_letters": 2934,
+    "output_letters": 2836,
+    "preserved_letters": 2817,
+    "preservation_pct": 96.01,
+    "pages": 3,
+    "fonts": [
+      "Sahel Regular"
+    ],
+    "sahel_embedded": true,
+    "question_marks": 0,
+    "presentation_forms_before_extraction": 0,
+    "right_aligned_pct": 97.9,
+    "blank_pages": [],
+    "attribution_page": true,
+    "ink_ratio_pct": [
+      18.67,
+      7.72,
+      0.39
+    ],
+    "bytes": 55100
+  },
+  "en_ltr": {
+    "source_chars": 2500,
+    "output_letters": 2153,
+    "preserved_letters": 2134,
+    "preservation_pct": 100.0,
+    "pages": 3,
+    "right_aligned_pct": 41.8,
+    "blank_pages": [],
+    "question_marks": 0
+  },
+  "scan_ocr": {
+    "pages": 2,
+    "vision_requests": 1,
+    "image_pixels": [
+      2043400
+    ],
+    "image_bytes": [
+      291143
+    ],
+    "image_mimes": [
+      "image/jpeg"
+    ],
+    "translated_blocks": 1,
+    "seconds": 0.4,
+    "output_kb": 596.7,
+    "persian_chars": 29,
+    "blank_pages": [],
+    "ocr_accuracy": "N/A",
+    "ocr_accuracy_reason": "The vision endpoint is the local mock (no AI API key in the environment), so OCR text cannot be compared with the page's ground truth."
+  }
+}
