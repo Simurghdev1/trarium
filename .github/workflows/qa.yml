@@ -38,6 +38,39 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  pdf-workflow:
+    name: Real PDF workflow (fixtures, screenshots)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest requests tiktoken
+      - name: Run the real PDF workflow
+        env:
+          TRARIUM_TARGET: ${{ github.workspace }}
+          PDF_QA_OUT: ${{ github.workspace }}/qa/_pdf_out
+        run: |
+          set -o pipefail
+          python -m pytest qa/pdf_pipeline_test.py -q -p no:cacheprovider 2>&1 | tee pdf-qa.log
+      - name: Build the metrics section
+        env:
+          PDF_QA_OUT: ${{ github.workspace }}/qa/_pdf_out
+        run: python qa/report_section.py | tee -a pdf-qa.log
+      - name: Upload PDFs, screenshots and metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trarium-pdf-workflow
+          path: |
+            qa/_pdf_out/**
+            pdf-qa.log
+          if-no-files-found: warn
+          retention-days: 30
+
   qa-suite:
     name: End-to-end QA (mock provider, no API key)
     runs-on: ubuntu-latest

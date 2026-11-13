@@ -313,13 +313,17 @@ def extract_ocr_blocks_easyocr(page, languages=None) -> list[dict]:
     except ImportError as exc:
         raise RuntimeError("EasyOCR نصب نیست.") from exc
     languages = languages or ["en"]
+    import numpy as np
+
     reader = easyocr.Reader(languages, gpu=False, verbose=False)
     pix = page.get_pixmap(dpi=300, alpha=False)
-    image = Image.frombytes("RGB", (pix.w, pix.h), pix.samples)
+    # easyocr rejects PIL images ("Invalid input type"); it needs a numpy array,
+    # bytes or a path. Passing the PIL image made the whole engine unusable.
+    array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
     try:
-        results = reader.readtext(image, detail=1, paragraph=False)
+        results = reader.readtext(array, detail=1, paragraph=False)
     finally:
-        image.close()
+        array = None
     scale = 300 / 72
     blocks = []
     for box, text, score in results:
@@ -780,7 +784,13 @@ def _write_text(page, rect, text, original_size: float, target_lang: str) -> tup
 
 def _append_pdf_attribution_page(doc, target_lang: str = "fa") -> None:
     import pymupdf
-    page = doc.new_page()
+    # Match the document's own page size: a hard-coded A4 page next to Letter
+    # content printed with white margins and different paper.
+    if doc.page_count:
+        last = doc[-1].rect
+        page = doc.new_page(width=last.width, height=last.height)
+    else:
+        page = doc.new_page()
     width, height = page.rect.width, page.rect.height
     rect = pymupdf.Rect(50, height*0.40, width-50, height*0.60)
     if _FONT_PATH.exists() and hasattr(page, "insert_htmlbox"):
