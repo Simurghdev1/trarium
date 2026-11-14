@@ -6,12 +6,14 @@ from trarium.utils import clean_translation as _clean_translation
 
 # Model ids verified against GET /v1beta/models with a real key; the previous
 # list named models that the API does not serve at all.
+# Only ids that actually answer with a real key: gemini-2.5-flash/lite returned
+# HTTP 404 for this key even though /v1beta/models lists them.
 GEMINI_MODELS = {
     "Gemini 3.5 Flash (رایگان)": "gemini-3.5-flash",
     "Gemini 3 Flash Preview (رایگان)": "gemini-3-flash-preview",
-    "Gemini 2.5 Flash (رایگان)": "gemini-2.5-flash",
-    "Gemini 2.5 Flash-Lite (رایگان)": "gemini-2.5-flash-lite",
+    "Gemini Flash Lite Latest (رایگان)": "gemini-flash-lite-latest",
     "Gemini Flash Latest (رایگان)": "gemini-flash-latest",
+    "Gemini 3.1 Flash Lite (رایگان)": "gemini-3.1-flash-lite",
     "Gemini 2.5 Pro (ممکن است هزینه داشته باشد)": "gemini-2.5-pro",
 }
 LANG_NAMES = {"fa":"فارسی","en":"English","ar":"العربية","tr":"Türkçe","zh":"中文","ja":"日本語","ko":"한국어","ru":"Русский"}
@@ -22,10 +24,9 @@ LANG_NAMES = {"fa":"فارسی","en":"English","ar":"العربية","tr":"Türk
 FREE_GEMINI_MODELS = {
     "gemini-3.5-flash",
     "gemini-3-flash-preview",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
     "gemini-flash-latest",
     "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite",
 }
 
 

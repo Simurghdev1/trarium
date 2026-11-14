@@ -1,0 +1,54 @@
+{
+  "ocr": {
+    "engine": "ocr.space (free plan)",
+    "language": "chs",
+    "pages": 3,
+    "requests": 3,
+    "chars": 1342,
+    "seconds": 0.0
+  },
+  "providers": [
+    {
+      "provider": "gemini",
+      "pages_in": 3,
+      "pages_out": 4,
+      "ocr_chars": 112,
+      "blocks": 34,
+      "translated_blocks": 18,
+      "failed_blocks": 1,
+      "write_failures": 0,
+      "persian_chars": 2737,
+      "chinese_left": 0,
+      "question_marks": 0,
+      "right_aligned_pct": 7.8,
+      "seconds": 49.7,
+      "kb": 2336.7,
+      "model": "gemini-3-flash-preview",
+      "usage": {
+        "input_tokens": 169,
+        "output_tokens": 138
+      }
+    },
+    {
+      "provider": "gemini",
+      "pages_in": 3,
+      "pages_out": 4,
+      "ocr_chars": 112,
+      "blocks": 34,
+      "translated_blocks": 19,
+      "failed_blocks": 0,
+      "write_failures": 0,
+      "persian_chars": 2893,
+      "chinese_left": 0,
+      "question_marks": 0,
+      "right_aligned_pct": 8.8,
+      "seconds": 12.0,
+      "kb": 2037.5,
+      "model": "gemini-flash-lite-latest",
+      "usage": {
+        "input_tokens": 1240,
+        "output_tokens": 1498
+      }
+    }
+  ]
+}

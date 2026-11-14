@@ -620,6 +620,8 @@ def extract_ocr_blocks(page, lang: str = "eng", api_key: str | None = None,
                 blocks = extract_ocr_blocks_tesseract(page, lang=lang)
             elif method == "pdf24":
                 blocks = extract_ocr_blocks_pdf24(page, lang=lang)
+            elif method == "ocrspace":
+                blocks = extract_ocr_blocks_ocrspace(page, lang=lang)
             else:
                 continue
             if blocks:
@@ -627,6 +629,13 @@ def extract_ocr_blocks(page, lang: str = "eng", api_key: str | None = None,
         except Exception as exc:
             console.print(f"  ⚠️ {method}: {exc}")
     raise RuntimeError("OCR با روش انتخاب‌شده موفق نشد.")
+
+
+def extract_ocr_blocks_ocrspace(page, lang: str = "eng", key: str | None = None) -> list[dict]:
+    """Per-page OCR through OCR.space (free tier only)."""
+    from trarium.ocr_space import ocr_page
+
+    return ocr_page(page, language=lang, key=key)
 
 
 def _is_garbled(text: str) -> bool:
@@ -936,6 +945,20 @@ def translate_pdf_optimized(
                 for page_num, _ in scanned_pages:
                     all_blocks[page_num] = _normalise_layout_blocks(
                         list(doc_blocks.get(page_num, [])), doc[page_num].rect
+                    )
+            elif ocr_method == "ocrspace":
+                # OCR.space is a hosted API (free plan: 1 MB / 3 pages per request),
+                # so each scanned page is rendered and sent on its own.
+                from trarium.ocr_space import ocr_document_blocks as _ocr_space_blocks
+
+                if progress_callback:
+                    progress_callback(0.15, "OCR با OCR.space...")
+                space_blocks, _space_meta = _ocr_space_blocks(
+                    input_path, language=ocr_lang, dpi=200
+                )
+                for page_num, _ in scanned_pages:
+                    all_blocks[page_num] = _normalise_layout_blocks(
+                        list(space_blocks.get(page_num, [])), doc[page_num].rect
                     )
             elif ocr_method == "openrouter":
                 ocr_map = extract_ocr_blocks_batch_openrouter(scanned_pages, api_key, vision_model, batch_size)

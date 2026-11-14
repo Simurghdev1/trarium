@@ -334,8 +334,20 @@ with layout_tab:
                 if _pdf24_available():
                     options.append("pdf24")
                     labels["pdf24"] = "PDF24 (CLI رسمی، ویندوز)"
+                options.append("ocrspace")
+                labels["ocrspace"] = "OCR.space (API رایگان، بدون نصب)"
                 method = st.selectbox("موتور OCR", options, format_func=lambda x: labels[x])
-                if method == "pdf24":
+                if method == "ocrspace":
+                    space_key = st.text_input(
+                        "کلید OCR.space", type="password", key="ocr_space_key",
+                        value=os.environ.get("TRARIUM_OCR_SPACE_KEY", ""),
+                        help="کلید رایگان: https://ocr.space/ocrapi/freekey — پلن رایگان ۲۵٬۰۰۰ درخواست در ماه و فایل تا ۱ مگابایت.",
+                    )
+                    if space_key:
+                        os.environ["TRARIUM_OCR_SPACE_KEY"] = space_key
+                    from trarium.ocr_space import availability_hint as _space_hint
+                    st.caption(_space_hint())
+                elif method == "pdf24":
                     st.caption("PDF24 فایل را کامل و بدون تغییر (روی یک کپی) OCR می‌کند؛ متن استخراج‌شده به همان مسیر ترجمهٔ فعلی می‌رود.")
                 else:
                     st.caption(_pdf24_hint())

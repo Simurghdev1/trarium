@@ -453,3 +453,40 @@ A real Gemini call with the provided key works on `gemini-3.5-flash` (free tier)
 2. **Visual quality on this dense scan is poor.** The text layer came from bounding boxes of a vision OCR pass; several boxes overlap or miss the original lines, so the Persian text is cramped and a few headings stay uncovered (see `screenshots/compare-p*.png`). The provider and translation path are correct; the box quality is the bottleneck.
 3. **Text-layer glyph bug found:** extracted Persian text shows `Ȝ` where `ی` should be (e.g. `آزمایشȜ`). Rendering is correct, copy/paste is not — a font ToUnicode mapping issue in the PDF writer, unrelated to PDF24, not fixed in this round.
 4. Pushing to GitHub was not possible from this environment (the PAT is no longer available); the commit exists locally on the QA branch only.
+
+## 17) OCR.space provider (branch `qa/v2.17.0-audit` only)
+
+### What OCR.space offers
+OCR.space is a hosted OCR API (`POST https://api.ocr.space/parse/image`). The free plan gives 25,000 requests/month, 1 MB per file, PDFs up to 3 pages, and engines 1 and 2. Engine 3 is PRO-only, so the provider never sends it, and no paid endpoint or paid fallback exists anywhere in the code.
+
+### What was added
+| File | Change |
+| --- | --- |
+| `trarium/ocr_space.py` | New provider: key resolution (`TRARIUM_OCR_SPACE_KEY`, `OCR_SPACE_API_KEY`, optional UI value), `language_codes` (zh→chs, fa→ara, …), free-engine guard, per-page render to JPEG under 1 MB with quality fallback, retry with backoff on 429/5xx, `build_blocks` (TextOverlay → PDF-point boxes) plus `merge_lines` (lines of one paragraph are joined, and CJK text is joined without spaces). |
+| `trarium/pdf_optimized.py` | `ocr_method="ocrspace"` branch in `translate_pdf_optimized` (per-page OCR, blocks → layout pipeline) and `extract_ocr_blocks_ocrspace`. |
+| `streamlit_app.py` | “OCR.space (API رایگان، بدون نصب)” in the OCR engine picker plus a password field for the key; the hint explains where to get a free key. |
+| `trarium/translators/gemini.py` | Model list corrected again: `gemini-2.5-flash`/`gemini-2.5-flash-lite` return HTTP 404 with a real key, so the list is now the ids that actually answer (`gemini-3.5-flash`, `gemini-3-flash-preview`, `gemini-flash-lite-latest`, `gemini-flash-latest`, `gemini-3.1-flash-lite`). The paid guard stays: any other id needs the explicit “allow paid” checkbox. |
+| `tests/test_ocr_space.py` | 14 offline tests: language mapping, free-engine refusal, 1 MB guard, documented form fields, key resolution, demo-key hint, API error handling, coordinate scaling, line merging (CJK and Latin), per-page document OCR, empty result, and the full pipeline with `ocr_method="ocrspace"`. |
+| `qa/run_ocrspace_test.py` | End-to-end runner (`provider[:model]` list), OCR cache, OCR PDF writer, screenshots and metrics. |
+
+### Tests
+```
+tests/                      47 passed
+```
+(The previous PDF24 tests, including the test double for `pdf24-Ocr.exe`, still pass; nothing was removed.)
+
+### Real run on the 3-page Chinese scan (`qa/outputs/ocrspace-test/`)
+| Step | Result |
+| --- | --- |
+| OCR.space (free key, `language=chs`, engine 2) | 3 pages, 3 requests, 1342 chars, 7.0 s |
+| Gemini `gemini-3-flash-preview` (free) | 34 blocks, 19 written, 0 failed, 2793 Persian chars, 0 Chinese left, 37.0 s |
+| Gemini `gemini-flash-lite-latest` (free) | 34 blocks, 19 written, 0 failed, 2893 Persian chars, 0 Chinese left, 12.0 s |
+| OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free` | blocked: `429 free-models-per-day` (the account's 50 free requests/day were used up by the earlier runs); no paid fallback was attempted |
+
+Outputs: `01_original.pdf` (untouched), `02_ocrspace_ocr.pdf` (page images + OCR.space text layer), `03_translated_gemini-gemini-3-flash-preview.pdf`, `04_translated_gemini-gemini-flash-lite-latest.pdf`, page screenshots, `compare-p1..3.png`, `metrics.json`, and `ocr_blocks.json` (raw OCR.space blocks).
+
+### Honest limitations
+1. `gemini-3.5-flash` answered earlier today but now returns `429 quota exceeded` on the free tier; that is a quota, not a code path, and the run continued with two other free models.
+2. OpenRouter's free tier is limited to 50 requests/day per account and is exhausted, so the OpenRouter leg of the test is reported as blocked rather than green.
+3. Layout is better than the PDF24 box experiment but still imperfect: merged paragraphs can cover a chart or table area, and a few small labels keep their Chinese text.
+4. The 1 MB free-plan cap forces 85–200 dpi JPEG pages, so very small print can be missed on dense scans.
