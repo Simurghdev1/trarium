@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import tempfile
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,6 +40,7 @@ class PDFTranslationStats:
     input_tokens: int = 0
     output_tokens: int = 0
     protected_spans: int = 0
+    ocr_pdf_path: str = ""
 _FONT_DIR = Path(__file__).parent / "fonts"
 if not _FONT_DIR.exists():
     _FONT_DIR = Path(__file__).parent.parent / "trarium" / "fonts"
@@ -579,6 +581,26 @@ def extract_ocr_blocks_batch_openrouter(pages: list[tuple[int, object]], api_key
     return result
 
 
+def extract_ocr_blocks_pdf24(page, lang: str = "eng") -> list[dict]:
+    """OCR a single page object through the PDF24 command-line tool.
+
+    PDF24 only accepts whole files, so the page is written to a temporary PDF
+    first; the caller's document is untouched either way.
+    """
+    import pymupdf
+
+    from trarium.ocr_pdf24 import ocr_document_blocks
+
+    tmp = pymupdf.open()
+    tmp.insert_pdf(page.parent, from_page=page.number, to_page=page.number)
+    with tempfile.TemporaryDirectory(prefix="trarium-pdf24-page-") as workdir:
+        single = Path(workdir) / "page.pdf"
+        tmp.save(str(single))
+        tmp.close()
+        blocks, _ocr_path = ocr_document_blocks(single, language=lang, keep_dir=workdir)
+    return list(blocks.get(0, []))
+
+
 def extract_ocr_blocks(page, lang: str = "eng", api_key: str | None = None,
                        vision_model: str | None = None, ocr_method: str = "auto") -> list[dict]:
     """OCR one page with an explicit engine or sensible auto fallback."""
@@ -596,6 +618,8 @@ def extract_ocr_blocks(page, lang: str = "eng", api_key: str | None = None,
                 blocks = extract_ocr_blocks_openrouter(page, api_key, vision_model)
             elif method == "tesseract" and _is_tesseract_installed():
                 blocks = extract_ocr_blocks_tesseract(page, lang=lang)
+            elif method == "pdf24":
+                blocks = extract_ocr_blocks_pdf24(page, lang=lang)
             else:
                 continue
             if blocks:
@@ -900,6 +924,19 @@ def translate_pdf_optimized(
             if precomputed_ocr:
                 for page_num, _ in scanned_pages:
                     all_blocks[page_num] = _normalise_layout_blocks(list(precomputed_ocr.get(page_num, [])), doc[page_num].rect)
+            elif ocr_method == "pdf24":
+                # PDF24 works on the whole document (official pdf24-Ocr.exe CLI), so it
+                # runs once and only its text layer is used for the scanned pages.
+                from trarium.ocr_pdf24 import ocr_document_blocks
+
+                if progress_callback:
+                    progress_callback(0.15, "OCR با PDF24...")
+                doc_blocks, ocr_pdf_path = ocr_document_blocks(input_path, language=ocr_lang, dpi=300)
+                pdf24_ocr_path = str(ocr_pdf_path)
+                for page_num, _ in scanned_pages:
+                    all_blocks[page_num] = _normalise_layout_blocks(
+                        list(doc_blocks.get(page_num, [])), doc[page_num].rect
+                    )
             elif ocr_method == "openrouter":
                 ocr_map = extract_ocr_blocks_batch_openrouter(scanned_pages, api_key, vision_model, batch_size)
                 for page_num, _ in scanned_pages:
@@ -913,6 +950,7 @@ def translate_pdf_optimized(
                     if progress_callback:
                         progress_callback(0.15 + 0.25 * i / max(len(scanned_pages), 1), f"OCR صفحه {page_num + 1}/{total_pages}...")
 
+        pdf24_ocr_path = locals().get("pdf24_ocr_path", "")
         entries = []
         for page_num, blocks in enumerate(all_blocks):
             if page_num in skip_pages:
@@ -927,7 +965,7 @@ def translate_pdf_optimized(
         if not entries:
             raise ValueError("هیچ متن قابل ترجمه‌ای پیدا نشد. OCR را فعال کنید یا PDF را با یک OCR خارجی پردازش کنید.")
 
-        stats = PDFTranslationStats(
+        stats = PDFTranslationStats(ocr_pdf_path=pdf24_ocr_path,
             total_blocks=len(entries),
             pages_with_text=sum(bool(blocks) for blocks in all_blocks),
         )

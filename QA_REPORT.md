@@ -403,3 +403,53 @@ Failed tests: none in this module. Limitations that are *not* scored:
 - `qa/outputs/zh-to-fa/trarium_zh_to_fa_hybrid.pdf` — خروجی حفظ‌چیدمان
 - `qa/outputs/zh-to-fa/trarium_zh_to_fa_text.pdf` — خروجی متنی تمیز راست‌چین
 - `qa/outputs/zh-to-fa/metrics.json` و `qa/outputs/zh-to-fa/run.log` — اندازه‌گیری‌ها و لاگ کامل
+
+## 16) PDF24 OCR provider (branch `qa/v2.17.0-audit` only)
+
+### What PDF24 actually offers
+`tools.pdf24.org/en/ocr-pdf` is a browser tool. PDF24 publishes **no public HTTP/JSON OCR API**; the only documented, permitted programmatic entry point is the command-line switch of the desktop app, `pdf24-Ocr.exe`, shipped with PDF24 Creator (manual: `creator.pdf24.org/manual/11/#101-command-line`):
+
+```
+"C:\Program Files\PDF24\pdf24-Ocr.exe" -outputFile out.pdf -language eng+chi_sim -dpi 300 in.pdf
+```
+
+So the provider drives that CLI. No private endpoint, no scraping, no cookie or rate-limit bypass is used anywhere in the code.
+
+### What was added
+| File | Change |
+| --- | --- |
+| `trarium/ocr_pdf24.py` | New provider: `find_binary` (`TRARIUM_PDF24_BIN` env + Windows default paths + `which`), `is_available`, `availability_hint`, `language_codes` (iso → Tesseract names, e.g. `zh → chi_sim`, `fa+en → fas+eng`), `build_command`, `ocr_pdf`, `has_text_layer`, `extract_blocks`, `ocr_document_blocks`, `Pdf24Error`. |
+| `trarium/pdf_optimized.py` | `ocr_method="pdf24"` branch in `translate_pdf_optimized` (one document-level run, only scanned pages take its blocks), `extract_ocr_blocks_pdf24`, `PDFTranslationStats.ocr_pdf_path`. |
+| `trarium/translators/gemini.py` | Free-only policy: `FREE_GEMINI_MODELS` allowlist, `PaidModelBlocked` raised for any non-free model unless the caller opts in; `GEMINI_MODELS` replaced with real model ids verified against `GET /v1beta/models` (the old list named `gemini-3.8-flash` etc., which the API does not serve). |
+| `streamlit_app.py` | “PDF24 (CLI رسمی، ویندوز)” in the OCR engine picker (only when the binary is found, otherwise a hint explains how to install), `chi_sim+eng` in the page-language list, and an “allow paid model” checkbox gated to Gemini. |
+| `tests/test_pdf24_provider.py` | 8 tests: binary discovery, missing-binary error, language mapping, documented switches, input file untouched (sha256 before/after), text-layer extraction, exit-code failure, and full pipeline with `ocr_method="pdf24"`. |
+| `qa/run_pdf24_test.py` | End-to-end runner for the Chinese scan; writes `01_original.pdf`, `02_pdf24_ocr.pdf`, `03_translated_fa.pdf`, screenshots, `metrics.json`. |
+| `tests/test_smoke.py` | Two assertions updated to the real model ids. |
+
+Previous OCR engines (PaddleOCR, Surya, EasyOCR, Tesseract, Vision) were **not removed**; PDF24 is an additional option.
+
+### Tests
+```
+tests/                      33 passed
+qa/qa_suite.py              18 passed, 1 skipped
+qa/pdf_pipeline_test.py      5 passed
+```
+A real Gemini call with the provided key works on `gemini-3.5-flash` (free tier) and a request for `gemini-2.5-pro` is refused with `PaidModelBlocked` unless the user ticks the consent box — total cost of this run: **0**.
+
+### PDF24 test run (3-page Chinese scan, `qa/outputs/pdf24-test/`)
+| Metric | Value |
+| --- | --- |
+| pages in / out | 3 / 4 (assignment page) |
+| OCR text layer | 490 chars on page 1 |
+| blocks translated | 23 (0 failed, 0 write errors) |
+| Persian characters | 2359 |
+| Chinese characters left | 0 |
+| question marks | 0 |
+| output size | 2.0 MB |
+| time | 179.9 s (free tier) |
+
+### Honest limitations
+1. **The real `pdf24-Ocr.exe` was not executed.** It is a Windows-only binary; this machine is Linux. The provider was verified against the documented CLI contract through a stand-in executable that accepts the same switches and returns a real text-layer PDF; the Trarium code path (copy → args → subprocess → exit code → layer → translation) is identical to the one that will call the exe on Windows. To verify on Windows: install PDF24 Creator, then run `TRARIUM_PDF24_BIN="C:\\Program Files\\PDF24\\pdf24-Ocr.exe" python qa/run_pdf24_test.py --input <file>`.
+2. **Visual quality on this dense scan is poor.** The text layer came from bounding boxes of a vision OCR pass; several boxes overlap or miss the original lines, so the Persian text is cramped and a few headings stay uncovered (see `screenshots/compare-p*.png`). The provider and translation path are correct; the box quality is the bottleneck.
+3. **Text-layer glyph bug found:** extracted Persian text shows `Ȝ` where `ی` should be (e.g. `آزمایشȜ`). Rendering is correct, copy/paste is not — a font ToUnicode mapping issue in the PDF writer, unrelated to PDF24, not fixed in this round.
+4. Pushing to GitHub was not possible from this environment (the PAT is no longer available); the commit exists locally on the QA branch only.

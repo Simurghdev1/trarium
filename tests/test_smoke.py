@@ -227,7 +227,7 @@ class ProviderAndDiagnosticTests(unittest.TestCase):
 
     def test_gemini_current_model(self):
         from trarium.translators.gemini import GEMINI_MODELS
-        self.assertEqual(GEMINI_MODELS["Gemini 3.8 Flash (جدید)"], "gemini-3.8-flash")
+        self.assertEqual(GEMINI_MODELS["Gemini 3.5 Flash (رایگان)"], "gemini-3.5-flash")
 
     def test_openrouter_uses_minimal_headers(self):
         from trarium.translators.openrouter import OpenRouterTranslator
@@ -255,7 +255,7 @@ class ProviderTransportMockTests(unittest.TestCase):
             status_code=200; text='';
             def json(self): return {"candidates":[{"content":{"parts":[{"text":"OK"}]}}]}
         with patch.object(g.requests, "post", return_value=Resp()) as p:
-            t=g.GeminiTranslator(api_key="secret", model_name="gemini-3.8-flash")
+            t=g.GeminiTranslator(api_key="secret", model_name="gemini-3.5-flash")
             self.assertEqual(t.translate("hi","en"),"OK")
             _, kwargs=p.call_args
             self.assertEqual(kwargs["headers"]["x-goog-api-key"],"secret")

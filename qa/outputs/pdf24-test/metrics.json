@@ -1,0 +1,20 @@
+{
+  "source_pages": 3,
+  "translated_pages": 4,
+  "ocr_text_layer_chars": 490,
+  "translated_blocks": 23,
+  "failed_blocks": 0,
+  "write_failures": 0,
+  "persian_chars": 2359,
+  "chinese_chars_left": 0,
+  "question_marks": 0,
+  "right_aligned_pct": 22.0,
+  "usage": {
+    "input_tokens": 115,
+    "output_tokens": 14
+  },
+  "seconds": 179.9,
+  "output_kb": 2039.9,
+  "ocr_engine": "PDF24 CLI (documented contract; Windows exe unavailable on Linux)",
+  "ocr_pdf": "02_pdf24_ocr.pdf"
+}

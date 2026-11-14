@@ -4,20 +4,50 @@ import math, time, requests
 from trarium.translators.base import BaseTranslator
 from trarium.utils import clean_translation as _clean_translation
 
+# Model ids verified against GET /v1beta/models with a real key; the previous
+# list named models that the API does not serve at all.
 GEMINI_MODELS = {
-    "Gemini 3.8 Flash (جدید)": "gemini-3.8-flash",
-    "Gemini 3.7 Flash": "gemini-3.7-flash",
-    "Gemini 3.6 Flash": "gemini-3.6-flash",
-    "Gemini 3.5 Flash": "gemini-3.5-flash",
+    "Gemini 3.5 Flash (رایگان)": "gemini-3.5-flash",
+    "Gemini 3 Flash Preview (رایگان)": "gemini-3-flash-preview",
+    "Gemini 2.5 Flash (رایگان)": "gemini-2.5-flash",
+    "Gemini 2.5 Flash-Lite (رایگان)": "gemini-2.5-flash-lite",
+    "Gemini Flash Latest (رایگان)": "gemini-flash-latest",
+    "Gemini 2.5 Pro (ممکن است هزینه داشته باشد)": "gemini-2.5-pro",
 }
 LANG_NAMES = {"fa":"فارسی","en":"English","ar":"العربية","tr":"Türkçe","zh":"中文","ja":"日本語","ko":"한국어","ru":"Русский"}
 
+# Only models that Google serves on the free tier are allowed by default. A
+# paid model is never used silently: the caller has to opt in, which is what the
+# UI does with its "allow paid" checkbox.
+FREE_GEMINI_MODELS = {
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+}
+
+
+class PaidModelBlocked(RuntimeError):
+    """Raised when a model that may cost money is requested without consent."""
+
+
 class GeminiTranslator(BaseTranslator):
     API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    def __init__(self, api_key=None, model_name="gemini-3.8-flash"):
+    def __init__(self, api_key=None, model_name="gemini-3.5-flash", allow_paid=False):
         if not api_key: raise RuntimeError("Google API Key وارد نشده است.")
+        if model_name not in FREE_GEMINI_MODELS and not allow_paid:
+            raise PaidModelBlocked(
+                f"مدل «{model_name}» در فهرست مدل‌های رایگان تأییدشده نیست و ممکن است هزینه داشته باشد. "
+                "اگر با هزینه موافقید، اجازهٔ استفاده از مدل پولی را فعال کنید؛ در غیر این صورت یکی از "
+                f"مدل‌های رایگان را انتخاب کنید: {', '.join(sorted(FREE_GEMINI_MODELS))}"
+            )
+        self.allow_paid = bool(allow_paid)
         self.api_key = api_key
         self.model_name = model_name
+    def is_free_model(self) -> bool:
+        return self.model_name in FREE_GEMINI_MODELS
         self.last_transport = "requests"
         self.last_usage = {}
     def get_token_limit(self): return 1_048_576

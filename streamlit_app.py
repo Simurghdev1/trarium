@@ -87,7 +87,8 @@ def _show_direct_provider_test(provider: str, api_key: str, model: str, base_url
         return
     try:
         if provider == "gemini":
-            t = get_translator("gemini", api_key=api_key, model_name=model)
+            t = get_translator("gemini", api_key=api_key, model_name=model,
+                                allow_paid=bool(st.session_state.get(f"ge_paid{suffix}", False)))
         elif provider == "groq":
             t = get_translator("groq", api_key=api_key, model_name=model)
         elif provider == "openai_compatible":
@@ -112,6 +113,11 @@ def _translator_settings():
             provider = "gemini"
             api_key = st.text_input(f"Google API Key{suffix}", value=os.environ.get("GOOGLE_API_KEY", ""), type="password", key=f"ge_key{suffix}")
             model_label = st.selectbox(f"مدل Gemini{suffix}", list(GEMINI_MODELS.keys()), key=f"ge_model{suffix}")
+            allow_paid = st.checkbox(
+                "اجازهٔ مدل پولی (فقط اگر با هزینه موافق هستید)",
+                value=False, key=f"ge_paid{suffix}",
+                help="به‌صورت پیش‌فرض فقط مدل‌های رایگان تأییدشده اجازه دارند؛ با این گزینه مدل‌های ممکن‌ال هزینه هم فعال می‌شوند.",
+            )
             model = GEMINI_MODELS[model_label]
         elif label == "Groq":
             provider = "groq"
@@ -324,8 +330,16 @@ with layout_tab:
                 if _has_easyocr(): options.append("easyocr"); labels["easyocr"] = "EasyOCR"
                 if api_key: options.append("openrouter"); labels["openrouter"] = "OpenRouter Vision"
                 if _is_tesseract_installed(): options.append("tesseract"); labels["tesseract"] = "Tesseract"
+                from trarium.ocr_pdf24 import availability_hint as _pdf24_hint, is_available as _pdf24_available
+                if _pdf24_available():
+                    options.append("pdf24")
+                    labels["pdf24"] = "PDF24 (CLI رسمی، ویندوز)"
                 method = st.selectbox("موتور OCR", options, format_func=lambda x: labels[x])
-                ocr_lang = st.selectbox("زبان صفحه", ["eng", "fas+eng", "jpn", "ara+eng"], index=0)
+                if method == "pdf24":
+                    st.caption("PDF24 فایل را کامل و بدون تغییر (روی یک کپی) OCR می‌کند؛ متن استخراج‌شده به همان مسیر ترجمهٔ فعلی می‌رود.")
+                else:
+                    st.caption(_pdf24_hint())
+                ocr_lang = st.selectbox("زبان صفحه", ["eng", "chi_sim+eng", "fas+eng", "jpn", "ara+eng"], index=0)
                 b1, b2 = st.columns(2)
                 with b1:
                     run_ocr = st.button("🔎 اجرای OCR", type="primary", key="layout_ocr_run")
