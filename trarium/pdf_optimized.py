@@ -432,6 +432,17 @@ def _vision_image_data_url(page, dpi: int = OCR_DPI) -> str:
     return f"data:{mime};base64,{base64.b64encode(blob).decode()}"
 
 
+def _vision_image_size(page, dpi: int = OCR_DPI) -> tuple[int, int]:
+    """Pixel size of the image actually sent for OCR (mirrors _vision_image_data_url)."""
+    width = page.rect.width / 72.0 * dpi
+    height = page.rect.height / 72.0 * dpi
+    longest = max(width, height)
+    if longest > OCR_MAX_SIDE:
+        scale = OCR_MAX_SIDE / longest
+        width, height = width * scale, height * scale
+    return max(1, int(round(width))), max(1, int(round(height)))
+
+
 def _openrouter_vision_request(api_key: str, model_name: str, image_data_urls: list[str], prompt: str, num_pages: int = 1) -> str:
     from trarium.translators.openrouter_http import post_json
     headers = {
@@ -443,22 +454,33 @@ def _openrouter_vision_request(api_key: str, model_name: str, image_data_urls: l
     content = [{"type": "text", "text": prompt}]
     for data_url in image_data_urls:
         content.append({"type": "image_url", "image_url": {"url": data_url}})
+    # Reasoning models spend the whole budget on hidden reasoning and then return
+    # an empty content field, so a 1800-token cap produced "no text" on real
+    # pages. Start higher and retry once with double the room.
+    budget = max(4096, min(16000, 4096 * max(1, num_pages)))
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0.0,
-        "max_tokens": max(1024, min(8000, 1800 * max(1, num_pages))),
+        "max_tokens": budget,
     }
-    response = post_json("https://openrouter.ai/api/v1/chat/completions", headers, payload, timeout=180)
-    data = response.data
-    choices = data.get("choices") if isinstance(data, dict) else None
-    choices = choices or []
-    if not choices:
-        raise RuntimeError("مدل Vision پاسخ خالی داد.")
-    text = choices[0].get("message", {}).get("content") if isinstance(choices[0], dict) else None
-    if not text:
-        raise RuntimeError("مدل Vision متن برنگرداند.")
-    return str(text).strip()
+    last_reason = "پاسخ خالی"
+    for attempt in range(2):
+        response = post_json("https://openrouter.ai/api/v1/chat/completions", headers, payload, timeout=240)
+        data = response.data
+        choices = (data.get("choices") if isinstance(data, dict) else None) or []
+        text = None
+        if choices and isinstance(choices[0], dict):
+            message = choices[0].get("message") or {}
+            text = message.get("content")
+            last_reason = str(choices[0].get("finish_reason") or "")
+            if not text and message.get("reasoning"):
+                last_reason = f"reasoning-only ({last_reason or 'stop'})"
+        if text:
+            return str(text).strip()
+        if attempt == 0:
+            payload["max_tokens"] = min(24000, budget * 2)
+    raise RuntimeError(f"مدل Vision متن برنگرداند ({last_reason}).")
 
 
 def _parse_vision_json(text: str):
@@ -478,7 +500,7 @@ def _parse_vision_json(text: str):
         return json.loads(cleaned[start:end + 1])
 
 
-def _bbox_to_blocks(items, pw: float, ph: float) -> list[dict]:
+def _bbox_to_blocks(items, pw: float, ph: float, img_w: float | None = None, img_h: float | None = None) -> list[dict]:
     blocks = []
     if not isinstance(items, list):
         return blocks
@@ -490,9 +512,17 @@ def _bbox_to_blocks(items, pw: float, ph: float) -> list[dict]:
         if len(text) < 2 or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             continue
         try:
-            x0, y0, x1, y1 = [max(0.0, min(1.0, float(v))) for v in bbox]
+            raw = [float(v) for v in bbox]
         except (TypeError, ValueError):
             continue
+        if max(abs(v) for v in raw) > 1.5:
+            # Several vision models answer in image pixels even though the prompt
+            # asks for 0..1 boxes. Clamping those values to 1.0 stacked every
+            # block in one corner of the page, so rescale against the image.
+            scale_x = (img_w or pw) or 1.0
+            scale_y = (img_h or ph) or 1.0
+            raw = [raw[0] / scale_x, raw[1] / scale_y, raw[2] / scale_x, raw[3] / scale_y]
+        x0, y0, x1, y1 = [max(0.0, min(1.0, v)) for v in raw]
         x0, x1 = sorted((x0, x1))
         y0, y1 = sorted((y0, y1))
         if x1 <= x0 or y1 <= y0:
@@ -512,7 +542,8 @@ def extract_ocr_blocks_openrouter(page, api_key: str | None = None, model_name: 
         raise RuntimeError("OpenRouter API Key برای Vision OCR وارد نشده است.")
     model_name = model_name or "openrouter/free"
     response = _openrouter_vision_request(api_key, model_name, [_vision_image_data_url(page)], _vision_prompt())
-    return _bbox_to_blocks(_parse_vision_json(response), page.rect.width, page.rect.height)
+    img_w, img_h = _vision_image_size(page)
+    return _bbox_to_blocks(_parse_vision_json(response), page.rect.width, page.rect.height, img_w, img_h)
 
 
 def extract_ocr_blocks_batch_openrouter(pages: list[tuple[int, object]], api_key: str | None = None,
@@ -532,13 +563,15 @@ def extract_ocr_blocks_batch_openrouter(pages: list[tuple[int, object]], api_key
             response = _openrouter_vision_request(api_key, model_name, images, _vision_prompt(len(batch) > 1, nums), len(batch))
             parsed = _parse_vision_json(response)
             if len(batch) == 1:
-                result[nums[0]] = _bbox_to_blocks(parsed, batch[0][1].rect.width, batch[0][1].rect.height)
+                img_w, img_h = _vision_image_size(batch[0][1])
+                result[nums[0]] = _bbox_to_blocks(parsed, batch[0][1].rect.width, batch[0][1].rect.height, img_w, img_h)
             else:
                 for i, num in enumerate(nums):
                     items = parsed.get(str(num), []) if isinstance(parsed, dict) else []
                     if not items and isinstance(parsed, dict):
                         items = parsed.get(str(i + 1), [])
-                    result[num] = _bbox_to_blocks(items, batch[i][1].rect.width, batch[i][1].rect.height)
+                    img_w, img_h = _vision_image_size(batch[i][1])
+                    result[num] = _bbox_to_blocks(items, batch[i][1].rect.width, batch[i][1].rect.height, img_w, img_h)
         except Exception as exc:
             console.print(f"  ⚠️ Vision OCR batch {nums}: {exc}")
             for num in nums:
@@ -751,7 +784,7 @@ def _preflight_htmlbox(rect, text: str, fontsize: float, target_lang: str, page_
         tmp.close()
 
 
-def _write_text(page, rect, text, original_size: float, target_lang: str) -> tuple[bool,str]:
+def _write_text(page, rect, text, original_size: float, target_lang: str, scanned: bool | None = None) -> tuple[bool,str]:
     import pymupdf, html as html_mod
     if not text or not text.strip():
         return False,"متن ترجمه خالی است"
@@ -759,6 +792,12 @@ def _write_text(page, rect, text, original_size: float, target_lang: str) -> tup
         return False,f"فونت Sahel پیدا نشد: {_FONT_PATH}"
     page_rect=page.rect
     inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
+    # A scanned page has no text layer: redaction cannot remove glyphs that live
+    # inside the page image, so the original (Chinese) text would stay visible
+    # under the translation. Paint the block area first in that case.
+    if scanned is None:
+        scanned = not page.get_text().strip()
+    cover_fill=(1,1,1) if scanned else None
     base_size=max(7.0,min(float(original_size or 11),18.0))
     fits,_=_preflight_htmlbox(inset,text,base_size,target_lang,page_rect)
     if not fits:
@@ -768,7 +807,7 @@ def _write_text(page, rect, text, original_size: float, target_lang: str) -> tup
     try:
         # fill=None keeps the underlying page/illustration visible, and the flags
         # stop PyMuPDF from rasterising or deleting images that intersect the box.
-        page.add_redact_annot(inset, fill=None)
+        page.add_redact_annot(inset, fill=cover_fill)
         page.apply_redactions(
             images=pymupdf.PDF_REDACT_IMAGE_NONE,
             graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
@@ -937,8 +976,10 @@ def translate_pdf_optimized(
             if not to_replace:
                 continue
 
+            # Decide once per page: inserting text changes get_text() of the page.
+            scanned_page = not page.get_text().strip()
             for idx, block, out in to_replace:
-                ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang)
+                ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page)
                 if ok:
                     written += 1
                     pages_written.add(page_num)

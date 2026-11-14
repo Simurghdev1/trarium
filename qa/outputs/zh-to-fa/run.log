@@ -1,0 +1,12 @@
+input: 全球最佳动漫盘点_中文三页详细版 (1) (1).pdf | pages=3 | 1.93 MB
+OCR p1: 21 blocks, 588 chars via cache (nvidia/nemotron-3.5-super-vl:free)
+OCR p2: 30 blocks, 514 chars via cache (nvidia/nemotron-3.5-super-vl:free (tiled))
+OCR p3: 14 blocks, 230 chars via cache (nvidia/nemotron-3.5-super-vl:free (tiled))
+OCR total: 0.0s, 65 blocks
+  page 1: 21 blocks
+  page 2: 30 blocks
+  page 3: 14 blocks
+  ✍️ 28/31 بلاک نوشته شد؛ 0 بلاک ترجمه‌نشده؛ 0 خطای درج.
+translation: 0.7s | blocks translated=28 failed=0 | usage={}
+text PDF: 4 pages, 55 KB, 0.6s
+PDF_QA_METRICS:{"source_pages": 3, "output_pages": 4, "ocr_blocks": 65, "ocr_chars_zh": 1332, "translated_blocks": 28, "failed_blocks": 0, "persian_chars_output": 2733, "chinese_chars_left": 1, "fonts": ["Droid Sans Fallback Regular", "Noto Serif Regular", "Sahel Regular"], "sahel_embedded": true, "question_marks": 0, "spans": 151, "right_aligned_pct": 0.7, "images_before": 3, "images_after": 3, "ocr_seconds": null, "translate_seconds": 0.7, "usage": {}, "output_kb": 3904.6, "text_sample": "ﺑﺮرﺳȜ ﺑﻬﺘﺮﯾﻦ اﻧﯿﻤﻪ ﻫﺎی ﺟﻬﺎن ——ﮐﻼﺳﯿﮏ\n ﻫﺎ ﺟﺎوداﻧﻪ اﻧﺪ، ﺷﮕﻔﺘȜ ﻫﺎ\nﺑﯽ ﭘﺎﯾﺎن——\nﯾﮏ، ﻣﻘﺪﻣﻪ اﻧﯿﻤﻪ ﺑﻪ ﻋﻨﻮان ﯾﮏ ﻓﺮم ﻫﻨﺮی ﻣﻨﺤﺼﺮ ﺑﻪ ﻓﺮد، ﻣﺮزﻫﺎی ﻓﺮﻫﻨﮓ و زﺑﺎن را ﻓﺮاﺗﺮ رﻓﺘﻪ و در ﺳﺮاﺳﺮ\nﺟﻬﺎن دارای ﺟﻤﻌﯿﺖ ﻋﻈﯿﻤȜ از ﻃﺮﻓﺪاران اﺳﺖ. ﭼﻪ ﺟﻨﮓ\n ﻫﺎی ﺧﻮﻧȜ، ﭼﻪ داﺳﺘﺎن ﻫﺎی اﺣﺴﺎﺳȜ، و ﭼﻪ\nﻣﺎﺟﺮاﺟﻮﯾﯽ ﻫﺎی ﻓﺎﻧﺘﺰی، ﻫﺮ اﻧﯿﻤﻪ ی ﻋﺎﻟȜ ﻣȜ ﺗﻮاﻧﺪ ﺑﺮای ﻣﺨﺎﻃﺒﺎن ﺣﺲ ﻋﻤﯿﻖ و ﺗﻔﮑﺮ ﻋﻤﯿﻖ آور ﺑﻪ ارﻣﻐﺎن\nﺑﯿﺎورد. اﯾﻦ ﻣﻘﺎﻟﻪ ﭼﻨﺪﯾﻦ اﻧﯿﻤﻪ ی ﺑﺮﺗﺮ ﺟﻬﺎﻧȜ را ﻣﻌﺮﻓȜ ", "text_pdf": {"pages": 4, "seconds": 0.6, "output_kb": 55.0, "persian_chars": 2898, "chinese_chars_left": 0, "question_marks": 0, "right_aligned_pct": 90.2, "failed_chunks": 0, "chunks": 1, "file": "trarium_zh_to_fa_text.pdf"}}
