@@ -539,3 +539,30 @@ The legend-colour experiment (`e1cb520`, marker stripping) changed how every sho
 
 The current test run on the same three pages: 82 blocks, 54 written, 0 failed, 2839 Persian characters, 0 Chinese in the replaced text, 13.2 s.
 Known issues that remain in this version: legend swatches on page 3 are redrawn as black squares, and x-axis labels (亚洲 / 北美 / 欧洲 / 南美) are not translated.
+
+## 19) Vocabulary PDF — English → Persian (`advanced_english_vocabulary_light_novel_manga.pdf`)
+
+Source: `origin/main` → `advanced_english_vocabulary_light_novel_manga.pdf` (3 landscape pages, 842×595).
+
+| Page | What it is | Path used |
+| --- | --- | --- |
+| 1 | vocabulary grid (18 words, table-like) | native text layer, no OCR |
+| 2 | two-column short chapter | native text layer, no OCR |
+| 3 | manga page, image only | OCR.space (free key), `ocr_lang=eng` |
+
+Run: `python qa/run_vocab_test.py --input /tmp/vocab.pdf` with `gemini-flash-lite-latest`.
+
+| Metric | Value |
+| --- | --- |
+| blocks | 59 |
+| translated | 58 |
+| failed | 0 |
+| write failures | 0 |
+| Persian characters | 4182 |
+| question marks | 0 |
+| time | 16.1 s |
+
+The page size, orientation and the layout of the vocabulary grid are preserved; the manga page keeps its artwork and only the speech bubbles are replaced.
+
+Outputs: [qa/outputs/vocab-test/](qa/outputs/vocab-test/) — original PDF, translated PDF, screenshots of every page before/after, `metrics.json`.
+Remaining nit: one manga bubble kept the English word “and” at the start of its translation; everything else is Persian.
