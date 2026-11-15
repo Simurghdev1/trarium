@@ -533,18 +533,3 @@ OpenRouter output (same fix, same file): [page 1](qa/outputs/ocrspace-test/pages
 * Minimum font size in the per-line writer raised to 6 pt.
 
 Still unmatched on page 3: the bar-chart x-axis labels (亚洲 / 北美 / Europe / 南美) stay in their original form because OCR.space missed them at the free plan's 1 MB resolution; the legend and title are translated.
-
-### Legend colours fix
-OCR.space reads the coloured swatch of a chart legend as a ``■`` (or a stray digit) glued to
-the label, so the block started on the swatch and the white fill erased its colour — the redrawn
-marker glyph then appeared black. `_strip_marker` now removes that prefix and moves the block's
-left edge past the swatch, so the original red/blue/green/purple/orange markers stay intact and
-only the words are replaced.
-
-Honest state after this change (same file, Gemini Flash Lite, 82 blocks / 51 written / 3068 Persian chars / 14.5 s):
-* Legend colours on page 3 are preserved again.
-* Page 3 still shows some untranslated chart text: the x-axis labels (亚洲 / 北美 / 欧洲 / 南美) and a
-  couple of legend words come back from the model unchanged, and where a legend row was merged with
-  the caption paragraph the split puts part of the sentence on the legend line.
-* A title block that merges the section heading with the legend row can therefore lose its heading
-  translation; this is the merge logic, not the writer, and it is the next thing to fix.

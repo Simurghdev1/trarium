@@ -203,9 +203,6 @@ def build_blocks(parsed: dict, page_width: float, image_width: int) -> list[dict
             bbox = (left * scale, top * scale, right * scale, bottom * scale)
             if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
                 continue
-            text, bbox = _strip_marker(text, bbox, words, scale)
-            if not text:
-                continue
             blocks.append(
                 {
                     "bbox": bbox,
@@ -215,40 +212,6 @@ def build_blocks(parsed: dict, page_width: float, image_width: int) -> list[dict
             )
     blocks.sort(key=lambda b: (round(b["bbox"][1], 1), b["bbox"][0]))
     return merge_lines(blocks)
-
-
-MARKERS = "■□▪▫●○◆◇★☆•·※"
-
-
-def _strip_marker(text: str, bbox, words, scale: float):
-    """Drop the colour swatch that OCR reads in front of a legend entry.
-
-    OCR.space reports the coloured square of a chart legend as a ``■`` (or as a
-    digit) glued to the label, so the block started on the swatch itself. Painting
-    that box white erased the colour and the redrawn marker glyph came out black.
-    The box is moved past the marker instead, which keeps the original colours.
-    """
-    stripped = text.lstrip()
-    if not stripped:
-        return text, bbox
-    first = stripped[0]
-    cut = 0
-    if first in MARKERS:
-        cut = 1
-    elif first.isdigit() and len(stripped) > 1 and not stripped[1].isdigit():
-        cut = 1
-    if not cut:
-        return text, bbox
-    rest = stripped[cut:].lstrip()
-    if not rest:
-        return text, bbox
-    # Move the left edge to the first word that is not the marker glyph.
-    usable = [w for w in words if str(w.get("WordText", "")).strip() not in (*MARKERS, "")]
-    if not usable:
-        return text, bbox
-    left = min(float(w.get("Left", 0)) for w in usable) * scale
-    x0, y0, x1, y1 = bbox
-    return rest, (max(x0, left), y0, x1, y1)
 
 
 def merge_lines(blocks: list[dict], gap_factor: float = 1.35, max_lines: int = 4) -> list[dict]:
