@@ -215,36 +215,42 @@ def build_blocks(parsed: dict, page_width: float, image_width: int) -> list[dict
 
 
 def merge_lines(blocks: list[dict], gap_factor: float = 1.35, max_lines: int = 4) -> list[dict]:
-    """Join consecutive lines of one paragraph.
+    """Join consecutive lines of one paragraph, keeping each line's own box.
 
     OCR.space returns one box per text line. Sending every line separately made
-    the translator hit rate limits and produced cramped output, so lines that sit
-    directly under each other in the same column are merged into one block.
+    the translator hit rate limits, so lines of one paragraph are merged for
+    translation — but the individual boxes are preserved in ``lines`` so the PDF
+    writer can put the translation back on exactly those lines instead of
+    blanketing a table or a chart with one huge white rectangle.
     """
     merged: list[dict] = []
     for block in blocks:
+        entry = {
+            "bbox": tuple(block["bbox"]),
+            "text": block["text"],
+            "font_size": block.get("font_size", 8.0),
+            "lines": [{"bbox": tuple(block["bbox"]), "text": block["text"]}],
+        }
         if merged:
             prev = merged[-1]
             px0, py0, px1, py1 = prev["bbox"]
-            x0, y0, x1, y1 = block["bbox"]
+            x0, y0, x1, y1 = entry["bbox"]
             height = max(1.0, py1 - py0)
             overlap = min(px1, x1) - max(px0, x0)
             width = max(1.0, min(px1 - px0, x1 - x0))
             same_column = overlap > 0.5 * width
             close = -0.2 * height <= (y0 - py1) <= gap_factor * height
-            # Very tall replacements cover charts and tables, so a paragraph
-            # stops growing after a few lines.
-            small_enough = prev.get("_lines", 1) < max_lines
-            if same_column and close and small_enough:
+            if same_column and close and len(prev["lines"]) < max_lines:
                 prev["bbox"] = (min(px0, x0), min(py0, y0), max(px1, x1), max(py1, y1))
-                joiner = "" if _is_cjk(prev["text"][-1:]) else " "
-                prev["text"] = prev["text"] + joiner + block["text"]
-                prev["font_size"] = max(prev.get("font_size", 8.0), block.get("font_size", 8.0))
-                prev["_lines"] = prev.get("_lines", 1) + 1
+                joiner = "" if _is_cjk(prev["lines"][-1]["text"][-1:]) else " "
+                prev["text"] = prev["text"] + joiner + entry["text"]
+                prev["font_size"] = max(prev["font_size"], entry["font_size"])
+                prev["lines"].append(entry["lines"][0])
                 continue
-        merged.append({**block, "_lines": 1})
+        merged.append(entry)
     for block in merged:
-        block.pop("_lines", None)
+        if len(block["lines"]) < 2:
+            block.pop("lines")
     return merged
 
 

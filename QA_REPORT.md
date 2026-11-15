@@ -479,9 +479,9 @@ tests/                      47 passed
 | Step | Result |
 | --- | --- |
 | OCR.space (free key, `language=chs`, engine 2) | 3 pages, 3 requests, 1317 chars, 7.3 s |
-| Gemini `gemini-3-flash-preview` (free) | 74 blocks, 46 written, 0 failed, 2734 Persian chars, 0 Chinese left, 25.3 s |
-| Gemini `gemini-flash-lite-latest` (free) | 74 blocks, 46 written, 0 failed, 2832 Persian chars, 0 Chinese left, 13.5 s |
-| OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free` | blocked: `429 free-models-per-day` (the account's 50 free requests/day were used up by the earlier runs); no paid fallback was attempted |
+| Gemini `gemini-3-flash-preview` (free, before the renderer fix) | 74 blocks, 46 written, 0 failed, 2734 Persian chars |
+| Gemini `gemini-flash-lite-latest` (free, after the renderer fix) | 82 blocks, 54 written, 0 failed, 2863 Persian chars, 0 Chinese left, 13.6 s |
+| OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free` | 82 blocks, 54 written, 0 failed, 2910 Persian chars, 0 Chinese left, 399.8 s |
 
 Outputs: `01_original.pdf` (untouched), `02_ocrspace_ocr.pdf` (page images + OCR.space text layer), `03_translated_gemini-gemini-3-flash-preview.pdf`, `04_translated_gemini-gemini-flash-lite-latest.pdf`, page screenshots, `compare-p1..3.png`, `metrics.json`, and `ocr_blocks.json` (raw OCR.space blocks).
 
@@ -490,3 +490,39 @@ Outputs: `01_original.pdf` (untouched), `02_ocrspace_ocr.pdf` (page images + OCR
 2. OpenRouter's free tier is limited to 50 requests/day per account and is exhausted, so the OpenRouter leg of the test is reported as blocked rather than green.
 3. Layout is better than the PDF24 box experiment but still imperfect: merged paragraphs can cover a chart or table area, and a few small labels keep their Chinese text.
 4. The 1 MB free-plan cap forces 85–200 dpi JPEG pages, so very small print can be missed on dense scans.
+
+## 18) PDF renderer fix — per-line replacement (same branch)
+
+### The actual cause (measured, not guessed)
+The old writer did three things that together produced the broken pages:
+
+1. **One white rectangle per merged block.** OCR.space groups up to four source lines into one block, so `_write_text` painted a rectangle over the union of those lines — across a table column or over part of a chart — and wrote one paragraph inside it. That is where the large white bands and the smeared tables came from.
+2. **`_expand_rect` grew the rectangle before filling it** (up to 8% of the page height plus padding). The white fill therefore extended past the original text into the artwork, which is why images looked damaged and gaps appeared.
+3. **The whole Persian paragraph was shrunk into that one box** (`insert_htmlbox`, `scale_low=0.20`). Long translations either became tiny or overflowed their cell, so text left its cell and overlapped neighbours.
+
+### The fix
+* `trarium/ocr_space.py` keeps every source line box inside the merged block (`lines`), so a paragraph still costs one translation request but arrives at the renderer with its geometry intact.
+* `_normalise_layout_blocks` no longer re-merges a block that already carries line boxes.
+* New `_write_on_lines` in `trarium/pdf_optimized.py`: the translated paragraph is split across its own source lines by source length, each line is filled with white **only inside its exact original box**, and the font size is derived from that line's height (never from a page-wide expansion). RTL and the Sahel font path are unchanged.
+* Result on the same file: line boxes keep the table grid, the pie chart and the legend legend positions; the two large blank bands are gone and no cell overflows.
+
+### Before / after (all three pages)
+| Page | Original | Before the fix | After the fix |
+| --- | --- | --- | --- |
+| 1 | [original-p1.jpg](qa/outputs/ocrspace-test/pages/original-p1.jpg) | [compare-p1.png (PDF24 era)](qa/outputs/pdf24-test/screenshots/compare-p1.png) | [translated-p1.jpg](qa/outputs/ocrspace-test/pages/translated-p1.jpg) |
+| 2 | [original-p2.jpg](qa/outputs/ocrspace-test/pages/original-p2.jpg) | — | [translated-p2.jpg](qa/outputs/ocrspace-test/pages/translated-p2.jpg) |
+| 3 | [original-p3.jpg](qa/outputs/ocrspace-test/pages/original-p3.jpg) | — | [translated-p3.jpg](qa/outputs/ocrspace-test/pages/translated-p3.jpg) |
+
+Side-by-side comparisons: [page 1](qa/outputs/ocrspace-test/screenshots/compare-p1.png) · [page 2](qa/outputs/ocrspace-test/screenshots/compare-p2.png) · [page 3](qa/outputs/ocrspace-test/screenshots/compare-p3.png)
+
+OpenRouter output (same fix, same file): [page 1](qa/outputs/ocrspace-test/pages/translated-openrouter-p1.jpg) · [page 2](qa/outputs/ocrspace-test/pages/translated-openrouter-p2.jpg) · [page 3](qa/outputs/ocrspace-test/pages/translated-openrouter-p3.jpg)
+
+| Provider | Blocks | Written | Failed | Persian chars | Chinese left | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| Gemini `gemini-flash-lite-latest` (free) | 82 | 54 | 0 | 2863 | 0 | 13.6 s |
+| OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free` | 82 | 54 | 0 | 2910 | 0 | 399.8 s |
+
+### What still does not match the original
+* Very small chart labels keep their Chinese text when OCR.space misses them at the 1 MB resolution limit; nothing is left half-covered, but those labels are simply not translated.
+* A paragraph that is much longer than its source (rare here) is still shrunk to fit its own lines instead of reflowing the page — the layout stays faithful, the font gets smaller.
+* The text layer still shows presentation-form characters on copy/paste (the `Ȝ` issue), unchanged by this fix.

@@ -10,45 +10,36 @@
   "providers": [
     {
       "provider": "gemini",
+      "model": "gemini-flash-lite-latest",
+      "label": "gemini-gemini-flash-lite-latest",
       "pages_in": 3,
       "pages_out": 4,
-      "ocr_chars": 374,
-      "blocks": 74,
-      "translated_blocks": 46,
+      "blocks": 82,
+      "translated_blocks": 54,
       "failed_blocks": 0,
       "write_failures": 0,
-      "persian_chars": 2734,
+      "persian_chars": 2863,
       "chinese_left": 0,
       "question_marks": 0,
-      "right_aligned_pct": 1.8,
-      "seconds": 25.3,
-      "kb": 2054.9,
-      "model": "gemini-3-flash-preview",
-      "usage": {
-        "input_tokens": 115,
-        "output_tokens": 14
-      }
+      "seconds": 13.6,
+      "kb": 2384.0
     },
     {
-      "provider": "gemini",
+      "provider": "openrouter",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "label": "openrouter-nemotron-3-ultra-550b",
       "pages_in": 3,
       "pages_out": 4,
-      "ocr_chars": 374,
-      "blocks": 74,
-      "translated_blocks": 46,
+      "blocks": 82,
+      "translated_blocks": 54,
       "failed_blocks": 0,
       "write_failures": 0,
-      "persian_chars": 2832,
+      "persian_chars": 2910,
       "chinese_left": 0,
       "question_marks": 0,
-      "right_aligned_pct": 2.5,
-      "seconds": 13.5,
-      "kb": 2355.4,
-      "model": "gemini-flash-lite-latest",
-      "usage": {
-        "input_tokens": 1522,
-        "output_tokens": 1812
-      }
+      "seconds": 399.8,
+      "kb": 2583.9
     }
-  ]
+  ],
+  "renderer": "per-line replacement (each OCR line keeps its own box)"
 }

@@ -697,7 +697,9 @@ def _normalise_layout_blocks(blocks: list[dict], page_rect=None) -> list[dict]:
         horizontal_overlap=overlap/min_width
         same_column = horizontal_overlap >= 0.20 or abs(x0-px0) <= max(18.0, median_h*2.5)
         # Avoid swallowing titles / footers separated by a large vertical gap.
-        if 0 <= gap <= max_gap and same_column:
+        # A block that already carries its own line boxes (OCR.space) is a finished
+        # paragraph; merging it again would throw those boxes away.
+        if 0 <= gap <= max_gap and same_column and not prev.get("lines"):
             prev["text"] = (prev["text"] + " " + item["text"]).strip()
             prev["bbox"] = (min(px0,x0), min(py0,y0), max(px1,x1), max(py1,y1))
             prev["font_size"] = (prev.get("font_size", 11.0) + item.get("font_size", 11.0))/2
@@ -817,12 +819,74 @@ def _preflight_htmlbox(rect, text: str, fontsize: float, target_lang: str, page_
         tmp.close()
 
 
-def _write_text(page, rect, text, original_size: float, target_lang: str, scanned: bool | None = None) -> tuple[bool,str]:
+def _split_by_weights(text: str, weights: list[float]) -> list[str]:
+    """Split a translated paragraph across the source lines, by source length."""
+    words = text.split()
+    if not words:
+        return ["" for _ in weights]
+    total = float(sum(weights)) or 1.0
+    pieces, used, running = [], 0, 0.0
+    for weight in weights:
+        running += float(weight)
+        target = round(len(words) * running / total)
+        if used < len(words):
+            target = max(target, used + 1)
+        target = min(target, len(words))
+        pieces.append(" ".join(words[used:target]))
+        used = target
+    if used < len(words):
+        pieces[-1] = (pieces[-1] + " " + " ".join(words[used:])).strip()
+    return pieces
+
+
+def _write_on_lines(page, lines: list[dict], text: str, original_size: float, target_lang: str) -> tuple[bool,str]:
+    """Write a paragraph back onto its own source lines.
+
+    Each line gets its exact original box, so tables, charts and images keep
+    their place and no wide white rectangle is painted over them.
+    """
+    import pymupdf, html as html_mod
+    weights = [max(1, len(str(line.get("text", "") or "").strip())) for line in lines]
+    pieces = _split_by_weights(text, weights)
+    page_rect = page.rect
+    archive = pymupdf.Archive(str(_FONT_DIR))
+    written = 0
+    for line, piece in zip(lines, pieces):
+        piece = piece.strip()
+        if not piece:
+            continue
+        box = pymupdf.Rect(line["bbox"])
+        box = pymupdf.Rect(max(page_rect.x0 + 1, box.x0), max(page_rect.y0 + 1, box.y0),
+                           min(page_rect.x1 - 1, box.x1), min(page_rect.y1 - 1, box.y1))
+        if box.width < 4 or box.height < 3:
+            continue
+        size = max(4.5, min(float(original_size or 11), box.height * 0.95))
+        try:
+            page.add_redact_annot(box, fill=(1, 1, 1))
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                                  graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
+            spare, _ = page.insert_htmlbox(
+                box, f"<body>{html_mod.escape(piece)}</body>",
+                css=_htmlbox_css(size, target_lang), archive=archive, scale_low=0.35,
+            )
+            if spare >= 0:
+                written += 1
+        except Exception:
+            continue
+    if written:
+        return True, ""
+    return False, "نوشتن خط‌به‌خط روی متن اصلی جا نشد"
+
+
+def _write_text(page, rect, text, original_size: float, target_lang: str, scanned: bool | None = None,
+                lines: list[dict] | None = None) -> tuple[bool,str]:
     import pymupdf, html as html_mod
     if not text or not text.strip():
         return False,"متن ترجمه خالی است"
     if not _FONT_PATH.exists():
         return False,f"فونت Sahel پیدا نشد: {_FONT_PATH}"
+    if scanned and lines and len(lines) >= 2:
+        return _write_on_lines(page, lines, text, original_size, target_lang)
     page_rect=page.rect
     inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
     # A scanned page has no text layer: redaction cannot remove glyphs that live
@@ -1040,7 +1104,8 @@ def translate_pdf_optimized(
             # Decide once per page: inserting text changes get_text() of the page.
             scanned_page = not page.get_text().strip()
             for idx, block, out in to_replace:
-                ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page)
+                ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page,
+                                      lines=block.get("lines"))
                 if ok:
                     written += 1
                     pages_written.add(page_num)

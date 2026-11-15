@@ -7,8 +7,8 @@
 | --- | --- |
 | [01_original.pdf](01_original.pdf) | PDF اصلی چینی، دست‌نخورده |
 | [02_ocrspace_ocr.pdf](02_ocrspace_ocr.pdf) | همان صفحات + لایهٔ متنی OCR.space |
-| [03_translated_gemini-gemini-3-flash-preview.pdf](03_translated_gemini-gemini-3-flash-preview.pdf) | ترجمه با Gemini 3 Flash Preview (رایگان) |
-| [04_translated_gemini-gemini-flash-lite-latest.pdf](04_translated_gemini-gemini-flash-lite-latest.pdf) | ترجمه با Gemini Flash Lite (رایگان) |
+| [03_translated_gemini-gemini-flash-lite-latest.pdf](03_translated_gemini-gemini-flash-lite-latest.pdf) | ترجمه با Gemini Flash Lite (رایگان) |
+| [04_translated_openrouter-nemotron-3-ultra-550b.pdf](04_translated_openrouter-nemotron-3-ultra-550b.pdf) | ترجمه با OpenRouter (مدل رایگان) |
 | [metrics.json](metrics.json) | عددهای اندازه‌گیری‌شده |
 | [ocr_blocks.json](ocr_blocks.json) | بلاک‌های خام OCR.space |
 | [screenshots/](screenshots) | تصویر تک‌تک صفحات و مقایسه‌ها |
@@ -29,5 +29,13 @@
 ![صفحه ۳ اصلی](pages/original-p3.jpg)
 ![صفحه ۳ ترجمه](pages/translated-p3.jpg)
 
-**وضعیت این اجرا در یک نگاه:** ۷۴ بلاک، ۴۶ نوشته‌شده، ۰ ناموفق، ۰ نویسهٔ چینی باقی‌مانده، ۰ علامت سؤال.
-OpenRouter در این اجرا تست نشد چون سهمیهٔ رایگان روزانهٔ حساب (۵۰ درخواست) تمام شده بود.
+**وضعیت این اجرا در یک نگاه:** ۸۲ بلاک، ۵۴ نوشته‌شده، ۰ ناموفق، ۰ نویسهٔ چینی باقی‌مانده، ۰ علامت سؤال.
+هر دو پرووایدر تست شدند: Gemini Flash Lite در ۱۳.۶ ثانیه و OpenRouter (مدل رایگان) در ۳۹۹.۸ ثانیه.
+
+**رندر جدید:** ترجمه روی همان خطوط اصلی نوشته می‌شود (هر خط کادر خودش را دارد)، پس جدول‌ها، نمودارها و تصاویر جای خودشان می‌مانند و فضای سفید بزرگ ساخته نمی‌شود.
+
+## OpenRouter — سه صفحه
+
+![صفحه ۱ OpenRouter](pages/translated-openrouter-p1.jpg)
+![صفحه ۲ OpenRouter](pages/translated-openrouter-p2.jpg)
+![صفحه ۳ OpenRouter](pages/translated-openrouter-p3.jpg)
