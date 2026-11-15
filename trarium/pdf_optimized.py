@@ -795,9 +795,13 @@ def _htmlbox_css(font_size: float, target_lang: str) -> str:
     rtl=target_lang in {"fa","ar","he","ur"}
     align="right" if rtl else "left"
     direction="rtl" if rtl else "ltr"
+    # ``unicode-bidi: plaintext`` lets each run pick its own direction from its
+    # first strong character, so an English-only legend entry stays LTR while a
+    # Persian sentence stays RTL, and mixed lines keep numbers/parentheses in order.
     return (f"@font-face{{font-family:Sahel;src:url('Sahel.ttf');}} *{{font-family:Sahel;"
-            f"font-size:{font_size:.2f}pt;line-height:1.18;}} body{{margin:0;padding:0;"
-            f"direction:{direction};text-align:{align};white-space:normal;}}")
+            f"font-size:{font_size:.2f}pt;line-height:1.18;}}"
+            f" body{{margin:0;padding:0;direction:{direction};text-align:{align};"
+            f"unicode-bidi:plaintext;white-space:normal;}}")
 
 
 def _preflight_htmlbox(rect, text: str, fontsize: float, target_lang: str, page_rect) -> tuple[bool,float]:
@@ -817,6 +821,16 @@ def _preflight_htmlbox(rect, text: str, fontsize: float, target_lang: str, page_
         return False,0.0
     finally:
         tmp.close()
+
+
+def _needs_translation(text: str) -> bool:
+    """False for labels that carry no words (percentages, axis ticks, page numbers).
+
+    Translating or redrawing those only produced white boxes over charts, so they
+    are left exactly as they are on the original page.
+    """
+    letters = [c for c in str(text or "") if c.isalpha()]
+    return len(letters) >= 2
 
 
 def _split_by_weights(text: str, weights: list[float]) -> list[str]:
@@ -860,7 +874,7 @@ def _write_on_lines(page, lines: list[dict], text: str, original_size: float, ta
                            min(page_rect.x1 - 1, box.x1), min(page_rect.y1 - 1, box.y1))
         if box.width < 4 or box.height < 3:
             continue
-        size = max(4.5, min(float(original_size or 11), box.height * 0.95))
+        size = max(6.0, min(float(original_size or 11), box.height * 0.95))
         try:
             page.add_redact_annot(box, fill=(1, 1, 1))
             page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
@@ -1095,6 +1109,10 @@ def translate_pdf_optimized(
                 key = (page_num, idx)
                 out = translated.get(key)
                 if not out or key in failed_keys or out.strip() == str(block.get("text", "")).strip():
+                    continue
+                if not _needs_translation(block.get("text", "")) or not _needs_translation(out):
+                    # Numbers/percentages stay untouched: drawing them again only
+                    # put white rectangles on top of the pie chart.
                     continue
                 to_replace.append((idx, block, out))
 

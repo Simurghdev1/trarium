@@ -519,10 +519,17 @@ OpenRouter output (same fix, same file): [page 1](qa/outputs/ocrspace-test/pages
 
 | Provider | Blocks | Written | Failed | Persian chars | Chinese left | Time |
 | --- | --- | --- | --- | --- | --- | --- |
-| Gemini `gemini-flash-lite-latest` (free) | 82 | 54 | 0 | 2863 | 0 | 13.6 s |
+| Gemini `gemini-flash-lite-latest` (free) | 82 | 54 | 0 | 2831 | 0 | 12.8 s |
 | OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free` | 82 | 54 | 0 | 2910 | 0 | 399.8 s |
 
 ### What still does not match the original
 * Very small chart labels keep their Chinese text when OCR.space misses them at the 1 MB resolution limit; nothing is left half-covered, but those labels are simply not translated.
 * A paragraph that is much longer than its source (rare here) is still shrunk to fit its own lines instead of reflowing the page — the layout stays faithful, the font gets smaller.
 * The text layer still shows presentation-form characters on copy/paste (the `Ȝ` issue), unchanged by this fix.
+
+### Follow-up renderer fixes (same round)
+* Percentages, axis ticks and page numbers are no longer redrawn: `_needs_translation` skips labels with fewer than two letters, which removed the white rectangles that sat on the pie chart wedges.
+* `unicode-bidi: plaintext` in the text CSS lets every run pick its direction from its first strong character, so an English-only legend item stays LTR and a Persian sentence stays RTL, with numbers and parentheses in order.
+* Minimum font size in the per-line writer raised to 6 pt.
+
+Still unmatched on page 3: the bar-chart x-axis labels (亚洲 / 北美 / Europe / 南美) stay in their original form because OCR.space missed them at the free plan's 1 MB resolution; the legend and title are translated.
