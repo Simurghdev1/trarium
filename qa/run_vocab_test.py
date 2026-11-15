@@ -70,6 +70,7 @@ def main() -> int:
     ap.add_argument("--outdir", default="qa/outputs/vocab-test")
     ap.add_argument("--providers", default="gemini:gemini-flash-lite-latest")
     ap.add_argument("--ocr", default="ocrspace")
+    ap.add_argument("--fire-final", action="store_true")
     args = ap.parse_args()
 
     outdir = pathlib.Path(args.outdir).resolve()
@@ -94,6 +95,7 @@ def main() -> int:
                 enable_ocr=True, ocr_method=args.ocr, ocr_lang="eng",
                 skip_pages=set(), translation_workers=2, return_stats=True,
                 use_cache=False, use_checkpoint=False,
+                self_review=args.fire_final, final_check=args.fire_final, uniform_font=True,
             )
         except Exception as exc:  # noqa: BLE001 - reported, not hidden
             print(f"FAILED {label}: {exc}", flush=True)
@@ -102,7 +104,9 @@ def main() -> int:
             continue
         metrics = measure(source, target, stats, time.time() - started)
         metrics.update(provider=provider, model=model, label=label,
-                       usage=getattr(translator, "last_usage", {}))
+                       usage=getattr(translator, "last_usage", {}),
+                       reviewed_blocks=stats.reviewed_blocks,
+                       qc_ok=stats.qc_ok, qc_issues=stats.qc_issues)
         screenshots(target, shots, label)
         print("METRICS:" + json.dumps(metrics, ensure_ascii=False), flush=True)
         results.append(metrics)

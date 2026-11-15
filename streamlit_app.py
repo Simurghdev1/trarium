@@ -433,6 +433,11 @@ with layout_tab:
                     from trarium.pdf_optimized import translate_pdf_optimized
                     bar = st.progress(0.0)
                     def cb(p, msg): bar.progress(min(max(p, 0), 1), text=msg)
+                    fire_final = st.checkbox(
+                        "🔥 آتش نهایی — بازبینی خودکار ترجمه + بررسی خروجی با فایل اصلی",
+                        value=False, key="pdf_fire_final",
+                        help="مدل یک‌بار قطعه‌های مشکوک (ناقص، تکراری، نیمه‌انگلیسی، جاافتاده) را بازبینی و اصلاح می‌کند و سپس خروجی با PDF اصلی مقایسه می‌شود: صفحه‌های خالی، متن‌های ترجمه‌نشده، هم‌پوشانی، اندازه‌های نامنظم فونت، اندازهٔ صفحه و تصاویر.",
+                    )
                     _, stats = translate_pdf_optimized(path, translator, target_lang, str(out),
                                            skip_pages={p - 1 for p in skip},
                                            precomputed_ocr=ocr_results,
@@ -445,7 +450,10 @@ with layout_tab:
                                            protect_nontranslatable=protect_spans,
                                            adaptive_batch=adaptive_batch,
                                            use_checkpoint=use_checkpoint,
-                                           use_cache=use_cache)
+                                           use_cache=use_cache,
+                                           self_review=fire_final,
+                                           final_check=fire_final,
+                                           uniform_font=True)
                     st.session_state["layout_result"] = Path(out).read_bytes()
                     if stats.translated_blocks == 0 or stats.pages_written == 0:
                         st.session_state.pop("layout_result", None)
@@ -462,6 +470,13 @@ with layout_tab:
                     else:
                         st.success(f"🎉 PDF آماده شد؛ {stats.translated_blocks} بلاک ترجمه و {stats.pages_written} صفحه بازنویسی شد.")
                     st.caption(f"Cache/Checkpoint: {stats.cache_hits + stats.checkpoint_hits} · درخواست API: {stats.api_requests} · توکن ورودی: {stats.input_tokens:,} · خروجی: {stats.output_tokens:,} · Placeholder: {stats.protected_spans}")
+                    if fire_final:
+                        if stats.reviewed_blocks:
+                            st.info(f"🔍 بازبینی مدل: {stats.reviewed_blocks} قطعهٔ مشکوک اصلاح شد.")
+                        if stats.qc_ok:
+                            st.success("✅ آتش نهایی: خروجی با فایل اصلی مقایسه شد و مشکل ساختاری پیدا نشد.")
+                        else:
+                            st.warning("🔥 آتش نهایی — این خروجی به بررسی نیاز دارد:\n\n- " + "\n- ".join(stats.qc_issues))
                 except Exception as exc:
                     from trarium.translators.openrouter_http import OpenRouterSecurityBlockError
                     if isinstance(exc, OpenRouterSecurityBlockError) and exc.source == "waf":

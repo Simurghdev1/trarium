@@ -7,18 +7,21 @@
       "translated_blocks": 58,
       "failed_blocks": 0,
       "write_failures": 0,
-      "persian_chars": 4182,
-      "latin_chars": 173,
+      "persian_chars": 4121,
+      "latin_chars": 185,
       "question_marks": 0,
-      "seconds": 16.1,
-      "kb": 2219.4,
+      "seconds": 16.2,
+      "kb": 2244.1,
       "provider": "gemini",
       "model": "gemini-flash-lite-latest",
       "label": "gemini-gemini-flash-lite-latest",
       "usage": {
-        "input_tokens": 2027,
-        "output_tokens": 2636
-      }
+        "input_tokens": 143,
+        "output_tokens": 3
+      },
+      "reviewed_blocks": 1,
+      "qc_ok": true,
+      "qc_issues": []
     }
   ]
 }

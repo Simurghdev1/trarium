@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
 from typing import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import requests
 from rich.console import Console
@@ -41,6 +41,9 @@ class PDFTranslationStats:
     output_tokens: int = 0
     protected_spans: int = 0
     ocr_pdf_path: str = ""
+    reviewed_blocks: int = 0
+    qc_issues: list = field(default_factory=list)
+    qc_ok: bool = True
 _FONT_DIR = Path(__file__).parent / "fonts"
 if not _FONT_DIR.exists():
     _FONT_DIR = Path(__file__).parent.parent / "trarium" / "fonts"
@@ -892,8 +895,36 @@ def _write_on_lines(page, lines: list[dict], text: str, original_size: float, ta
     return False, "نوشتن خط‌به‌خط روی متن اصلی جا نشد"
 
 
+def _review_translations(translator, entries, translated: dict, target_lang: str) -> int:
+    """Ask the model to repair suspicious blocks (empty, duplicated, half-English)."""
+    suspects = []
+    for page_num, block_idx, source in entries:
+        value = translated.get((page_num, block_idx))
+        if not value:
+            continue
+        ratio = len(value) / max(1, len(source))
+        mixed = bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff]", value))
+        if mixed or ratio < 0.2 or ratio > 3.2 or value.strip() == source.strip():
+            suspects.append((page_num, block_idx, source, value))
+    fixed = 0
+    for page_num, block_idx, source, value in suspects[:20]:
+        prompt = (
+            "این قطعه از یک سند است. ترجمهٔ فارسی زیر را بررسی کن؛ اگر ناقص، نادرست یا نیمه‌انگلیسی است "
+            "ترجمهٔ کامل و روان را فقط به فارسی بنویس و اگر درست است همان را بدون تغییر برگردان.\n"
+            f"متن اصلی:\n{source}\n\nترجمهٔ فعلی:\n{value}"
+        )
+        try:
+            answer = (translator.translate(prompt, target_lang) or "").strip()
+        except Exception:
+            continue
+        if answer and answer != value and not re.search(r"[\u4e00-\u9fff]", answer):
+            translated[(page_num, block_idx)] = answer
+            fixed += 1
+    return fixed
+
+
 def _write_text(page, rect, text, original_size: float, target_lang: str, scanned: bool | None = None,
-                lines: list[dict] | None = None) -> tuple[bool,str]:
+                lines: list[dict] | None = None, size_cap: float | None = None) -> tuple[bool,str]:
     import pymupdf, html as html_mod
     if not text or not text.strip():
         return False,"متن ترجمه خالی است"
@@ -902,14 +933,27 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
     if scanned and lines and len(lines) >= 2:
         return _write_on_lines(page, lines, text, original_size, target_lang)
     page_rect=page.rect
-    inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
     # A scanned page has no text layer: redaction cannot remove glyphs that live
-    # inside the page image, so the original (Chinese) text would stay visible
-    # under the translation. Paint the block area first in that case.
+    # inside the page image, so the original text would stay visible under the
+    # translation. There the box must stay exactly on the text, otherwise the
+    # white fill spills over charts and artwork.
     if scanned is None:
         scanned = not page.get_text().strip()
+    if scanned:
+        inset=pymupdf.Rect(max(page_rect.x0+1, rect[0]), max(page_rect.y0+1, rect[1]),
+                           min(page_rect.x1-1, rect[2]), min(page_rect.y1-1, rect[3]))
+    else:
+        inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
     cover_fill=(1,1,1) if scanned else None
     base_size=max(7.0,min(float(original_size or 11),18.0))
+    if size_cap:
+        # Body text stays within a narrow band around the document's median size,
+        # while a heading keeps a visible step above it instead of being flattened.
+        cap=float(size_cap)
+        if base_size > cap * 1.35:
+            base_size=min(base_size, cap * 1.6)
+        else:
+            base_size=max(8.0, min(base_size, cap * 1.15))
     fits,_=_preflight_htmlbox(inset,text,base_size,target_lang,page_rect)
     if not fits:
         return False,"متن ترجمه داخل محدوده صفحه جا نشد"
@@ -976,6 +1020,9 @@ def translate_pdf_optimized(
     adaptive_batch: bool = True,
     use_checkpoint: bool = True,
     use_cache: bool = True,
+    self_review: bool = False,
+    final_check: bool = False,
+    uniform_font: bool = True,
 ) -> str | tuple[str, PDFTranslationStats]:
     """Translate a PDF while preserving page positions; OCR is opt-in."""
     import pymupdf
@@ -1099,6 +1146,16 @@ def translate_pdf_optimized(
         stats.input_tokens = _tm_stats.get("input_tokens", 0)
         stats.output_tokens = _tm_stats.get("output_tokens", 0)
         stats.protected_spans = _tm_stats.get("protected_spans", 0)
+        if self_review:
+            stats.reviewed_blocks = _review_translations(translator, entries, translated, target_lang)
+        # One body size for the whole document keeps a light novel from printing
+        # one paragraph at 18 pt and the next at 7 pt.
+        body_size = None
+        if uniform_font:
+            sizes = [float(b.get("font_size") or 0) for blocks in all_blocks for b in blocks if (b.get("font_size") or 0) > 0]
+            if sizes:
+                sizes.sort()
+                body_size = sizes[len(sizes) // 2]
         pages_written = set()
         for page_num, blocks in enumerate(all_blocks):
             if page_num in skip_pages or not blocks:
@@ -1123,7 +1180,7 @@ def translate_pdf_optimized(
             scanned_page = not page.get_text().strip()
             for idx, block, out in to_replace:
                 ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page,
-                                      lines=block.get("lines"))
+                                      lines=block.get("lines"), size_cap=body_size if uniform_font else None)
                 if ok:
                     written += 1
                     pages_written.add(page_num)
@@ -1144,6 +1201,14 @@ def translate_pdf_optimized(
         _append_pdf_attribution_page(doc, target_lang)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path, garbage=4, deflate=True, clean=True)
+        if final_check:
+            from trarium.pdf_qc import check_pdf
+
+            report = check_pdf(input_path, output_path, target_lang)
+            stats.qc_ok = report.ok
+            stats.qc_issues = list(report.issues)
+            for issue in report.issues:
+                console.print(f"  ⚠️ QC: {issue}")
         console.print(f"  ✍️ {written}/{len(entries)} بلاک نوشته شد؛ {len(failures)} بلاک ترجمه‌نشده؛ {stats.write_failures} خطای درج.")
         return (output_path, stats) if return_stats else output_path
     finally:

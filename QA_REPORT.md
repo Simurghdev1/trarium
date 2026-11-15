@@ -566,3 +566,29 @@ The page size, orientation and the layout of the vocabulary grid are preserved; 
 
 Outputs: [qa/outputs/vocab-test/](qa/outputs/vocab-test/) — original PDF, translated PDF, screenshots of every page before/after, `metrics.json`.
 Remaining nit: one manga bubble kept the English word “and” at the start of its translation; everything else is Persian.
+
+## 20) Engine fixes: white boxes, uniform type, self-review and a final check
+
+### Root causes and fixes
+| Problem | Root cause | Fix |
+| --- | --- | --- |
+| White rectangles around translated words, artwork covered | On scanned pages `_write_text` painted `_expand_rect(...)` — a box grown by up to 8% of the page height — before writing | Scanned pages now fill and write inside the exact source box only (`inset = rect`), so charts, bubbles and images keep their pixels |
+| One sentence 18 pt, the next 7 pt | Every block used its own `font_size`, which OCR/noise makes wildly uneven | `uniform_font=True` clamps body text to a narrow band around the document median while headings keep a step above it (`≤ median×1.6`) |
+| Untranslated / half-English fragments | Nothing re-read the translation after the batch pass | New `self_review` option (`_review_translations`) re-asks the model for blocks that are empty, echoed, duplicated or still contain CJK, capped at 20 per document |
+| No way to verify a result | Output was never compared with the source | New `trarium/pdf_qc.py` + `final_check` option: page count/size, blank pages, lost images, leftover CJK, duplicated blocks, overlapping spans, text outside the page, tiny-font share |
+| Nothing prevented regressions | No tests for any of the above | `tests/test_pdf_qc.py` (5 tests) plus the existing 48 |
+
+UI: a single checkbox “🔥 آتش نهایی” on the PDF tab turns on the model self-review and the final check, and prints the QC result (green when clean, the issue list otherwise).
+
+### Real run — `advanced_english_vocabulary_light_novel_manga.pdf`
+| Provider | Blocks | Translated | Failed | Reviewed | QC | Persian chars | Time |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Gemini `gemini-flash-lite-latest` (free) | 59 | 58 | 0 | 1 | ✅ clean | 4121 | 16.2 s |
+| OpenRouter `nemotron-3-ultra-550b-a55b:free` | 59 | 58 | 0 | 0 | ⚠️ 1 duplicated block reported | 3810 | 165.6 s |
+
+Tests: `tests/` → 53 passed.
+
+### What is still not perfect
+* One manga bubble keeps the English word “and” at the start of its line; the self-review pass fixed a different block instead.
+* The OpenRouter run produced one duplicated block, which the new QC reported instead of hiding.
+* The final check is structural (geometry, scripts, sizes, duplication). It cannot tell that a sentence is a poor translation, so a human read of the page images is still required.
