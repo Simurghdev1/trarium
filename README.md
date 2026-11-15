@@ -2,6 +2,10 @@
 
 [![Trarium QA](https://github.com/alimahamdarijanipro-stack/trarium-/actions/workflows/qa.yml/badge.svg?branch=qa%2Fv2.17.0-audit)](https://github.com/alimahamdarijanipro-stack/trarium-/actions/workflows/qa.yml)
 
+🔤 **[تست OCR.space → فارسی (۳ صفحه، تصویر کامل)](qa/outputs/ocrspace-test/README.md)** — PDF اصلی، PDF پس از OCR، دو PDF ترجمه‌شده، عکس هر سه صفحه و متریک‌ها.
+
+✅ **[آخرین اجرای QA (Actions)](https://github.com/alimahamdarijanipro-stack/trarium-/actions/runs/43619771082)** — سبز روی کامیت `dd8f97f` (شاخهٔ QA)، شامل ۴۷ تست واحد.
+
 📦 **[خروجی‌های تست و اکشنز (Release)](https://github.com/alimahamdarijanipro-stack/trarium-/releases/tag/qa-2.17.0-2026-11-13)** — PDF گزارش، بستهٔ آرتیفکت و لاگ اجرا.
 
 🧪 **[خروجی تست چینی → فارسی](qa/outputs/zh-to-fa/trarium_zh_to_fa_text.pdf)** — PDF فارسی ساخته‌شده توسط خود تراریوم، همراه با [گزارش کامل](QA_REPORT.md).

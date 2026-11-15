@@ -214,7 +214,7 @@ def build_blocks(parsed: dict, page_width: float, image_width: int) -> list[dict
     return merge_lines(blocks)
 
 
-def merge_lines(blocks: list[dict], gap_factor: float = 1.35) -> list[dict]:
+def merge_lines(blocks: list[dict], gap_factor: float = 1.35, max_lines: int = 4) -> list[dict]:
     """Join consecutive lines of one paragraph.
 
     OCR.space returns one box per text line. Sending every line separately made
@@ -232,13 +232,19 @@ def merge_lines(blocks: list[dict], gap_factor: float = 1.35) -> list[dict]:
             width = max(1.0, min(px1 - px0, x1 - x0))
             same_column = overlap > 0.5 * width
             close = -0.2 * height <= (y0 - py1) <= gap_factor * height
-            if same_column and close:
+            # Very tall replacements cover charts and tables, so a paragraph
+            # stops growing after a few lines.
+            small_enough = prev.get("_lines", 1) < max_lines
+            if same_column and close and small_enough:
                 prev["bbox"] = (min(px0, x0), min(py0, y0), max(px1, x1), max(py1, y1))
                 joiner = "" if _is_cjk(prev["text"][-1:]) else " "
                 prev["text"] = prev["text"] + joiner + block["text"]
                 prev["font_size"] = max(prev.get("font_size", 8.0), block.get("font_size", 8.0))
+                prev["_lines"] = prev.get("_lines", 1) + 1
                 continue
-        merged.append(dict(block))
+        merged.append({**block, "_lines": 1})
+    for block in merged:
+        block.pop("_lines", None)
     return merged
 
 

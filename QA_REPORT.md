@@ -478,9 +478,9 @@ tests/                      47 passed
 ### Real run on the 3-page Chinese scan (`qa/outputs/ocrspace-test/`)
 | Step | Result |
 | --- | --- |
-| OCR.space (free key, `language=chs`, engine 2) | 3 pages, 3 requests, 1342 chars, 7.0 s |
-| Gemini `gemini-3-flash-preview` (free) | 34 blocks, 19 written, 0 failed, 2793 Persian chars, 0 Chinese left, 37.0 s |
-| Gemini `gemini-flash-lite-latest` (free) | 34 blocks, 19 written, 0 failed, 2893 Persian chars, 0 Chinese left, 12.0 s |
+| OCR.space (free key, `language=chs`, engine 2) | 3 pages, 3 requests, 1317 chars, 7.3 s |
+| Gemini `gemini-3-flash-preview` (free) | 74 blocks, 46 written, 0 failed, 2734 Persian chars, 0 Chinese left, 25.3 s |
+| Gemini `gemini-flash-lite-latest` (free) | 74 blocks, 46 written, 0 failed, 2832 Persian chars, 0 Chinese left, 13.5 s |
 | OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free` | blocked: `429 free-models-per-day` (the account's 50 free requests/day were used up by the earlier runs); no paid fallback was attempted |
 
 Outputs: `01_original.pdf` (untouched), `02_ocrspace_ocr.pdf` (page images + OCR.space text layer), `03_translated_gemini-gemini-3-flash-preview.pdf`, `04_translated_gemini-gemini-flash-lite-latest.pdf`, page screenshots, `compare-p1..3.png`, `metrics.json`, and `ocr_blocks.json` (raw OCR.space blocks).

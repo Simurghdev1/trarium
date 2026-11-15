@@ -181,14 +181,7 @@ class _OfflineTranslator:
 
 def test_pipeline_uses_ocr_space_blocks(monkeypatch, tmp_path):
     path = tmp_path / "scan.pdf"
-    doc = pymupdf.open()
-    for _ in range(2):
-        page = doc.new_page()
-        page.insert_text((60, 80), "image only page", color=(1, 1, 1))  # invisible text? no: keep it
-    doc.save(path)
-    doc.close()
-
-    # Make the pages look scanned (no text layer) for the pipeline.
+    # Pages with a drawing but no text layer, like a real scan.
     clean = pymupdf.open()
     for _ in range(2):
         clean.new_page().draw_rect(pymupdf.Rect(0, 0, 400, 500), color=(0, 0, 0), fill=(0.9, 0.9, 0.9))
@@ -230,3 +223,10 @@ def test_separate_columns_are_not_merged():
     payload = _overlay_payload([("left", 0, 20, 40, 20), ("right", 200, 20, 40, 20)])
     blocks = ocr_space.build_blocks(payload, page_width=300.0, image_width=300)
     assert len(blocks) == 2
+
+
+def test_merge_stops_after_four_lines():
+    lines = [("خط", 10, 20 + i * 22, 100, 20) for i in range(8)]
+    blocks = ocr_space.build_blocks(_overlay_payload(lines), page_width=100.0, image_width=100)
+    assert len(blocks) == 2, "a paragraph must not swallow more than four lines"
+    assert all("_lines" not in b for b in blocks)
