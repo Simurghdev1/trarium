@@ -17,18 +17,18 @@
       "translated_blocks": 54,
       "failed_blocks": 0,
       "write_failures": 0,
-      "persian_chars": 2831,
+      "persian_chars": 2839,
       "chinese_left": 0,
       "question_marks": 0,
-      "right_aligned_pct": 1.8,
-      "seconds": 12.8,
+      "right_aligned_pct": 1.2,
+      "seconds": 13.2,
       "kb": 2379.0,
       "model": "gemini-flash-lite-latest",
       "usage": {
         "input_tokens": 1613,
-        "output_tokens": 1913
+        "output_tokens": 1918
       }
     }
   ],
-  "renderer": "per-line boxes, numeric labels left untouched, unicode-bidi plaintext"
+  "renderer": "per-line boxes, numeric labels untouched, unicode-bidi plaintext"
 }

@@ -533,3 +533,9 @@ OpenRouter output (same fix, same file): [page 1](qa/outputs/ocrspace-test/pages
 * Minimum font size in the per-line writer raised to 6 pt.
 
 Still unmatched on page 3: the bar-chart x-axis labels (亚洲 / 北美 / Europe / 南美) stay in their original form because OCR.space missed them at the free plan's 1 MB resolution; the legend and title are translated.
+
+### Rollback note
+The legend-colour experiment (`e1cb520`, marker stripping) changed how every short label was boxed and made page 3 worse overall — some headings and legend words came back untranslated. It was reverted in `295331c`, so the renderer is exactly the version that produced the earlier, better output (per-line boxes + numeric labels untouched + `unicode-bidi: plaintext`).
+
+The current test run on the same three pages: 82 blocks, 54 written, 0 failed, 2839 Persian characters, 0 Chinese in the replaced text, 13.2 s.
+Known issues that remain in this version: legend swatches on page 3 are redrawn as black squares, and x-axis labels (亚洲 / 北美 / 欧洲 / 南美) are not translated.
