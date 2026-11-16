@@ -1,5 +1,8 @@
 # گزارش ممیزی و تست واقعی — Trarium 2.17.0
 
+
+> **فایل‌های سنگین تست (PDF/PNG خروجی و ورودی) از این ریپو به [trarium-files](https://github.com/alimahamdarijanipro-stack/trarium-files) منتقل شده‌اند تا کلون‌کردن کد سبک بماند؛ لینک‌های زیر به همان‌جا اشاره می‌کنند.**
+
 > این گزارش فقط بر اساس اجرای واقعی نوشته شده است. هر عددی که اینجا آمده از یک
 > اجرای ضبط‌شده در `.json` می‌آید و هر چیزی که قابل تست نبوده، در بخش «محدودیت‌ها»
 > صریحاً نام برده شده است.
@@ -205,23 +208,23 @@ workflowای اضافه نشد چون دسترسی نوشتن وجود ندار�
 
 ### تصویر ۱ — انگلیسی به فارسی (ترکیبی)، صفحهٔ ۱: چپ = ورودی اصلی، راست = خروجی ترجمه‌شده
 
-![مقایسه صفحه ۱](qa/report-assets/compare-en-p1.png)
+![مقایسه صفحه ۱](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/compare-en-p1.png)
 
 ### تصویر ۲ — صفحهٔ ۲ (متن پیوسته)
 
-![مقایسه صفحه ۲](qa/report-assets/compare-en-p2.png)
+![مقایسه صفحه ۲](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/compare-en-p2.png)
 
 ### تصویر ۳ — صفحهٔ ۳ (شامل شکل/تصویر صفحه)
 
-![مقایسه صفحه ۳](qa/report-assets/compare-en-p3.png)
+![مقایسه صفحه ۳](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/compare-en-p3.png)
 
 ### تصویر ۴ — فارسی راست‌چین: چپ = فایل ورودی (لایهٔ متنی منطقی، بدون شکل‌دهی حروف)، راست = خروجی تراریوم با فونت Sahel
 
-![مقایسه فارسی](qa/report-assets/compare-fa-p1.png)
+![مقایسه فارسی](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/compare-fa-p1.png)
 
 ### تصویر ۵ — مسیر OCR روی برگ اسکن‌شدهٔ واقعی
 
-![خروجی OCR](qa/report-assets/scan_ocr-p1.png)
+![خروجی OCR](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/scan_ocr-p1.png)
 
 ## Real PDF workflow — measured results
 
@@ -364,19 +367,19 @@ Failed tests: none in this module. Limitations that are *not* scored:
 
 **صفحهٔ ۱ — چپ: فایل چینی ورودی، راست: خروجی تراریوم**
 
-![مقایسه صفحه ۱](qa/outputs/zh-to-fa/screenshots/compare-p1.png)
+![مقایسه صفحه ۱](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/screenshots/compare-p1.png)
 
 **صفحهٔ ۲ — نمودار دایره‌ای و متن**
 
-![مقایسه صفحه ۲](qa/outputs/zh-to-fa/screenshots/compare-p2.png)
+![مقایسه صفحه ۲](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/screenshots/compare-p2.png)
 
 **صفحهٔ ۳ — جدول و پایان‌نامه**
 
-![مقایسه صفحه ۳](qa/outputs/zh-to-fa/screenshots/compare-p3.png)
+![مقایسه صفحه ۳](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/screenshots/compare-p3.png)
 
 **PDF متنی تمیز (راست‌چین، فونت Sahel)**
 
-![PDF متنی صفحه ۱](qa/outputs/zh-to-fa/screenshots/text-p1.png)
+![PDF متنی صفحه ۱](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/screenshots/text-p1.png)
 
 ### دو باگ واقعی که همین تست پیدا کرد و رفع شد
 
@@ -400,9 +403,9 @@ Failed tests: none in this module. Limitations that are *not* scored:
 
 ### فایل‌های خروجی
 
-- `qa/outputs/zh-to-fa/trarium_zh_to_fa_hybrid.pdf` — خروجی حفظ‌چیدمان
-- `qa/outputs/zh-to-fa/trarium_zh_to_fa_text.pdf` — خروجی متنی تمیز راست‌چین
-- `qa/outputs/zh-to-fa/metrics.json` و `qa/outputs/zh-to-fa/run.log` — اندازه‌گیری‌ها و لاگ کامل
+- `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/trarium_zh_to_fa_hybrid.pdf` — خروجی حفظ‌چیدمان
+- `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/trarium_zh_to_fa_text.pdf` — خروجی متنی تمیز راست‌چین
+- `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/metrics.json` و `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/run.log` — اندازه‌گیری‌ها و لاگ کامل
 
 ## 16) PDF24 OCR provider (branch `qa/v2.17.0-audit` only)
 
@@ -436,7 +439,7 @@ qa/pdf_pipeline_test.py      5 passed
 ```
 A real Gemini call with the provided key works on `gemini-3.5-flash` (free tier) and a request for `gemini-2.5-pro` is refused with `PaidModelBlocked` unless the user ticks the consent box — total cost of this run: **0**.
 
-### PDF24 test run (3-page Chinese scan, `qa/outputs/pdf24-test/`)
+### PDF24 test run (3-page Chinese scan, `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/pdf24-test/`)
 | Metric | Value |
 | --- | --- |
 | pages in / out | 3 / 4 (assignment page) |
@@ -475,7 +478,7 @@ tests/                      47 passed
 ```
 (The previous PDF24 tests, including the test double for `pdf24-Ocr.exe`, still pass; nothing was removed.)
 
-### Real run on the 3-page Chinese scan (`qa/outputs/ocrspace-test/`)
+### Real run on the 3-page Chinese scan (`https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/`)
 | Step | Result |
 | --- | --- |
 | OCR.space (free key, `language=chs`, engine 2) | 3 pages, 3 requests, 1317 chars, 7.3 s |
@@ -509,13 +512,13 @@ The old writer did three things that together produced the broken pages:
 ### Before / after (all three pages)
 | Page | Original | Before the fix | After the fix |
 | --- | --- | --- | --- |
-| 1 | [original-p1.jpg](qa/outputs/ocrspace-test/pages/original-p1.jpg) | [compare-p1.png (PDF24 era)](qa/outputs/pdf24-test/screenshots/compare-p1.png) | [translated-p1.jpg](qa/outputs/ocrspace-test/pages/translated-p1.jpg) |
-| 2 | [original-p2.jpg](qa/outputs/ocrspace-test/pages/original-p2.jpg) | — | [translated-p2.jpg](qa/outputs/ocrspace-test/pages/translated-p2.jpg) |
-| 3 | [original-p3.jpg](qa/outputs/ocrspace-test/pages/original-p3.jpg) | — | [translated-p3.jpg](qa/outputs/ocrspace-test/pages/translated-p3.jpg) |
+| 1 | [original-p1.jpg](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/original-p1.jpg) | [compare-p1.png (PDF24 era)](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/pdf24-test/screenshots/compare-p1.png) | [translated-p1.jpg](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/translated-p1.jpg) |
+| 2 | [original-p2.jpg](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/original-p2.jpg) | — | [translated-p2.jpg](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/translated-p2.jpg) |
+| 3 | [original-p3.jpg](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/original-p3.jpg) | — | [translated-p3.jpg](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/translated-p3.jpg) |
 
-Side-by-side comparisons: [page 1](qa/outputs/ocrspace-test/screenshots/compare-p1.png) · [page 2](qa/outputs/ocrspace-test/screenshots/compare-p2.png) · [page 3](qa/outputs/ocrspace-test/screenshots/compare-p3.png)
+Side-by-side comparisons: [page 1](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/screenshots/compare-p1.png) · [page 2](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/screenshots/compare-p2.png) · [page 3](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/screenshots/compare-p3.png)
 
-OpenRouter output (same fix, same file): [page 1](qa/outputs/ocrspace-test/pages/translated-openrouter-p1.jpg) · [page 2](qa/outputs/ocrspace-test/pages/translated-openrouter-p2.jpg) · [page 3](qa/outputs/ocrspace-test/pages/translated-openrouter-p3.jpg)
+OpenRouter output (same fix, same file): [page 1](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/translated-openrouter-p1.jpg) · [page 2](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/translated-openrouter-p2.jpg) · [page 3](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/ocrspace-test/pages/translated-openrouter-p3.jpg)
 
 | Provider | Blocks | Written | Failed | Persian chars | Chinese left | Time |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -564,7 +567,7 @@ Run: `python qa/run_vocab_test.py --input /tmp/vocab.pdf` with `gemini-flash-lit
 
 The page size, orientation and the layout of the vocabulary grid are preserved; the manga page keeps its artwork and only the speech bubbles are replaced.
 
-Outputs: [qa/outputs/vocab-test/](qa/outputs/vocab-test/) — original PDF, translated PDF, screenshots of every page before/after, `metrics.json`.
+Outputs: [qa/outputs/vocab-test/](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/vocab-test/) — original PDF, translated PDF, screenshots of every page before/after, `metrics.json`.
 Remaining nit: one manga bubble kept the English word “and” at the start of its translation; everything else is Persian.
 
 ## 20) Engine fixes: white boxes, uniform type, self-review and a final check
@@ -592,3 +595,47 @@ Tests: `tests/` → 53 passed.
 * One manga bubble keeps the English word “and” at the start of its line; the self-review pass fixed a different block instead.
 * The OpenRouter run produced one duplicated block, which the new QC reported instead of hiding.
 * The final check is structural (geometry, scripts, sizes, duplication). It cannot tell that a sentence is a poor translation, so a human read of the page images is still required.
+
+## 21) EPUB novel: translating in place instead of rebuilding the book
+
+`qa/run_epub_test.py` translates an EPUB without rebuilding it: every XHTML
+document is edited in place, so the cover, the artwork, the publisher
+stylesheet and the reading order survive untouched. The document switches to
+`lang="fa" dir="rtl"`, a small `css/fa.css` adds the bundled Sahel font and a
+Persian line height, and the table of contents / NCX labels are translated too.
+
+How it works:
+* paragraphs and headings are collected per file and sent in numbered batches
+  (`[[1]] … [[n]]`); a batch whose marker count does not match is split, then
+  retried paragraph by paragraph, so a lost marker can never shift text;
+* every file's result is cached with a hash of its source, so an interrupted
+  run resumes instead of paying for the same chapters twice;
+* paragraphs that hold inline artwork (this novel uses them for censored
+  words) are split into text runs: the text is replaced, the `<img>` tags stay
+  exactly where they were;
+* the final check compares input and output: image count, paragraphs still in
+  English, Persian share, and every XHTML file is parsed to prove it is
+  well-formed.
+
+Real run — *Omniscient Reader's Viewpoint, Vol. 2* (20 chapters, 3.9 MB):
+
+| Metric | Value |
+| --- | --- |
+| Chapters / parts | 20 |
+| Paragraphs translated | 3,765 |
+| Persian characters | 209,401 |
+| Images in / out | 22 / 22 |
+| Paragraphs still in English | 0 |
+| Malformed XHTML files | 0 |
+| Provider | Gemini `gemini-flash-lite-latest` (free) |
+| Translation time | 4 min 37 s (277 s) |
+
+Two real bugs were found by the new checks during this run and fixed:
+`rtl_document` added `lang`/`dir` twice when it ran over an already converted
+file (invalid XHTML in 8 documents), and replacing a whole text run around an
+inline image deleted half of a `<span>` pair (`Opening and ending tag mismatch:
+p line 42 and span`). Both are now impossible: the `html` tag is rebuilt once,
+and inline text runs keep their tags.
+
+Output: <https://github.com/alimahamdarijanipro-stack/trarium-files> —
+`books/omniscient-readers-viewpoint-vol2-fa.epub`.
