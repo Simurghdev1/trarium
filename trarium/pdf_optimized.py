@@ -1078,6 +1078,60 @@ def _wrapped_line_count(display_text: str, size: float, width: float, font) -> i
     return lines
 
 
+def _grow_light_box(page, rect, vertical_limit: float = 2.2, horizontal_limit: float = 0.0):
+    """Grow a scanned text box into the blank space around it.
+
+    Manga bubbles hold one short line of English; the Persian is longer and a
+    tight OCR box would shrink it to a speck. The bubble itself is blank, so the
+    box may follow that blank area as long as it stays inside it.
+    """
+    import pymupdf
+
+    page_rect = page.rect
+    win = pymupdf.Rect(rect.x0 - 12, rect.y0 - rect.height, rect.x1 + 12, rect.y1 + rect.height) & page_rect
+    if win.is_empty:
+        return rect
+    dpi = 72
+    pix = page.get_pixmap(dpi=dpi, clip=win, colorspace=pymupdf.csGRAY, alpha=False)
+    if not pix.samples:
+        return rect
+    scale = dpi / 72.0
+
+    def row_light(y: float) -> bool:
+        py = int((y - win.y0) * scale)
+        if py < 0 or py >= pix.height:
+            return False
+        row = pix.samples[py * pix.stride: py * pix.stride + pix.width]
+        # Any ink stops the growth: a bubble outline is one thin dark line, and a
+        # mean over the row would happily step straight over it.
+        return sum(row) / max(1, len(row)) > 200 and min(row) > 110
+
+    def col_light(x: float) -> bool:
+        px = int((x - win.x0) * scale)
+        if px < 0 or px >= pix.width:
+            return False
+        col = [pix.samples[y * pix.stride + px] for y in range(0, pix.height, max(1, pix.height // 60))]
+        return sum(col) / max(1, len(col)) > 200 and min(col) > 110
+
+    top, bottom = rect.y0, rect.y1
+    limit = rect.height * vertical_limit
+    while bottom - top < limit and row_light(bottom + 1):
+        bottom += 1
+    while bottom - top < limit and row_light(top - 1):
+        top -= 1
+    left, right = rect.x0, rect.x1
+    grew = 0.0
+    while grew < rect.width * horizontal_limit and col_light(left - 1):
+        left -= 1
+        grew += 1
+    grew = 0.0
+    while grew < rect.width * horizontal_limit and col_light(right + 1):
+        right += 1
+        grew += 1
+    grown = pymupdf.Rect(left, top, right, bottom) & page_rect
+    return grown if not grown.is_empty else rect
+
+
 def _fit_text_size(text: str, box, size: float, min_size: float = 6.0) -> float:
     """Largest size at which the translation still fits inside its own box.
 
@@ -1147,6 +1201,11 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
     if scanned:
         inset=pymupdf.Rect(max(page_rect.x0+1, rect[0]), max(page_rect.y0+1, rect[1]),
                            min(page_rect.x1-1, rect[2]), min(page_rect.y1-1, rect[3]))
+        # Cover exactly the old letters, but write into the blank space around
+        # them: a manga bubble holds one short English line and the Persian needs
+        # more room than the OCR box gives it.
+        cover = inset
+        inset = _grow_light_box(page, inset)
     else:
         inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
     # On a scan the letters are printed inside the page image, so the box has to
@@ -1174,7 +1233,7 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
     try:
         # fill=None keeps the underlying page/illustration visible, and the flags
         # stop PyMuPDF from rasterising or deleting images that intersect the box.
-        page.add_redact_annot(inset, fill=cover_fill)
+        page.add_redact_annot(cover if scanned else inset, fill=cover_fill)
         page.apply_redactions(
             images=pymupdf.PDF_REDACT_IMAGE_NONE,
             graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
@@ -1182,7 +1241,7 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
         if scanned:
             # A hair bigger than the text box: OCR boxes stop above descenders, and
             # an uncovered sliver of the original line looks like a broken rule.
-            pad = pymupdf.Rect(inset.x0 - 1, inset.y0 - 1.5, inset.x1 + 1, inset.y1 + 2)
+            pad = pymupdf.Rect(cover.x0 - 1, cover.y0 - 1.5, cover.x1 + 1, cover.y1 + 2)
             pad &= page.rect
             _fill_paper(page, pad)
         arch=pymupdf.Archive(str(_FONT_DIR))

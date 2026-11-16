@@ -278,9 +278,19 @@ def _render_page(page, dpi: int = 200) -> tuple[bytes, int]:
 
 def ocr_page(page, language: str = "eng", dpi: int = 200, key: str | None = None) -> list[dict]:
     """OCR one PyMuPDF page and return layout blocks in PDF points."""
+    code = language_codes(language)
     data, width = _render_page(page, dpi=dpi)
-    parsed = ocr_image_bytes(data, language=language_codes(language), key=key)
-    return build_blocks(parsed, page_width=page.rect.width, image_width=width)
+    parsed = ocr_image_bytes(data, language=code, key=key)
+    blocks = build_blocks(parsed, page_width=page.rect.width, image_width=width)
+    # A busy manga page sometimes comes back empty from the free engine; a
+    # smaller render is accepted more often and still reads the bubble text.
+    for lower in (150, 120):
+        if blocks or lower >= dpi:
+            break
+        data, width = _render_page(page, dpi=lower)
+        parsed = ocr_image_bytes(data, language=code, key=key)
+        blocks = build_blocks(parsed, page_width=page.rect.width, image_width=width)
+    return blocks
 
 
 def ocr_document_blocks(
