@@ -438,6 +438,16 @@ with layout_tab:
                         value=False, key="pdf_fire_final",
                         help="مدل یک‌بار قطعه‌های مشکوک (ناقص، تکراری، نیمه‌انگلیسی، جاافتاده) را بازبینی و اصلاح می‌کند و سپس خروجی با PDF اصلی مقایسه می‌شود: صفحه‌های خالی، متن‌های ترجمه‌نشده، هم‌پوشانی، اندازه‌های نامنظم فونت، اندازهٔ صفحه و تصاویر.",
                     )
+                    keep_images_intact = st.checkbox(
+                        "🖼️ متن‌های روی تصویر ترجمه نشوند (تصویر خراب نشود)",
+                        value=True, key="pdf_skip_text_on_image",
+                        help="اگر متنی روی نقاشی یا عکس نشسته باشد، ترجمه‌اش آن تصویر را می‌پوشاند و متن اصلی هم داخل عکس می‌ماند؛ در این حالت آن متن دست‌نخورده می‌ماند.",
+                    )
+                    match_paper = st.checkbox(
+                        "🎨 رنگ کادر متن هم‌رنگ کاغذ شود (حذف کادر سفید)",
+                        value=True, key="pdf_match_background",
+                        help="روی کاغذ کرم یا اسکن‌شده، پرکردن کادر با سفید یک مستطیل سفید دور ترجمه می‌سازد؛ رنگ از خود کاغذ نمونه‌برداری می‌شود.",
+                    )
                     _, stats = translate_pdf_optimized(path, translator, target_lang, str(out),
                                            skip_pages={p - 1 for p in skip},
                                            precomputed_ocr=ocr_results,
@@ -453,7 +463,9 @@ with layout_tab:
                                            use_cache=use_cache,
                                            self_review=fire_final,
                                            final_check=fire_final,
-                                           uniform_font=True)
+                                           uniform_font=True,
+                                           skip_text_on_image=keep_images_intact,
+                                           match_background=match_paper)
                     st.session_state["layout_result"] = Path(out).read_bytes()
                     if stats.translated_blocks == 0 or stats.pages_written == 0:
                         st.session_state.pop("layout_result", None)

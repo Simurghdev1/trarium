@@ -639,3 +639,42 @@ and inline text runs keep their tags.
 
 Output: <https://github.com/alimahamdarijanipro-stack/trarium-files> —
 `books/omniscient-readers-viewpoint-vol2-fa.epub`.
+
+## 22) Scanned illustrated book (Undine, 210 pages): paper colour instead of white boxes
+
+`MU_KPB_013_Undine_-_Illustrated_by_Arthur_Rackham.pdf` is a scan with a hidden
+OCR text layer. Two facts decided the whole run:
+
+1. **The letters are printed inside the page image.** `page.get_text()` is not
+   empty, so the old code treated the page as a normal text page, redacted the
+   invisible layer and wrote the translation on top of the *printed* English.
+   A page with a page-sized image now counts as a scan (`_has_page_image`), so
+   the box is covered before the translation is written.
+2. **A white fill is visible on paper.** The cover colour is sampled from the
+   paper itself, band by band (`_fill_paper`), because the page has a vignette
+   that one flat rectangle cannot follow.
+
+New rules, now documented in `AGENTS.md`:
+* text printed on an illustration is never translated (`skip_text_on_image`),
+  so the drawing is untouched;
+* every filled box takes the paper's colour (`match_background`);
+* the padding is minimal and the font shrinks just enough to stay inside its own
+  box (`_fit_text_size`), which removed the overlapping lines the first attempt
+  produced;
+* a block whose translation came back without Persian is not covered, so no
+  empty patch is left behind;
+* pages whose text layer is pure OCR noise are skipped, unless OCR is requested
+  for them (`force_ocr_pages`).
+
+Run (Gemini free tier, automatic fallback):
+* 210 pages, 826 blocks, 776 translated, 3 decorative blocks left untouched;
+* 115,524 Persian characters, 148 Latin characters left (names, latin titles);
+* final check: no blank page, no missing image, no overlap, no duplicate,
+  no CJK — `qc_ok = true`;
+* `gemini-flash-lite-latest` returned 429 mid-run, was dropped by the new
+  `FallbackTranslator`, and the next model finished the job.
+
+Tests: 58 passing (`tests/test_layout_rules.py` covers the two layout rules,
+including that a covered box is not white).
+Output: <https://github.com/alimahamdarijanipro-stack/trarium-files> —
+`qa/outputs/undine-test/`.

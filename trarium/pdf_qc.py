@@ -54,6 +54,46 @@ def _text_spans(page) -> list[dict]:
     return spans
 
 
+def _overlap_pairs(page, tolerance: float = 3.0) -> set[tuple[tuple[int, int, int, int], ...]]:
+    """Overlapping span pairs a page already has before we touch it."""
+    boxes = [pymupdf.Rect(span["bbox"]) for span in _text_spans(page)]
+    keys = set()
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            inter = boxes[i] & boxes[j]
+            if inter.is_empty:
+                continue
+            if inter.width * inter.height > 0.45 * min(boxes[i].get_area(), boxes[j].get_area()):
+                keys.add(_pair_key(boxes[i], boxes[j], tolerance))
+    return keys
+
+
+def _pair_key(a, b, tolerance: float = 3.0) -> tuple:
+    def cell(rect):
+        return (
+            int(round(rect.x0 / tolerance)),
+            int(round(rect.y0 / tolerance)),
+            int(round(rect.x1 / tolerance)),
+            int(round(rect.y1 / tolerance)),
+        )
+
+    first, second = sorted((cell(a), cell(b)))
+    return (first, second)
+
+
+def _pair_in(a, b, known: set, tolerance: float = 3.0) -> bool:
+    """Is this pair one of the pairs the source already had?"""
+    key = _pair_key(a, b, tolerance)
+    if key in known:
+        return True
+    # Tolerate a few points of drift in either box.
+    for delta in (-1, 1):
+        shifted = tuple((c[0], c[1] + delta, c[2], c[3]) for c in key)
+        if shifted in known:
+            return True
+    return False
+
+
 def _count_script(text: str, name: str) -> int:
     check = FOREIGN_RANGES[name]
     return sum(1 for char in text if check(char))
@@ -95,6 +135,14 @@ def check_pdf(source_path: str, output_path: str, target_lang: str = "fa") -> QC
                 foreign_chars += _count_script(text, name)
 
             spans = _text_spans(page)
+            # A repeated line can already be repeated in the source (OCR layers
+            # love doubling a heading); only new duplicates count.
+            source_seen: dict[str, int] = {}
+            if index < src.page_count:
+                for span in _text_spans(src[index]):
+                    content = str(span.get("text", "")).strip()
+                    if len(content) > 8:
+                        source_seen[content] = source_seen.get(content, 0) + 1
             seen: dict[str, int] = {}
             for span in spans:
                 content = str(span.get("text", "")).strip()
@@ -104,9 +152,14 @@ def check_pdf(source_path: str, output_path: str, target_lang: str = "fa") -> QC
                 sizes.append(round(float(span["size"]), 1))
                 if box.x1 > page.rect.x1 + 1 or box.x0 < page.rect.x0 - 1:
                     outside += 1
-            duplicated += sum(1 for count in seen.values() if count > 1)
+            duplicated += sum(
+                1 for content, count in seen.items() if count > max(1, source_seen.get(content, 0))
+            )
 
             boxes = [pymupdf.Rect(span["bbox"]) for span in spans if str(span.get("text", "")).strip()]
+            # A scan's own OCR layer often has overlapping boxes. Those are the
+            # source's problem, not the translation's, so they are not counted.
+            inherited = _overlap_pairs(src[index]) if index < src.page_count else set()
             for i in range(len(boxes)):
                 for j in range(i + 1, len(boxes)):
                     inter = boxes[i] & boxes[j]
@@ -114,6 +167,8 @@ def check_pdf(source_path: str, output_path: str, target_lang: str = "fa") -> QC
                         continue
                     area = inter.width * inter.height
                     if area > 0.45 * min(boxes[i].get_area(), boxes[j].get_area()):
+                        if _pair_in(boxes[i], boxes[j], inherited):
+                            continue
                         overlapping += 1
 
         # Ignore the attribution page when judging typography.

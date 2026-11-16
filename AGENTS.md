@@ -47,6 +47,12 @@ python -m trarium.cli novel https://example.com/novel/1/ -o output/
 - Complete translation without summarization
 - Preserve author's tone and style
 
+## Layout Rules (never break the page)
+- **Never translate text printed on a picture.** If a block sits on an illustration, painting a translation there covers the drawing while the original letters stay inside the image, so the block is left untouched (`skip_text_on_image=True`).
+- **No white boxes.** Every filled box takes its colour from the paper under it (`match_background=True`), because a white rectangle on cream or scanned paper is the visible "white box" users complain about.
+- **Keep the pad minimal.** The fill stays on the source text box; it is never grown by a fixed margin, and the font shrinks just enough that the translation never spills into the next line.
+- A scan with a hidden OCR layer is still a scan: its letters live in the page image, so the page is treated like an image page and every box is covered with its own paper colour.
+
 ## Provider Configuration
 - **OpenRouter**: Free models (Nemotron, GPT-OSS) — requires API key
 - **9Router**: Local router (localhost:20128) — smart fallback to free/cheap providers
@@ -58,3 +64,4 @@ python -m trarium.cli novel https://example.com/novel/1/ -o output/
 - For Iranian users: Google Gemini may be blocked, use OpenRouter or 9Router
 - OCR engines are optional (install as needed)
 - Font: Sahel.ttf for Persian PDF output
+- Quota or a dead model never stops a run: `trarium/translators/fallback.py` moves to the next provider/model instead of leaving half-translated text

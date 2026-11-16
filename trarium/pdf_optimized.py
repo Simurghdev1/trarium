@@ -42,6 +42,8 @@ class PDFTranslationStats:
     protected_spans: int = 0
     ocr_pdf_path: str = ""
     reviewed_blocks: int = 0
+    skipped_artwork: int = 0
+    skipped_noise_pages: int = 0
     qc_issues: list = field(default_factory=list)
     qc_ok: bool = True
 _FONT_DIR = Path(__file__).parent / "fonts"
@@ -653,6 +655,20 @@ def _is_garbled(text: str) -> bool:
     return False
 
 
+def _looks_garbled(text: str) -> bool:
+    """True for OCR noise such as "zZzZZzzz TZZJ wazzr jypn".
+
+    Ornamental borders and decorative lettering are scanned with a text layer that
+    is usually meaningless; translating it prints nonsense on top of the art, so
+    it is left exactly as it is.
+    """
+    words = re.findall(r"[A-Za-z]{2,}", str(text or ""))
+    if len(words) < 4:
+        return False
+    vowel_less = [w for w in words if not re.search(r"[aeiouyAEIOUY]", w)]
+    return len(vowel_less) / len(words) > 0.5
+
+
 def _box_tuple(value) -> tuple[float, float, float, float]:
     try:
         x0, y0, x1, y1 = [float(v) for v in value]
@@ -787,14 +803,16 @@ def _expand_rect(rect, page_rect, text: str, original_size: float) -> object:
     import pymupdf
     r=pymupdf.Rect(rect)
     # OCR often reports the height of a single source line; translated Persian can need 2-4 lines.
-    extra_h=max(6.0, min(page_rect.height*0.08, len(text.split())*0.22 + r.height*0.55))
-    xpad=min(8.0, max(2.0, r.width*0.025))
+    # Keep the box as tight as the translation allows: every extra point here is
+    # visible paper that gets painted over.
+    extra_h=max(4.0, min(page_rect.height*0.06, len(text.split())*0.16 + r.height*0.45))
+    xpad=min(3.0, max(0.8, r.width*0.008))
     candidate=pymupdf.Rect(max(page_rect.x0+2,r.x0-xpad), max(page_rect.y0+1,r.y0-extra_h*0.12),
                            min(page_rect.x1-2,r.x1+xpad), min(page_rect.y1-1,r.y1+extra_h))
     return candidate
 
 
-def _htmlbox_css(font_size: float, target_lang: str) -> str:
+def _htmlbox_css(font_size: float, target_lang: str, line_height: float = 1.18) -> str:
     rtl=target_lang in {"fa","ar","he","ur"}
     align="right" if rtl else "left"
     direction="rtl" if rtl else "ltr"
@@ -802,7 +820,7 @@ def _htmlbox_css(font_size: float, target_lang: str) -> str:
     # first strong character, so an English-only legend entry stays LTR while a
     # Persian sentence stays RTL, and mixed lines keep numbers/parentheses in order.
     return (f"@font-face{{font-family:Sahel;src:url('Sahel.ttf');}} *{{font-family:Sahel;"
-            f"font-size:{font_size:.2f}pt;line-height:1.18;}}"
+            f"font-size:{font_size:.2f}pt;line-height:{line_height:.2f};}}"
             f" body{{margin:0;padding:0;direction:{direction};text-align:{align};"
             f"unicode-bidi:plaintext;white-space:normal;}}")
 
@@ -824,6 +842,153 @@ def _preflight_htmlbox(rect, text: str, fontsize: float, target_lang: str, page_
         return False,0.0
     finally:
         tmp.close()
+
+
+def _sample_background(page, rect) -> tuple[float, float, float]:
+    """Median colour of the paper under a text box.
+
+    A pure white fill is wrong on tinted or scanned paper: it stamps a visible
+    white rectangle around every translated sentence. The median of the pixels
+    around the box is the paper colour, because text glyphs are a minority.
+    """
+    import pymupdf
+
+    try:
+        clip = pymupdf.Rect(rect)
+        clip.x0 = max(page.rect.x0, clip.x0 - 8)
+        clip.x1 = min(page.rect.x1, clip.x1 + 8)
+        clip.y0 = max(page.rect.y0, clip.y0 - 4)
+        clip.y1 = min(page.rect.y1, clip.y1 + 4)
+        if clip.width < 2 or clip.height < 2:
+            return (1.0, 1.0, 1.0)
+        pix = page.get_pixmap(clip=clip, dpi=36)
+        n = pix.n
+        width, height = pix.width, pix.height
+        # Only the ring of paper around the text is used: pixels inside the box
+        # are glyphs, and they would darken the sample.
+        margin = max(2, int(round(6 * 36 / 72)))
+        channels = ([], [], [])
+        for y in range(0, height, 2):
+            edge_row = y < margin or y >= height - margin
+            for x in range(0, width, 2):
+                if not edge_row and margin <= x < width - margin:
+                    continue
+                offset = (y * width + x) * n
+                for c in range(3):
+                    channels[c].append(pix.samples[offset + c])
+        if not channels[0]:
+            return (1.0, 1.0, 1.0)
+        values = []
+        for channel in channels:
+            channel.sort()
+            values.append(channel[len(channel) // 2] / 255.0)
+        return tuple(values)
+    except Exception:
+        return (1.0, 1.0, 1.0)
+
+
+def _fill_paper(page, rect, band: float = 6.0) -> None:
+    """Cover a text box with the paper it sits on, band by band.
+
+    One flat rectangle shows its own edge on a gradient page, so each thin band
+    takes the colour of the paper just outside the text at that height.
+    """
+    import pymupdf
+
+    box = pymupdf.Rect(rect)
+    if box.is_empty:
+        return
+    clip = pymupdf.Rect(max(page.rect.x0, box.x0 - 14), max(page.rect.y0, box.y0 - 4),
+                        min(page.rect.x1, box.x1 + 14), min(page.rect.y1, box.y1 + 4))
+    dpi = 36
+    try:
+        pix = page.get_pixmap(clip=clip, dpi=dpi)
+    except Exception:
+        return
+    scale = dpi / 72.0
+    width, height, n = pix.width, pix.height, pix.n
+    margin = max(2, int(round(6 * scale)))
+    left_x0, left_x1 = margin, max(margin + 2, int(round(8 * scale)))
+    right_x1 = width - margin
+    right_x0 = max(left_x1 + 1, right_x1 - max(2, int(round(8 * scale))))
+
+    steps = max(1, int(round(box.height / band)))
+    for step in range(steps):
+        y0 = box.y0 + step * band
+        y1 = min(box.y1, y0 + band)
+        if y1 <= y0:
+            break
+        py = int(round((y0 - clip.y0) * scale)) + 1
+        if py < 1 or py >= height - 1:
+            continue
+        row = []
+        for x in range(left_x0, left_x1):
+            offset = (py * width + x) * n
+            row.append((pix.samples[offset], pix.samples[offset + 1], pix.samples[offset + 2]))
+        for x in range(right_x0, right_x1):
+            offset = (py * width + x) * n
+            row.append((pix.samples[offset], pix.samples[offset + 1], pix.samples[offset + 2]))
+        if not row:
+            continue
+        color = tuple(sorted(channel)[len(row) // 2] / 255.0 for channel in zip(*row))
+        page.draw_rect(pymupdf.Rect(box.x0, y0, box.x1, y1 + 0.4), color=None, fill=color, width=0, overlay=True)
+
+
+def _artwork_rects(page, min_cover: float = 0.7) -> list:
+    """Image boxes that are artwork, not the page's own background scan."""
+    import pymupdf
+
+    page_area = max(1.0, page.rect.width * page.rect.height)
+    boxes = []
+    try:
+        for info in page.get_image_info():
+            box = pymupdf.Rect(info.get("bbox") or (0, 0, 0, 0))
+            if box.is_empty:
+                continue
+            if box.width * box.height / page_area >= min_cover:
+                continue  # the page background itself
+            boxes.append(box)
+    except Exception:
+        return []
+    return boxes
+
+
+def _has_page_image(page, min_cover: float = 0.85) -> bool:
+    """True when the page is a scan: its text is printed inside a page-sized image.
+
+    Such a page has a hidden OCR text layer, so ``get_text()`` is not empty, but
+    redacting the glyphs does not remove the letters burnt into the scan.
+    """
+    page_area = max(1.0, page.rect.width * page.rect.height)
+    try:
+        for info in page.get_image_info():
+            box = info.get("bbox") or (0, 0, 0, 0)
+            width = max(0.0, float(box[2]) - float(box[0]))
+            height = max(0.0, float(box[3]) - float(box[1]))
+            if width * height / page_area >= min_cover:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _block_on_artwork(page, rect, artwork=None) -> bool:
+    """True when a text box sits on an illustration.
+
+    Painting a translation there covers the drawing and the original letters
+    stay burned into the image, so the block is left exactly as it was.
+    """
+    import pymupdf
+
+    box = pymupdf.Rect(rect)
+    area = max(1.0, box.width * box.height)
+    covers = 0.0
+    for art in artwork if artwork is not None else _artwork_rects(page):
+        overlap = pymupdf.Rect(art) & box
+        if overlap.is_empty:
+            continue
+        covers += overlap.width * overlap.height
+    return covers / area >= 0.4
 
 
 def _needs_translation(text: str) -> bool:
@@ -856,7 +1021,8 @@ def _split_by_weights(text: str, weights: list[float]) -> list[str]:
     return pieces
 
 
-def _write_on_lines(page, lines: list[dict], text: str, original_size: float, target_lang: str) -> tuple[bool,str]:
+def _write_on_lines(page, lines: list[dict], text: str, original_size: float, target_lang: str,
+                    background: tuple[float, float, float] | None = None) -> tuple[bool,str]:
     """Write a paragraph back onto its own source lines.
 
     Each line gets its exact original box, so tables, charts and images keep
@@ -878,13 +1044,18 @@ def _write_on_lines(page, lines: list[dict], text: str, original_size: float, ta
         if box.width < 4 or box.height < 3:
             continue
         size = max(6.0, min(float(original_size or 11), box.height * 0.95))
+        # One line at a time: the paper has a gradient, so a per-line sample hides
+        # the patch far better than one flat colour over the whole paragraph.
+        line_fill = _sample_background(page, box)
         try:
-            page.add_redact_annot(box, fill=(1, 1, 1))
+            page.add_redact_annot(box, fill=line_fill or (1, 1, 1))
             page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
                                   graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
             spare, _ = page.insert_htmlbox(
                 box, f"<body>{html_mod.escape(piece)}</body>",
-                css=_htmlbox_css(size, target_lang), archive=archive, scale_low=0.35,
+                # A tight line box needs a tight line height, otherwise the text of
+                # one line spills into the next box and the spans overlap.
+                css=_htmlbox_css(size, target_lang, line_height=0.98), archive=archive, scale_low=0.35,
             )
             if spare >= 0:
                 written += 1
@@ -893,6 +1064,41 @@ def _write_on_lines(page, lines: list[dict], text: str, original_size: float, ta
     if written:
         return True, ""
     return False, "نوشتن خط‌به‌خط روی متن اصلی جا نشد"
+
+
+def _wrapped_line_count(display_text: str, size: float, width: float, font) -> int:
+    lines, current = 1, 0.0
+    for word in display_text.split():
+        piece = font.text_length(word + " ", size)
+        if current and current + piece > width:
+            lines += 1
+            current = piece
+        else:
+            current += piece
+    return lines
+
+
+def _fit_text_size(text: str, box, size: float, min_size: float = 6.0) -> float:
+    """Largest size at which the translation still fits inside its own box.
+
+    Persian runs longer than English, so keeping the source size forces the text
+    to wrap into the next line's space and the lines end up on top of each other.
+    """
+    import pymupdf
+
+    try:
+        font = pymupdf.Font(fontfile=str(_FONT_PATH))
+    except Exception:
+        return size
+    display = _reshape(str(text or ""))
+    width = max(4.0, box.width - 1.5)
+    limit = float(size)
+    while limit > min_size:
+        available = max(1, int(box.height / max(limit * 1.06, 1.0)))
+        if _wrapped_line_count(display, limit, width, font) <= available:
+            break
+        limit -= 0.25
+    return round(max(min_size, limit), 2)
 
 
 def _review_translations(translator, entries, translated: dict, target_lang: str) -> int:
@@ -924,27 +1130,29 @@ def _review_translations(translator, entries, translated: dict, target_lang: str
 
 
 def _write_text(page, rect, text, original_size: float, target_lang: str, scanned: bool | None = None,
-                lines: list[dict] | None = None, size_cap: float | None = None) -> tuple[bool,str]:
+                lines: list[dict] | None = None, size_cap: float | None = None,
+                background: tuple[float, float, float] | None = None) -> tuple[bool,str]:
     import pymupdf, html as html_mod
     if not text or not text.strip():
         return False,"متن ترجمه خالی است"
     if not _FONT_PATH.exists():
         return False,f"فونت Sahel پیدا نشد: {_FONT_PATH}"
-    if scanned and lines and len(lines) >= 2:
-        return _write_on_lines(page, lines, text, original_size, target_lang)
-    page_rect=page.rect
+    page_rect = page.rect
     # A scanned page has no text layer: redaction cannot remove glyphs that live
     # inside the page image, so the original text would stay visible under the
     # translation. There the box must stay exactly on the text, otherwise the
     # white fill spills over charts and artwork.
     if scanned is None:
-        scanned = not page.get_text().strip()
+        scanned = not page.get_text().strip() or _has_page_image(page)
     if scanned:
         inset=pymupdf.Rect(max(page_rect.x0+1, rect[0]), max(page_rect.y0+1, rect[1]),
                            min(page_rect.x1-1, rect[2]), min(page_rect.y1-1, rect[3]))
     else:
         inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
-    cover_fill=(1,1,1) if scanned else None
+    # On a scan the letters are printed inside the page image, so the box has to
+    # be covered; it is covered with the paper's own colour in thin bands instead
+    # of one white rectangle, which is what users see as a "white box".
+    cover_fill = None
     base_size=max(7.0,min(float(original_size or 11),18.0))
     if size_cap:
         # Body text stays within a narrow band around the document's median size,
@@ -954,6 +1162,10 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
             base_size=min(base_size, cap * 1.6)
         else:
             base_size=max(8.0, min(base_size, cap * 1.15))
+    if scanned:
+        # Measured before the dry run, so a tight scanned box is not rejected by
+        # the preflight only because the source size was too large.
+        base_size = _fit_text_size(text, inset, base_size, min_size=6.5)
     fits,_=_preflight_htmlbox(inset,text,base_size,target_lang,page_rect)
     if not fits:
         return False,"متن ترجمه داخل محدوده صفحه جا نشد"
@@ -967,9 +1179,18 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
             images=pymupdf.PDF_REDACT_IMAGE_NONE,
             graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
         )
+        if scanned:
+            # A hair bigger than the text box: OCR boxes stop above descenders, and
+            # an uncovered sliver of the original line looks like a broken rule.
+            pad = pymupdf.Rect(inset.x0 - 1, inset.y0 - 1.5, inset.x1 + 1, inset.y1 + 2)
+            pad &= page.rect
+            _fill_paper(page, pad)
         arch=pymupdf.Archive(str(_FONT_DIR))
         html=f"<body>{html_mod.escape(text).replace(chr(10),'<br>')}</body>"
-        spare,scale=page.insert_htmlbox(inset,html,css=_htmlbox_css(base_size,target_lang),archive=arch,scale_low=0.20)
+        # Shrink just enough that the paragraph stays inside its own box: big
+        # enough to read, small enough to never sit on the next line.
+        base_size = _fit_text_size(text, inset, base_size, min_size=6.5)
+        spare,scale=page.insert_htmlbox(inset,html,css=_htmlbox_css(base_size,target_lang,line_height=1.02),archive=arch,scale_low=0.20)
         if spare < 0:
             return False,"درج متن بعد از پاک‌سازی شکست خورد"
         return True,""
@@ -1023,6 +1244,9 @@ def translate_pdf_optimized(
     self_review: bool = False,
     final_check: bool = False,
     uniform_font: bool = True,
+    skip_text_on_image: bool = True,
+    match_background: bool = True,
+    force_ocr_pages: set[int] | None = None,
 ) -> str | tuple[str, PDFTranslationStats]:
     """Translate a PDF while preserving page positions; OCR is opt-in."""
     import pymupdf
@@ -1043,13 +1267,18 @@ def translate_pdf_optimized(
         scanned_pages: list[tuple[int, object]] = []
 
         # 1) Native text first. OCR only for pages that actually need it.
+        force_ocr = set(force_ocr_pages or set())
         for page_num in range(total_pages):
             if page_num in skip_pages:
                 continue
             blocks = extract_text_blocks(doc[page_num])
+            if page_num in force_ocr:
+                # The page's own text layer is noise (ornament, old imprint): throw
+                # it away so OCR can read the printed letters instead.
+                blocks = []
             if blocks:
                 all_blocks[page_num] = blocks
-            elif enable_ocr:
+            elif enable_ocr or page_num in force_ocr:
                 scanned_pages.append((page_num, doc[page_num]))
             if progress_callback and (page_num + 1) % 10 == 0:
                 progress_callback((page_num + 1) / max(total_pages, 1) * 0.15, f"تحلیل صفحه {page_num + 1}/{total_pages}...")
@@ -1099,11 +1328,20 @@ def translate_pdf_optimized(
                         progress_callback(0.15 + 0.25 * i / max(len(scanned_pages), 1), f"OCR صفحه {page_num + 1}/{total_pages}...")
 
         pdf24_ocr_path = locals().get("pdf24_ocr_path", "")
+        # Pages whose text layer is OCR noise (ornamental pages) are left alone.
+        garbled_pages = set()
+        for page_num, blocks in enumerate(all_blocks):
+            texts = [str(b.get("text", "") or "") for b in blocks]
+            if texts and sum(_looks_garbled(t) for t in texts) / len(texts) >= 0.5:
+                garbled_pages.add(page_num)
+        stats_pages_skipped = len(garbled_pages)
         entries = []
         for page_num, blocks in enumerate(all_blocks):
             if page_num in skip_pages:
                 continue
             for idx, block in enumerate(blocks):
+                if page_num in garbled_pages:
+                    continue
                 text = str(block.get("text", "") or "").strip()
                 if safe_optimization:
                     text = safe_normalize_text(text)
@@ -1167,6 +1405,12 @@ def translate_pdf_optimized(
                 out = translated.get(key)
                 if not out or key in failed_keys or out.strip() == str(block.get("text", "")).strip():
                     continue
+                if page_num in garbled_pages:
+                    continue
+                if target_lang == "fa" and not re.search(r"[\u0600-\u06ff]", out):
+                    # Nothing Persian came back (a title that stays English, a
+                    # failed block): covering it would leave an empty patch.
+                    continue
                 if not _needs_translation(block.get("text", "")) or not _needs_translation(out):
                     # Numbers/percentages stay untouched: drawing them again only
                     # put white rectangles on top of the pie chart.
@@ -1177,10 +1421,20 @@ def translate_pdf_optimized(
                 continue
 
             # Decide once per page: inserting text changes get_text() of the page.
-            scanned_page = not page.get_text().strip()
+            # A scan can still carry a hidden OCR layer; its letters live in the
+            # page image, so it has to be covered like a page with no text layer.
+            scanned_page = not page.get_text().strip() or _has_page_image(page)
+            artwork = _artwork_rects(page) if skip_text_on_image else []
             for idx, block, out in to_replace:
+                if artwork and _block_on_artwork(page, block["bbox"], artwork):
+                    # Text printed on top of an illustration: translating it would
+                    # cover the drawing while the original letters stay in the image.
+                    stats.skipped_artwork += 1
+                    continue
+                color = _sample_background(page, block["bbox"]) if (match_background and scanned_page) else None
                 ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page,
-                                      lines=block.get("lines"), size_cap=body_size if uniform_font else None)
+                                      lines=block.get("lines"), size_cap=body_size if uniform_font else None,
+                                      background=color)
                 if ok:
                     written += 1
                     pages_written.add(page_num)
@@ -1193,11 +1447,16 @@ def translate_pdf_optimized(
                 progress_callback(0.80 + 0.20 * (page_num + 1) / max(total_pages, 1), f"ساخت صفحه {page_num + 1}/{total_pages}...")
 
         stats.pages_written = len(pages_written)
+        stats.skipped_noise_pages = stats_pages_skipped
         stats.source_chars = sum(len(x[2]) for x in entries)
         stats.translated_chars = sum(len(translated.get((x[0],x[1]), "")) for x in entries)
-        if written == 0:
+        if written == 0 and stats.skipped_artwork == 0:
             reason = stats.first_translation_error or stats.first_write_error or "بررسی تنظیمات ترجمه و فونت را انجام دهید."
             raise RuntimeError(f"هیچ ترجمه‌ای در PDF نوشته نشد. {stats.failed_blocks} بلاک ناموفق بود. علت: {reason}")
+        if written == 0 and stats.skipped_artwork:
+            # Every block sits on artwork and is protected on purpose: the file is
+            # returned unchanged instead of failing the whole job.
+            console.print(f"  🖼️ همهٔ {stats.skipped_artwork} بلاک روی تصویر بودند و دست‌نخورده ماندند.")
         _append_pdf_attribution_page(doc, target_lang)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path, garbage=4, deflate=True, clean=True)
