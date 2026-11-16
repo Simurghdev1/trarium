@@ -1,5 +1,8 @@
 # گزارش ممیزی و تست واقعی — Trarium 2.17.0
 
+
+> **فایل‌های سنگین تست (PDF/PNG خروجی و ورودی) از این ریپو به [trarium-files](https://github.com/alimahamdarijanipro-stack/trarium-files) منتقل شده‌اند تا کلون‌کردن کد سبک بماند؛ لینک‌های زیر به همان‌جا اشاره می‌کنند.**
+
 > این گزارش فقط بر اساس اجرای واقعی نوشته شده است. هر عددی که اینجا آمده از یک
 > اجرای ضبط‌شده در `.json` می‌آید و هر چیزی که قابل تست نبوده، در بخش «محدودیت‌ها»
 > صریحاً نام برده شده است.
@@ -205,23 +208,23 @@ workflowای اضافه نشد چون دسترسی نوشتن وجود ندار�
 
 ### تصویر ۱ — انگلیسی به فارسی (ترکیبی)، صفحهٔ ۱: چپ = ورودی اصلی، راست = خروجی ترجمه‌شده
 
-![مقایسه صفحه ۱](qa/report-assets/compare-en-p1.png)
+![مقایسه صفحه ۱](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/compare-en-p1.png)
 
 ### تصویر ۲ — صفحهٔ ۲ (متن پیوسته)
 
-![مقایسه صفحه ۲](qa/report-assets/compare-en-p2.png)
+![مقایسه صفحه ۲](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/compare-en-p2.png)
 
 ### تصویر ۳ — صفحهٔ ۳ (شامل شکل/تصویر صفحه)
 
-![مقایسه صفحه ۳](qa/report-assets/compare-en-p3.png)
+![مقایسه صفحه ۳](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/compare-en-p3.png)
 
 ### تصویر ۴ — فارسی راست‌چین: چپ = فایل ورودی (لایهٔ متنی منطقی، بدون شکل‌دهی حروف)، راست = خروجی تراریوم با فونت Sahel
 
-![مقایسه فارسی](qa/report-assets/compare-fa-p1.png)
+![مقایسه فارسی](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/compare-fa-p1.png)
 
 ### تصویر ۵ — مسیر OCR روی برگ اسکن‌شدهٔ واقعی
 
-![خروجی OCR](qa/report-assets/scan_ocr-p1.png)
+![خروجی OCR](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/report-assets/scan_ocr-p1.png)
 
 ## Real PDF workflow — measured results
 
@@ -364,19 +367,19 @@ Failed tests: none in this module. Limitations that are *not* scored:
 
 **صفحهٔ ۱ — چپ: فایل چینی ورودی، راست: خروجی تراریوم**
 
-![مقایسه صفحه ۱](qa/outputs/zh-to-fa/screenshots/compare-p1.png)
+![مقایسه صفحه ۱](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/screenshots/compare-p1.png)
 
 **صفحهٔ ۲ — نمودار دایره‌ای و متن**
 
-![مقایسه صفحه ۲](qa/outputs/zh-to-fa/screenshots/compare-p2.png)
+![مقایسه صفحه ۲](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/screenshots/compare-p2.png)
 
 **صفحهٔ ۳ — جدول و پایان‌نامه**
 
-![مقایسه صفحه ۳](qa/outputs/zh-to-fa/screenshots/compare-p3.png)
+![مقایسه صفحه ۳](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/screenshots/compare-p3.png)
 
 **PDF متنی تمیز (راست‌چین، فونت Sahel)**
 
-![PDF متنی صفحه ۱](qa/outputs/zh-to-fa/screenshots/text-p1.png)
+![PDF متنی صفحه ۱](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/screenshots/text-p1.png)
 
 ### دو باگ واقعی که همین تست پیدا کرد و رفع شد
 
@@ -400,6 +403,6 @@ Failed tests: none in this module. Limitations that are *not* scored:
 
 ### فایل‌های خروجی
 
-- `qa/outputs/zh-to-fa/trarium_zh_to_fa_hybrid.pdf` — خروجی حفظ‌چیدمان
-- `qa/outputs/zh-to-fa/trarium_zh_to_fa_text.pdf` — خروجی متنی تمیز راست‌چین
-- `qa/outputs/zh-to-fa/metrics.json` و `qa/outputs/zh-to-fa/run.log` — اندازه‌گیری‌ها و لاگ کامل
+- `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/trarium_zh_to_fa_hybrid.pdf` — خروجی حفظ‌چیدمان
+- `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/trarium_zh_to_fa_text.pdf` — خروجی متنی تمیز راست‌چین
+- `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/metrics.json` و `https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/run.log` — اندازه‌گیری‌ها و لاگ کامل
