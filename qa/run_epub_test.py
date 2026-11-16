@@ -355,11 +355,12 @@ def main() -> int:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_path, "w") as book:
+        # The EPUB spec wants the mimetype entry first and uncompressed.
+        book.writestr("mimetype", payload.get("mimetype", b"application/epub+zip"), compress_type=zipfile.ZIP_STORED)
         for name in payload:
             if name == "mimetype":
-                book.writestr(name, payload[name], compress_type=zipfile.ZIP_STORED)
-            else:
-                book.writestr(name, payload[name], compress_type=zipfile.ZIP_DEFLATED)
+                continue
+            book.writestr(name, payload[name], compress_type=zipfile.ZIP_DEFLATED)
 
     metrics = measure(source, out_path, per_file, time.time() - started)
     (out_path.parent / "metrics.json").write_text(
