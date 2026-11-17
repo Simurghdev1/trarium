@@ -17,6 +17,7 @@ import requests
 from rich.console import Console
 
 from trarium.utils import clean_translation as _clean_translation
+from trarium.pdf_layout import LayoutItem, load_font as _layout_font, plan_page as _plan_page
 
 console = Console()
 
@@ -50,6 +51,9 @@ class PDFTranslationStats:
     translation_issues: int = 0
     translation_issue_kinds: dict = field(default_factory=dict)
     repaired_blocks: int = 0
+    layout_moved: int = 0
+    layout_shrunk: int = 0
+    layout_overflow: int = 0
 _FONT_DIR = Path(__file__).parent / "fonts"
 if not _FONT_DIR.exists():
     _FONT_DIR = Path(__file__).parent.parent / "trarium" / "fonts"
@@ -1136,6 +1140,22 @@ def _grow_light_box(page, rect, vertical_limit: float = 2.2, horizontal_limit: f
     return grown if not grown.is_empty else rect
 
 
+def _base_size(original_size: float, size_cap: float | None) -> float:
+    """The size a block is set at before anything is measured.
+
+    Body text stays within a narrow band around the document's median size, while
+    a heading keeps a visible step above it instead of being flattened.
+    """
+    base_size = max(7.0, min(float(original_size or 11), 18.0))
+    if size_cap:
+        cap = float(size_cap)
+        if base_size > cap * 1.35:
+            base_size = min(base_size, cap * 1.6)
+        else:
+            base_size = max(8.0, min(base_size, cap * 1.15))
+    return base_size
+
+
 def _fit_text_size(text: str, box, size: float, min_size: float = 6.0) -> float:
     """Largest size at which the translation still fits inside its own box.
 
@@ -1143,20 +1163,14 @@ def _fit_text_size(text: str, box, size: float, min_size: float = 6.0) -> float:
     to wrap into the next line's space and the lines end up on top of each other.
     """
     import pymupdf
+    from trarium.pdf_layout import fit_size, load_font
 
-    try:
-        font = pymupdf.Font(fontfile=str(_FONT_PATH))
-    except Exception:
+    font = load_font(str(_FONT_PATH))
+    if font is None:
         return size
-    display = _reshape(str(text or ""))
-    width = max(4.0, box.width - 1.5)
-    limit = float(size)
-    while limit > min_size:
-        available = max(1, int(box.height / max(limit * 1.06, 1.0)))
-        if _wrapped_line_count(display, limit, width, font) <= available:
-            break
-        limit -= 0.25
-    return round(max(min_size, limit), 2)
+    chosen = fit_size(str(text or ""), font, max(4.0, pymupdf.Rect(box).width - 1.5),
+                      pymupdf.Rect(box).height, size, min_size)
+    return chosen.size
 
 
 def _review_translations(translator, entries, translated: dict, target_lang: str) -> int:
@@ -1189,13 +1203,21 @@ def _review_translations(translator, entries, translated: dict, target_lang: str
 
 def _write_text(page, rect, text, original_size: float, target_lang: str, scanned: bool | None = None,
                 lines: list[dict] | None = None, size_cap: float | None = None,
-                background: tuple[float, float, float] | None = None) -> tuple[bool,str]:
+                background: tuple[float, float, float] | None = None,
+                cover: tuple[float, float, float, float] | None = None,
+                plan_rect: tuple[float, float, float, float] | None = None,
+                planned_size: float | None = None,
+                erase: bool = True) -> tuple[bool,str]:
     import pymupdf, html as html_mod
     if not text or not text.strip():
         return False,"متن ترجمه خالی است"
     if not _FONT_PATH.exists():
         return False,f"فونت Sahel پیدا نشد: {_FONT_PATH}"
     page_rect = page.rect
+    # The box that is erased is always the box the source text occupies; the box
+    # the translation is written into may be larger (a planned, measured box).
+    cover_box = (pymupdf.Rect(cover) if cover is not None else pymupdf.Rect(rect)) & page_rect
+    planned = (pymupdf.Rect(plan_rect) & page_rect) if plan_rect is not None else None
     # A scanned page has no text layer: redaction cannot remove glyphs that live
     # inside the page image, so the original text would stay visible under the
     # translation. There the box must stay exactly on the text, otherwise the
@@ -1203,29 +1225,25 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
     if scanned is None:
         scanned = not page.get_text().strip() or _has_page_image(page)
     if scanned:
-        inset=pymupdf.Rect(max(page_rect.x0+1, rect[0]), max(page_rect.y0+1, rect[1]),
-                           min(page_rect.x1-1, rect[2]), min(page_rect.y1-1, rect[3]))
+        source = pymupdf.Rect(max(page_rect.x0+1, rect[0]), max(page_rect.y0+1, rect[1]),
+                              min(page_rect.x1-1, rect[2]), min(page_rect.y1-1, rect[3]))
+        if source.width > 0 and source.height > 0:
+            cover_box = source
         # Cover exactly the old letters, but write into the blank space around
         # them: a manga bubble holds one short English line and the Persian needs
         # more room than the OCR box gives it.
-        cover = inset
-        inset = _grow_light_box(page, inset)
+        if planned is not None and not planned.is_empty:
+            inset = planned
+        else:
+            inset = _grow_light_box(page, cover_box)
     else:
-        inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
+        inset = planned if (planned is not None and not planned.is_empty) else _expand_rect(rect, page_rect, text, float(original_size or 11))
     # On a scan the letters are printed inside the page image, so the box has to
     # be covered; it is covered with the paper's own colour in thin bands instead
     # of one white rectangle, which is what users see as a "white box".
     cover_fill = None
-    base_size=max(7.0,min(float(original_size or 11),18.0))
-    if size_cap:
-        # Body text stays within a narrow band around the document's median size,
-        # while a heading keeps a visible step above it instead of being flattened.
-        cap=float(size_cap)
-        if base_size > cap * 1.35:
-            base_size=min(base_size, cap * 1.6)
-        else:
-            base_size=max(8.0, min(base_size, cap * 1.15))
-    if scanned:
+    base_size = float(planned_size) if planned_size else _base_size(original_size, size_cap)
+    if scanned and not planned_size:
         # Measured before the dry run, so a tight scanned box is not rejected by
         # the preflight only because the source size was too large.
         base_size = _fit_text_size(text, inset, base_size, min_size=6.5)
@@ -1237,22 +1255,24 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
     try:
         # fill=None keeps the underlying page/illustration visible, and the flags
         # stop PyMuPDF from rasterising or deleting images that intersect the box.
-        page.add_redact_annot(cover if scanned else inset, fill=cover_fill)
-        page.apply_redactions(
-            images=pymupdf.PDF_REDACT_IMAGE_NONE,
-            graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
-        )
-        if scanned:
-            # A hair bigger than the text box: OCR boxes stop above descenders, and
-            # an uncovered sliver of the original line looks like a broken rule.
-            pad = pymupdf.Rect(cover.x0 - 1, cover.y0 - 1.5, cover.x1 + 1, cover.y1 + 2)
-            pad &= page.rect
-            _fill_paper(page, pad)
+        if erase:
+            page.add_redact_annot(cover_box, fill=cover_fill)
+            page.apply_redactions(
+                images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+            )
+            if scanned:
+                # A hair bigger than the text box: OCR boxes stop above descenders, and
+                # an uncovered sliver of the original line looks like a broken rule.
+                pad = pymupdf.Rect(cover_box.x0 - 1, cover_box.y0 - 1.5, cover_box.x1 + 1, cover_box.y1 + 2)
+                pad &= page.rect
+                _fill_paper(page, pad)
         arch=pymupdf.Archive(str(_FONT_DIR))
         html=f"<body>{html_mod.escape(text).replace(chr(10),'<br>')}</body>"
         # Shrink just enough that the paragraph stays inside its own box: big
         # enough to read, small enough to never sit on the next line.
-        base_size = _fit_text_size(text, inset, base_size, min_size=6.5)
+        if not planned_size:
+            base_size = _fit_text_size(text, inset, base_size, min_size=6.5)
         spare,scale=page.insert_htmlbox(inset,html,css=_htmlbox_css(base_size,target_lang,line_height=1.02),archive=arch,scale_low=0.20)
         if spare < 0:
             return False,"درج متن بعد از پاک‌سازی شکست خورد"
@@ -1546,16 +1566,95 @@ def translate_pdf_optimized(
             scanned_page = not page.get_text().strip() or _has_page_image(page)
             artwork = _artwork_rects(page) if skip_text_on_image else []
 
+            keep = []
             for idx, block, out in to_replace:
                 if artwork and _block_on_artwork(page, block["bbox"], artwork):
                     # Text printed on top of an illustration: translating it would
                     # cover the drawing while the original letters stay in the image.
                     stats.skipped_artwork += 1
                     continue
+                keep.append((idx, block, out))
+            if not keep:
+                continue
+
+            # Plan the whole page before writing a single block. Every box is
+            # measured with the real font on the typographically cleaned text,
+            # the page's columns are detected, and the boxes are made disjoint:
+            # that is what stops a heading, a paragraph or a list entry from
+            # landing on the next one.
+            #
+            # Only a page with a real text layer is planned this way. A page whose
+            # text comes from OCR of a comic has speech bubbles scattered over the
+            # artwork, and its boxes come from OCR guesses rather than from the
+            # document; there the old path (cover the box, let the text fit the
+            # blank bubble) is the one that keeps every line in its bubble.
+            has_text_layer = bool(page.get_text().strip())
+            if has_text_layer:
+                targets = {(page_num, idx) for idx, _, _ in keep}
+                fixed = [b["bbox"] for i, b in enumerate(blocks) if (page_num, i) not in targets]
+                fixed += artwork
+                items = []
+                for idx, block, out in keep:
+                    base = _base_size(block.get("font_size", 11), body_size if uniform_font else None)
+                    cover_box = pymupdf.Rect(block["bbox"]) & page.rect
+                    if scanned_page:
+                        # Only the blank area of the bubble may be used.
+                        limit = _grow_light_box(page, cover_box)
+                    else:
+                        limit = _expand_rect(block["bbox"], page.rect, out, base)
+                    item = LayoutItem(text=out, cover=block["bbox"], base_size=base,
+                                      lang=target_lang, limit=tuple(limit))
+                    items.append((idx, block, out, item))
+                layout = _plan_page([entry[3] for entry in items], page.rect,
+                                    _layout_font(str(_FONT_PATH)), fixed=fixed)
+                stats.layout_moved += layout.moved
+                stats.layout_shrunk += layout.shrunk
+                stats.layout_overflow += layout.overflow
+
+                # Dry-run every planned box before a glyph is erased: the whole
+                # page is erased in one pass below, so a block that would not fit
+                # must be known now — otherwise its source text would be gone.
+                ready = []
+                for idx, block, out, item in items:
+                    size = float(item.size or 6.5)
+                    fits, _ = _preflight_htmlbox(pymupdf.Rect(item.plan), out, size, target_lang, page.rect)
+                    while not fits and size > 6.0:
+                        size = round(max(6.0, size - 0.5), 2)
+                        fits, _ = _preflight_htmlbox(pymupdf.Rect(item.plan), out, size, target_lang, page.rect)
+                    if not fits:
+                        stats.write_failures += 1
+                        if not stats.first_write_error:
+                            stats.first_write_error = f"صفحه {page_num + 1}, بلاک {idx + 1}: متن در کادر برنامه‌ریزی‌شده جا نشد"
+                        continue
+                    item.size = size
+                    ready.append((idx, block, out, item))
+                if not ready:
+                    continue
+                # One erase for the whole page: a later block's redaction used to
+                # wipe the translation an earlier block had just written.
+                for _, _, _, item in ready:
+                    page.add_redact_annot(pymupdf.Rect(item.cover) & page.rect, fill=None)
+                page.apply_redactions(
+                    images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                    graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+                )
+                if scanned_page:
+                    for _, _, _, item in ready:
+                        pad = pymupdf.Rect(item.cover) & page.rect
+                        pad = pymupdf.Rect(pad.x0 - 1, pad.y0 - 1.5, pad.x1 + 1, pad.y1 + 2) & page.rect
+                        _fill_paper(page, pad)
+                items = ready
+            else:
+                items = [(idx, block, out, None) for idx, block, out in keep]
+
+            for idx, block, out, item in items:
                 color = _sample_background(page, block["bbox"]) if (match_background and scanned_page) else None
                 ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page,
                                       lines=block.get("lines"), size_cap=body_size if uniform_font else None,
-                                      background=color)
+                                      background=color, cover=item.cover if item else block["bbox"],
+                                      plan_rect=item.plan if item else None,
+                                      planned_size=item.size if item else None,
+                                      erase=item is None)
                 if ok:
                     written += 1
                     pages_written.add(page_num)
