@@ -65,3 +65,10 @@ python -m trarium.cli novel https://example.com/novel/1/ -o output/
 - OCR engines are optional (install as needed)
 - Font: Sahel.ttf for Persian PDF output
 - Quota or a dead model never stops a run: `trarium/translators/fallback.py` moves to the next provider/model instead of leaving half-translated text
+
+## Taking over this project
+
+`_backup/AGENT_BRIEF.md` in the private `backup` repository is the single file that
+explains the current state: active branch, run commands, layout rules that must
+not break, known traps (OCR page size, model quotas), and what a good output
+looks like. Read it before changing `trarium/pdf_optimized.py`.
