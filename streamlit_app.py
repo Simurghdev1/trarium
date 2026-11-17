@@ -410,6 +410,85 @@ with layout_tab:
                         except OSError: pass
 
         ocr_results = st.session_state.get("layout_ocr", {})
+
+        st.markdown("#### 🖼️ Automatic Cover Detection")
+        st.caption("جلد کتاب، جلد مانگا، صفحهٔ عنوان، صفحات تصویری و تبلیغاتی پیدا می‌شوند و دست‌نخورده در خروجی می‌مانند: نه OCR می‌شوند، نه ترجمه، نه بازنویسی.")
+        cover_detection = st.checkbox(
+            "تشخیص خودکار جلد و صفحه‌های تزئینی", value=True, key="pdf_cover_detection",
+            help="هر صفحه مستقل بررسی می‌شود (نه فقط صفحهٔ اول). صفحه‌ای که اطمینان کافی نداشته باشد ترجمه می‌شود تا اشتباهاً از قلم نیفتد.",
+        )
+        cover_threshold = st.slider(
+            "آستانهٔ اطمینان برای خارج کردن صفحه از ترجمه", 0.40, 0.95, 0.72, 0.01,
+            key="pdf_cover_threshold", disabled=not cover_detection,
+            help="بالاتر = محافظه‌کارانه‌تر: فقط صفحه‌های بسیار مطمئن دست‌نخورده می‌مانند.",
+        )
+        manual_status: dict = {}
+        if cover_detection and st.button("🔎 مشاهدهٔ صفحه‌های تشخیص‌داده‌شده", key="pdf_cover_scan"):
+            import pymupdf
+            from trarium.page_detector import CoverDetectionConfig, detect_pages
+            scan_path = _tmp_from_session(".pdf")
+            try:
+                with pymupdf.open(scan_path) as scan_doc:
+                    decisions = detect_pages(
+                        scan_doc,
+                        CoverDetectionConfig(
+                            threshold=float(cover_threshold),
+                            vision=bool(os.environ.get("GOOGLE_API_KEY")),
+                            vision_api_key=os.environ.get("GOOGLE_API_KEY"),
+                        ),
+                    )
+                st.session_state["pdf_page_scan"] = {"digest": digest, "rows": [d.as_dict() for d in decisions]}
+            except Exception as exc:
+                st.error(f"بررسی صفحه‌ها: {exc}")
+            finally:
+                try: os.unlink(scan_path)
+                except OSError: pass
+        scan = st.session_state.get("pdf_page_scan")
+        if scan and scan.get("digest") == digest:
+            rows = scan["rows"]
+            counts: dict = {}
+            for row in rows:
+                counts[row["status"]] = counts.get(row["status"], 0) + 1
+            st.caption(
+                " · ".join(f"{label}: {counts[status]}" for status, label in (
+                    ("NORMAL_PAGE", "ترجمه می‌شوند"), ("BOOK_COVER", "جلد کتاب"),
+                    ("MANGA_COVER", "جلد مانگا"), ("TITLE_PAGE", "صفحهٔ عنوان"),
+                    ("ILLUSTRATION_PAGE", "صفحهٔ تصویری"), ("AD_PAGE", "تبلیغاتی"),
+                    ("UNCERTAIN", "مشکوک"),
+                ) if counts.get(status))
+            )
+            import pandas as pd
+            from trarium.page_detector import STATUSES, FA_LABELS
+            frame = pd.DataFrame([
+                {
+                    "صفحه": row["page"],
+                    "وضعیت": row["status"],
+                    "اطمینان": row["confidence"],
+                    "دلیل": "؛ ".join(row["reasons"]),
+                }
+                for row in rows
+            ])
+            edited = st.data_editor(
+                frame, hide_index=True, use_container_width=True, key="pdf_page_status_editor",
+                column_config={
+                    "وضعیت": st.column_config.SelectboxColumn(
+                        "وضعیت", options=list(STATUSES),
+                        help="وضعیت هر صفحه را می‌توانید دستی عوض کنید.",
+                    ),
+                },
+                disabled=["صفحه", "اطمینان", "دلیل"],
+            )
+            original = {row["page"]: row["status"] for row in rows}
+            manual_status = {
+                int(page) - 1: str(status)
+                for page, status in zip(edited["صفحه"], edited["وضعیت"])
+                if str(status) in STATUSES and str(status) != original[int(page)]
+            }
+            if manual_status:
+                st.caption(f"✋ {len(manual_status)} صفحه دستی تغییر کرد: " + "، ".join(
+                    f"{page + 1}={FA_LABELS[status]}" for page, status in sorted(manual_status.items())
+                ))
+
         skip = st.multiselect("صفحات بدون ترجمه (اختیاری)", list(range(1, analysis["total"] + 1)), key="layout_skip")
         if st.button("🚀 شروع ترجمه PDF", type="primary", key="layout_translate"):
             if not api_key:
@@ -480,7 +559,11 @@ with layout_tab:
                                            skip_text_on_image=keep_images_intact,
                                            match_background=match_paper,
                                            style=style_id,
-                                           translation_qc=check_translation)
+                                           translation_qc=check_translation,
+                                           cover_detection=cover_detection,
+                                           cover_threshold=cover_threshold,
+                                           manual_page_status=manual_status,
+                                           vision_api_key=os.environ.get("GOOGLE_API_KEY"))
                     st.session_state["layout_result"] = Path(out).read_bytes()
                     if stats.translated_blocks == 0 or stats.pages_written == 0:
                         st.session_state.pop("layout_result", None)
@@ -497,6 +580,19 @@ with layout_tab:
                     else:
                         st.success(f"🎉 PDF آماده شد؛ {stats.translated_blocks} بلاک ترجمه و {stats.pages_written} صفحه بازنویسی شد.")
                     st.caption(f"Cache/Checkpoint: {stats.cache_hits + stats.checkpoint_hits} · درخواست API: {stats.api_requests} · توکن ورودی: {stats.input_tokens:,} · خروجی: {stats.output_tokens:,} · Placeholder: {stats.protected_spans}")
+                    if stats.page_status_counts:
+                        _sc = stats.page_status_counts
+                        st.caption(
+                            f"🖼️ گزارش صفحه‌ها — ترجمه‌شده: {_sc.get('translated_pages', 0)}"
+                            f" · جلد کتاب: {_sc.get('book_covers', 0)}"
+                            f" · جلد مانگا: {_sc.get('manga_covers', 0)}"
+                            f" · صفحهٔ عنوان: {_sc.get('title_pages', 0)}"
+                            f" · صفحهٔ تصویری: {_sc.get('illustration_pages', 0)}"
+                            f" · تبلیغاتی: {_sc.get('ad_pages', 0)}"
+                            f" · مشکوک: {_sc.get('uncertain_pages', 0)}"
+                            " — صفحه‌های دست‌نخورده: "
+                            + ("، ".join(str(p) for p in stats.detected_exempt_pages) or "—")
+                        )
                     if fire_final:
                         if stats.reviewed_blocks:
                             st.info(f"🔍 بازبینی مدل: {stats.reviewed_blocks} قطعهٔ مشکوک اصلاح شد.")

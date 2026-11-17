@@ -1,3 +1,24 @@
+## 2.18.0 — Automatic Cover Detection
+
+- `trarium/page_detector.py`: every page is classified on its own, before OCR and
+  before translation, as `NORMAL_PAGE`, `BOOK_COVER`, `MANGA_COVER`, `TITLE_PAGE`,
+  `ILLUSTRATION_PAGE`, `AD_PAGE` or `UNCERTAIN`.
+- Cover, title, plate and advertising pages are excluded from OCR and from
+  translation and stay pixel-identical to the source PDF; they are never redacted,
+  re-rendered or moved.
+- Evidence: paragraph structure and display typography from the text layer, ink
+  bands / darkness / saturation from the rendered page, and an optional Gemini
+  vision confirmation for ambiguous pages (capped per document).
+- A page with a picture and story text is still translated; a picture-only page
+  that OCR can read keeps its OCR; low confidence never removes a page.
+- Configurable: `cover_detection`, `cover_threshold`, `manual_page_status`,
+  `vision_api_key`; the Streamlit UI shows the detected pages in an editable table.
+- Run reports gain `page_status.json` plus counts of translated pages, covers,
+  title pages, illustration pages, advertising pages and suspicious pages.
+- `trarium/subtitles.py` and `qa/run_youtube_test.py`: transcript translation that
+  keeps every cue's timing (SRT, VTT, bilingual SRT).
+- 35 new tests (132 total).
+
 ## 2.17.0 — Safe Translation Engine
 
 - Hybrid PDF extraction: native text first; OCR only on pages without text.

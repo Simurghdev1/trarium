@@ -18,6 +18,12 @@ from rich.console import Console
 
 from trarium.utils import clean_translation as _clean_translation
 from trarium.pdf_layout import LayoutItem, load_font as _layout_font, plan_page as _plan_page
+from trarium.page_detector import (
+    CoverDetectionConfig,
+    detect_pages as _detect_pages,
+    summary as _page_summary,
+    FA_LABELS as _PAGE_LABELS,
+)
 
 console = Console()
 
@@ -54,6 +60,9 @@ class PDFTranslationStats:
     layout_moved: int = 0
     layout_shrunk: int = 0
     layout_overflow: int = 0
+    page_decisions: list = field(default_factory=list)
+    page_status_counts: dict = field(default_factory=dict)
+    detected_exempt_pages: list = field(default_factory=list)
 _FONT_DIR = Path(__file__).parent / "fonts"
 if not _FONT_DIR.exists():
     _FONT_DIR = Path(__file__).parent.parent / "trarium" / "fonts"
@@ -1333,6 +1342,11 @@ def translate_pdf_optimized(
     style: str | None = None,
     translation_qc: bool = True,
     qc_repair: bool = False,
+    cover_detection: bool = True,
+    cover_threshold: float = 0.72,
+    manual_page_status: dict | None = None,
+    vision_api_key: str | None = None,
+    cover_decisions: list | None = None,
 ) -> str | tuple[str, PDFTranslationStats]:
     """Translate a PDF while preserving page positions; OCR is opt-in."""
     import pymupdf
@@ -1359,6 +1373,72 @@ def translate_pdf_optimized(
     doc = pymupdf.open(input_path)
     try:
         total_pages = len(doc)
+
+        # 0) Which pages are not text at all? Covers, title pages, plates and
+        # advertisements are found before a single character is OCR'd or
+        # translated, and are then left exactly as they are: their pages are
+        # never redacted, never rewritten and never re-rendered.
+        # A caller that already classified the pages (to keep OCR away from a
+        # cover, for instance) hands its decisions over here.
+        page_decisions: list = list(cover_decisions or [])
+        if cover_detection and not page_decisions:
+            page_decisions = _detect_pages(
+                doc,
+                CoverDetectionConfig(
+                    enabled=True,
+                    threshold=float(cover_threshold),
+                    manual=dict(manual_page_status or {}),
+                    vision=bool(vision_api_key),
+                    vision_api_key=vision_api_key,
+                ),
+                progress_callback=(lambda p, m: progress_callback(p * 0.10, m)) if progress_callback else None,
+            )
+        if cover_detection:
+            # A page without a text layer is only a picture: without a second
+            # opinion it is impossible to tell a cover from a scanned page of
+            # prose, and a run that uses OCR can read it. Such a page therefore
+            # stays in the run unless the vision model confirmed the cover.
+            ocr_will_run = bool(enable_ocr or precomputed_ocr or force_ocr_pages)
+            detected = set()
+            for decision in page_decisions:
+                if not decision.exempt:
+                    continue
+                if (
+                    ocr_will_run
+                    and decision.source != "vision"
+                    and int(decision.features.get("words") or 0) == 0
+                    and not decision.features.get("has_text_layer")
+                ):
+                    decision.status = "NORMAL_PAGE"
+                    decision.confidence = 0.5
+                    decision.reasons = list(decision.reasons) + [
+                        "بدون لایهٔ متنی و با OCR فعال: ترجمه می‌شود"
+                    ]
+                    continue
+                detected.add(decision.page_index)
+            if detected:
+                skip_pages |= detected
+            _counts = _page_summary(page_decisions)
+            _parts = [
+                f"{_PAGE_LABELS[k]}: {_counts[key]}"
+                for key, k in (
+                    ("book_covers", "BOOK_COVER"),
+                    ("manga_covers", "MANGA_COVER"),
+                    ("title_pages", "TITLE_PAGE"),
+                    ("illustration_pages", "ILLUSTRATION_PAGE"),
+                    ("ad_pages", "AD_PAGE"),
+                    ("uncertain_pages", "UNCERTAIN"),
+                )
+                if _counts[key]
+            ]
+            if _parts:
+                console.print("  🖼️ تشخیص خودکار صفحه‌ها: " + "، ".join(_parts))
+            if detected:
+                console.print(
+                    "  🔒 دست‌نخورده می‌مانند: صفحهٔ "
+                    + "، ".join(str(i + 1) for i in sorted(detected))
+                )
+
         all_blocks: list[list[dict]] = [[] for _ in range(total_pages)]
         scanned_pages: list[tuple[int, object]] = []
 
@@ -1450,6 +1530,9 @@ def translate_pdf_optimized(
         stats = PDFTranslationStats(ocr_pdf_path=pdf24_ocr_path,
             total_blocks=len(entries),
             pages_with_text=sum(bool(blocks) for blocks in all_blocks),
+            page_decisions=[d.as_dict() for d in page_decisions],
+            page_status_counts=_page_summary(page_decisions) if page_decisions else {},
+            detected_exempt_pages=[d.page_index + 1 for d in page_decisions if d.exempt],
         )
 
         # 2) Translate in multi-page batches. Never abort the whole document for empty blocks.

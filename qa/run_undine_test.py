@@ -21,6 +21,7 @@ import pymupdf
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from trarium.page_detector import parse_page_status  # noqa: E402
 from trarium.pdf_optimized import translate_pdf_optimized  # noqa: E402
 from trarium.translators.fallback import FallbackTranslator  # noqa: E402
 from trarium.translators.gemini import GeminiTranslator  # noqa: E402
@@ -119,6 +120,12 @@ def main() -> int:
     parser.add_argument("--qc-repair", action="store_true", help="بلاک‌های ناقص را یک بار دیگر ترجمه کن")
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--batch-chars", type=int, default=7000)
+    parser.add_argument("--no-cover-detection", action="store_true",
+                        help="تشخیص خودکار جلد/عنوان/تصویر را خاموش کن")
+    parser.add_argument("--cover-threshold", type=float, default=0.72,
+                        help="آستانهٔ اطمینان برای خارج کردن صفحه از ترجمه (۰ تا ۱)")
+    parser.add_argument("--page-status", default="",
+                        help="وضعیت دستی صفحه‌ها، مثل 1=MANGA_COVER,4=NORMAL_PAGE")
     args = parser.parse_args()
 
     source = pathlib.Path(args.input)
@@ -132,6 +139,37 @@ def main() -> int:
     skip = parse_pages(args.pages, total)
 
     ocr_pages = {int(x) - 1 for x in args.ocr_pages.split(",") if x.strip()}
+
+    # Look at every page before a single character is OCR'd: a cover, a title
+    # page or a plate is never sent to OCR and never touched afterwards.
+    cover_decisions = []
+    if not args.no_cover_detection:
+        from trarium.page_detector import CoverDetectionConfig, detect_pages, summary as page_summary
+
+        with pymupdf.open(source) as doc:
+            cover_decisions = detect_pages(
+                doc,
+                CoverDetectionConfig(
+                    threshold=args.cover_threshold,
+                    manual=parse_page_status(args.page_status),
+                    vision=bool(os.environ.get("GEMINI_API_KEY")),
+                    vision_api_key=os.environ.get("GEMINI_API_KEY"),
+                ),
+            )
+        print("تشخیص صفحه‌ها: " + json.dumps(page_summary(cover_decisions), ensure_ascii=False), flush=True)
+        # Same rule as the pipeline: an unconfirmed picture-only page still gets
+        # OCR, because its dialogue may live inside the image.
+        for decision in cover_decisions:
+            if (
+                decision.exempt
+                and ocr_pages
+                and decision.source != "vision"
+                and int(decision.features.get("words") or 0) == 0
+                and not decision.features.get("has_text_layer")
+            ):
+                decision.status = "NORMAL_PAGE"
+        ocr_pages = {page for page in ocr_pages if not cover_decisions[page].exempt}
+
     precomputed = {}
     if ocr_pages:
         from trarium.ocr_space import ocr_page
@@ -151,6 +189,11 @@ def main() -> int:
         skip_text_on_image=True, match_background=True,
         precomputed_ocr=precomputed, force_ocr_pages=ocr_pages,
         style=args.style, translation_qc=True, qc_repair=args.qc_repair,
+        cover_detection=not args.no_cover_detection,
+        cover_threshold=args.cover_threshold,
+        manual_page_status=parse_page_status(args.page_status),
+        vision_api_key=os.environ.get("GEMINI_API_KEY"),
+        cover_decisions=cover_decisions or None,
         progress_callback=lambda p, m: print(f"{p * 100:.0f}% {m}", flush=True),
     )
     seconds = time.time() - started
@@ -160,7 +203,7 @@ def main() -> int:
         pages = [i for i in range(out.page_count) if i not in skip]
     metrics = {
         "pages_total": total,
-        "pages_translated": len(pages),
+        "pages_translated": stats.page_status_counts.get("translated_pages", len(pages)),
         "seconds": round(seconds, 1),
         "blocks": stats.total_blocks,
         "translated_blocks": stats.translated_blocks,
@@ -181,8 +224,14 @@ def main() -> int:
         "qc_ok": stats.qc_ok,
         "qc_issues": stats.qc_issues,
         "providers": translator.status(),
+        "pages_written": stats.pages_written,
+        "page_status": stats.page_status_counts,
+        "detected_exempt_pages": stats.detected_exempt_pages,
     }
     (outdir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    (outdir / "page_status.json").write_text(
+        json.dumps(stats.page_decisions, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     show: list[int] = []
     if args.pages:
