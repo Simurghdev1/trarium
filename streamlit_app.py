@@ -448,6 +448,19 @@ with layout_tab:
                         value=True, key="pdf_match_background",
                         help="روی کاغذ کرم یا اسکن‌شده، پرکردن کادر با سفید یک مستطیل سفید دور ترجمه می‌سازد؛ رنگ از خود کاغذ نمونه‌برداری می‌شود.",
                     )
+                    from trarium.styles import choices as _style_choices
+                    style_id = st.selectbox(
+                        "✒️ سبک ترجمه",
+                        options=[key for key, _ in _style_choices()],
+                        format_func=lambda key: dict(_style_choices())[key],
+                        index=0, key="pdf_style",
+                        help="سبک ادبی/روان/خودمونی/مانگا/لایت‌ناول… فقط یک خط کوتاه به دستور مدل اضافه می‌شود، پس مصرف توکن را بالا نمی‌برد.",
+                    )
+                    check_translation = st.checkbox(
+                        "🔍 بررسی کیفیت ترجمه (جاافتادگی، تکرار، یکدستی نام‌ها)",
+                        value=True, key="pdf_translation_qc",
+                        help="هر بلوک با متن اصلی مقایسه می‌شود: جملهٔ جاافتاده، تکرار، ترجمه‌نشده و نام ناهمگون گزارش می‌شود. هزینهٔ اضافه ندارد.",
+                    )
                     _, stats = translate_pdf_optimized(path, translator, target_lang, str(out),
                                            skip_pages={p - 1 for p in skip},
                                            precomputed_ocr=ocr_results,
@@ -465,7 +478,9 @@ with layout_tab:
                                            final_check=fire_final,
                                            uniform_font=True,
                                            skip_text_on_image=keep_images_intact,
-                                           match_background=match_paper)
+                                           match_background=match_paper,
+                                           style=style_id,
+                                           translation_qc=check_translation)
                     st.session_state["layout_result"] = Path(out).read_bytes()
                     if stats.translated_blocks == 0 or stats.pages_written == 0:
                         st.session_state.pop("layout_result", None)

@@ -27,6 +27,9 @@ class OpenAICompatibleTranslator(BaseTranslator):
     def translate(self, text, target_lang="fa"):
         lang = LANG_NAMES.get(target_lang, target_lang)
         system = SYSTEM_PROMPT + (" Use natural Persian, correct نیم‌فاصله and Persian quotation marks «…». Avoid em dash and en dash." if target_lang == "fa" else "")
+        hint = getattr(self, "style_hint", "")
+        if hint:
+            system += " " + hint
         payload = {"model": self.model_name, "messages":[{"role":"system","content":system},{"role":"user","content":f"Translate to {lang}.\n\n{str(text)}"}],"temperature":0.2,"max_tokens":max(4096,min(30000,math.ceil(len(str(text))*1.15)))}
         last = None
         for attempt in range(3):

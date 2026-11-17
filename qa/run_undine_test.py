@@ -115,6 +115,8 @@ def main() -> int:
     parser.add_argument("--pages", default=None, help="صفحه‌های موردنظر، مثل 24-29")
     parser.add_argument("--providers", default="gemini,openrouter")
     parser.add_argument("--ocr-pages", default="", help="صفحه‌هایی که لایهٔ متنی‌شان آشغال است (مثل 12,17,21)")
+    parser.add_argument("--style", default="neutral", help="سبک ترجمه: neutral, literary, plain, manga, lightnovel, ...")
+    parser.add_argument("--qc-repair", action="store_true", help="بلاک‌های ناقص را یک بار دیگر ترجمه کن")
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--batch-chars", type=int, default=7000)
     args = parser.parse_args()
@@ -148,6 +150,7 @@ def main() -> int:
         self_review=True, final_check=True, uniform_font=True,
         skip_text_on_image=True, match_background=True,
         precomputed_ocr=precomputed, force_ocr_pages=ocr_pages,
+        style=args.style, translation_qc=True, qc_repair=args.qc_repair,
         progress_callback=lambda p, m: print(f"{p * 100:.0f}% {m}", flush=True),
     )
     seconds = time.time() - started
@@ -168,6 +171,10 @@ def main() -> int:
         "reviewed_blocks": stats.reviewed_blocks,
         "persian_chars": len([c for c in text if "\u0600" <= c <= "\u06ff"]),
         "latin_chars": len([c for c in text if c.isascii() and c.isalpha()]),
+        "style": stats.style,
+        "translation_issues": stats.translation_issues,
+        "translation_issue_kinds": stats.translation_issue_kinds,
+        "repaired_blocks": stats.repaired_blocks,
         "qc_ok": stats.qc_ok,
         "qc_issues": stats.qc_issues,
         "providers": translator.status(),

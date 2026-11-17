@@ -46,6 +46,10 @@ class PDFTranslationStats:
     skipped_noise_pages: int = 0
     qc_issues: list = field(default_factory=list)
     qc_ok: bool = True
+    style: str = ""
+    translation_issues: int = 0
+    translation_issue_kinds: dict = field(default_factory=dict)
+    repaired_blocks: int = 0
 _FONT_DIR = Path(__file__).parent / "fonts"
 if not _FONT_DIR.exists():
     _FONT_DIR = Path(__file__).parent.parent / "trarium" / "fonts"
@@ -1306,6 +1310,9 @@ def translate_pdf_optimized(
     skip_text_on_image: bool = True,
     match_background: bool = True,
     force_ocr_pages: set[int] | None = None,
+    style: str | None = None,
+    translation_qc: bool = True,
+    qc_repair: bool = False,
 ) -> str | tuple[str, PDFTranslationStats]:
     """Translate a PDF while preserving page positions; OCR is opt-in."""
     import pymupdf
@@ -1318,6 +1325,16 @@ def translate_pdf_optimized(
         raise ValueError("مسیر خروجی نباید با فایل ورودی یکسان باشد.")
     skip_pages = set(skip_pages or set())
     precomputed_ocr = precomputed_ocr or {}
+
+    # The chosen style is one short line in the system prompt, not a paragraph:
+    # it would otherwise be paid for on every block of the book.
+    if style:
+        try:
+            from trarium.styles import apply as _apply_style
+
+            _apply_style(translator, style)
+        except Exception:
+            pass
 
     doc = pymupdf.open(input_path)
     try:
@@ -1434,6 +1451,7 @@ def translate_pdf_optimized(
         # 3) Redact and replace only successfully translated blocks.
         written = 0
         failed_keys = {(p, i) for p, i, _ in failures}
+        stats.style = str(style or "")
         stats.translated_blocks = sum(1 for p, i, source in entries if (p, i) in translated and translated[(p, i)].strip() and translated[(p, i)].strip() != source.strip() and (p, i) not in failed_keys)
         stats.failed_blocks = len(failures)
         stats.first_translation_error = first_translation_error
@@ -1443,6 +1461,49 @@ def translate_pdf_optimized(
         stats.input_tokens = _tm_stats.get("input_tokens", 0)
         stats.output_tokens = _tm_stats.get("output_tokens", 0)
         stats.protected_spans = _tm_stats.get("protected_spans", 0)
+        # Persian typography is mechanical work the model keeps getting wrong:
+        # «می توان», spaces before «،», mixed Arabic letters. Fix it here, once,
+        # instead of asking every block again.
+        if target_lang == "fa" and translated:
+            from trarium.fa_style import normalize as _fa_normalize
+
+            for _key, _value in list(translated.items()):
+                cleaned = _fa_normalize(_value)
+                if cleaned:
+                    translated[_key] = cleaned
+
+        # Compare every translation with its source before anything is written.
+        # This only reports; repairing costs tokens and stays opt-in.
+        if translation_qc and translated:
+            from trarium.translation_qc import check as _qc_check, repair_list as _qc_repair
+
+            _pairs = [(p, i, src, translated.get((p, i), "")) for p, i, src in entries]
+            try:
+                _glossary = getattr(translator, "glossary", None) or {}
+                _report = _qc_check(_pairs, _glossary)
+                stats.translation_issues = _report["count"]
+                stats.translation_issue_kinds = _report["by_kind"]
+                if qc_repair:
+                    _todo = _qc_repair(_report, _pairs)
+                    if _todo:
+                        from trarium.translation_qc import REPAIR_PROMPT
+
+                        _src = {(p, i): s for p, i, s in entries}
+                        for _page, _idx in _todo:
+                            _source = _src.get((_page, _idx), "")
+                            if not _source:
+                                continue
+                            try:
+                                _fixed = translator.translate(REPAIR_PROMPT.format(source=_source, current=translated[(_page, _idx)]), target_lang)
+                            except Exception:
+                                continue
+                            _fixed = _fa_normalize(_fixed or "").strip()
+                            if _fixed and re.search(r"[\u0600-\u06ff]", _fixed):
+                                translated[(_page, _idx)] = _fixed
+                                stats.repaired_blocks += 1
+            except Exception as exc:  # never let the checker break a run
+                stats.translation_issue_kinds = {"checker_error": str(exc)[:200]}
+
         if self_review:
             stats.reviewed_blocks = _review_translations(translator, entries, translated, target_lang)
         # One body size for the whole document keeps a light novel from printing
@@ -1484,6 +1545,25 @@ def translate_pdf_optimized(
             # page image, so it has to be covered like a page with no text layer.
             scanned_page = not page.get_text().strip() or _has_page_image(page)
             artwork = _artwork_rects(page) if skip_text_on_image else []
+
+            def _clip_to_next(bbox):
+                """Never let a paragraph grow into the one below it."""
+                x0, y0, x1, y1 = bbox
+                limit = None
+                for other in blocks:
+                    bx0, by0, bx1, by1 = other["bbox"]
+                    if by0 <= y0 + 1:
+                        continue
+                    overlap = min(x1, bx1) - max(x0, bx0)
+                    if overlap <= 0.3 * max(1.0, min(x1 - x0, bx1 - bx0)):
+                        continue
+                    limit = by0 if limit is None else min(limit, by0)
+                # A box that merely touches the next one is normal in a book; only
+                # a box that really runs into it gets shortened.
+                if limit is not None and y1 > limit + 2 and limit - 1 > y0 + 4:
+                    return (x0, y0, x1, limit - 1)
+                return bbox
+
             for idx, block, out in to_replace:
                 if artwork and _block_on_artwork(page, block["bbox"], artwork):
                     # Text printed on top of an illustration: translating it would
@@ -1491,7 +1571,7 @@ def translate_pdf_optimized(
                     stats.skipped_artwork += 1
                     continue
                 color = _sample_background(page, block["bbox"]) if (match_background and scanned_page) else None
-                ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page,
+                ok, err = _write_text(page, _clip_to_next(block["bbox"]), out, block.get("font_size", 11), target_lang, scanned_page,
                                       lines=block.get("lines"), size_cap=body_size if uniform_font else None,
                                       background=color)
                 if ok:

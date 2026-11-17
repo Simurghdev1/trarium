@@ -72,7 +72,7 @@ class OpenRouterTranslator(BaseTranslator):
         payload = {
             "model": self.model_name,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT + (PERSIAN_RULES if target_lang == "fa" else "")},
+                {"role": "system", "content": SYSTEM_PROMPT + (PERSIAN_RULES if target_lang == "fa" else "") + ((" " + getattr(self, "style_hint", "")) if getattr(self, "style_hint", "") else "")},
                 {"role": "user", "content": TRANSLATE_PROMPT.format(lang=lang) + "\n\n" + text},
             ],
             "max_tokens": _max_output_tokens(text),
