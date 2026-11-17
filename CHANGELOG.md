@@ -17,7 +17,7 @@
   title pages, illustration pages, advertising pages and suspicious pages.
 - `trarium/subtitles.py` and `qa/run_youtube_test.py`: transcript translation that
   keeps every cue's timing (SRT, VTT, bilingual SRT).
-- 35 new tests (132 total).
+- 37 new tests (134 total).
 
 ## 2.17.0 — Safe Translation Engine
 
