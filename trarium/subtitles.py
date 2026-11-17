@@ -19,6 +19,8 @@ import math
 import re
 from dataclasses import dataclass
 
+from trarium.prompt_rules import PERSIAN_NATURAL_ORDER
+
 
 @dataclass
 class Cue:
@@ -174,7 +176,7 @@ def to_bilingual(cues: list[Cue], translated: list[str]) -> str:
     return "\n".join(blocks)
 
 
-BATCH_PROMPT = "Translate these subtitle lines to Persian."
+BATCH_PROMPT = f"Translate these subtitle lines to Persian. {PERSIAN_NATURAL_ORDER}"
 LINE_HINT = (
     "Keep the number of every line. Answer with exactly {count} lines, each starting "
     "with its number and a dot, like '12. ...'. Translate every line completely and "

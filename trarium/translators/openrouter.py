@@ -7,6 +7,7 @@ import time
 from trarium.translators.base import BaseTranslator
 from trarium.translators.openrouter_http import OpenRouterSecurityBlockError, post_json
 from trarium.utils import clean_translation as _clean_translation
+from trarium.prompt_rules import PERSIAN_NATURAL_ORDER
 
 LANG_NAMES = {
     "fa": "فارسی", "en": "English", "ar": "العربية", "fr": "Français",
@@ -33,7 +34,10 @@ SYSTEM_PROMPT = (
     "Output only the translation. Preserve names, numbers, URLs, paragraph order, and meaning. "
     "Never summarize, omit, censor, or add commentary."
 )
-PERSIAN_RULES = " For Persian, use natural Persian punctuation, correct نیم‌فاصله, and Persian quotation marks «…». Avoid em dash and en dash."
+PERSIAN_RULES = (
+    " For Persian, use natural Persian punctuation, correct نیم‌فاصله, and Persian quotation marks «…». Avoid em dash and en dash."
+    f" {PERSIAN_NATURAL_ORDER}"
+)
 TRANSLATE_PROMPT = "Translate to {lang}."
 _thread_local = threading.local()
 

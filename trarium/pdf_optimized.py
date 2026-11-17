@@ -17,6 +17,7 @@ import requests
 from rich.console import Console
 
 from trarium.utils import clean_translation as _clean_translation
+from trarium.prompt_rules import PERSIAN_NATURAL_ORDER
 from trarium.pdf_layout import LayoutItem, load_font as _layout_font, plan_page as _plan_page
 from trarium.page_detector import (
     CoverDetectionConfig,
@@ -1197,7 +1198,8 @@ def _review_translations(translator, entries, translated: dict, target_lang: str
     for page_num, block_idx, source, value in suspects[:20]:
         prompt = (
             "این قطعه از یک سند است. ترجمهٔ فارسی زیر را بررسی کن؛ اگر ناقص، نادرست یا نیمه‌انگلیسی است "
-            "ترجمهٔ کامل و روان را فقط به فارسی بنویس و اگر درست است همان را بدون تغییر برگردان.\n"
+            "ترجمهٔ کامل و روان را فقط به فارسی بنویس و اگر درست است همان را بدون تغییر برگردان. "
+            + PERSIAN_NATURAL_ORDER + "\n"
             f"متن اصلی:\n{source}\n\nترجمهٔ فعلی:\n{value}"
         )
         try:
@@ -1855,6 +1857,7 @@ def _translate_marker_batch(translator, entries, target_lang, registry_prompt: s
         "Translate every marked block completely and faithfully. Output only translated blocks. "
         "Keep [TRARIUM_BLOCK_n] markers exactly. Preserve every __TRARIUM_PH_####__ token exactly. "
         "Do not summarize or omit text.\n"
+        + (PERSIAN_NATURAL_ORDER + "\n" if target_lang == "fa" else "")
         + (registry_prompt + "\n" if registry_prompt else "")
         + f"Target language: {target_lang}\n\n{combined}"
     )
@@ -1982,7 +1985,8 @@ def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4,
         prompt = (
             "Translate this literary text completely and faithfully. Output only the translation. "
             "Preserve __TRARIUM_PH_####__ tokens exactly. Do not summarize or omit.\n"
-            f"Target language: {target_lang}\n\n{protected.text}"
+            + (PERSIAN_NATURAL_ORDER + "\n" if target_lang == "fa" else "")
+            + f"Target language: {target_lang}\n\n{protected.text}"
         )
         try:
             out = translator.translate(prompt, target_lang)
