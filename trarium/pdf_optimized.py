@@ -1347,6 +1347,7 @@ def translate_pdf_optimized(
     manual_page_status: dict | None = None,
     vision_api_key: str | None = None,
     cover_decisions: list | None = None,
+    viewer_safe_images: bool = True,
 ) -> str | tuple[str, PDFTranslationStats]:
     """Translate a PDF while preserving page positions; OCR is opt-in."""
     import pymupdf
@@ -1760,6 +1761,18 @@ def translate_pdf_optimized(
             # Every block sits on artwork and is protected on purpose: the file is
             # returned unchanged instead of failing the whole job.
             console.print(f"  🖼️ همهٔ {stats.skipped_artwork} بلاک روی تصویر بودند و دست‌نخورده ماندند.")
+        # Scanned pages are usually stored as JPEG 2000, which some readers
+        # (pdf.js, several phone apps) cannot decode at all: there the plates,
+        # the cover and the paper texture of the page vanish and only our text
+        # is left. Re-encode those images once, in place, so the pictures show
+        # up everywhere.
+        if viewer_safe_images:
+            from trarium.pdf_images import normalize_jpx_images
+
+            converted = normalize_jpx_images(doc)
+            if converted:
+                console.print(f"  🖼️ {converted} تصویر JPEG 2000 به فرمت استاندارد تبدیل شد تا در همهٔ نمایشگرها دیده شود.")
+
         _append_pdf_attribution_page(doc, target_lang)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path, garbage=4, deflate=True, clean=True)

@@ -1,3 +1,17 @@
+## 2.18.1 — The pictures stay visible
+
+- `trarium/pdf_images.py`: after translation every JPEG 2000 (`/JPXDecode`) image in
+  the file is re-encoded in place — JPEG for photo-like pictures, lossless Flate for
+  small, masked or transparent ones. Scanned books store their page texture, covers
+  and engravings as JPEG 2000, and viewers without a JPEG 2000 decoder (pdf.js, which
+  GitHub, Firefox and many phone readers use) then draw a blank page with only the
+  translated text and the pale boxes behind it: it looked exactly as if the pictures
+  had been deleted. Placement, size, aspect ratio and masks are untouched; a rendered
+  page differs from the previous output by less than one colour step on average.
+- New `viewer_safe_images=True` option in `translate_pdf_optimized`; the pipeline
+  reports how many images it converted.
+- 3 new tests (137 total), including a rendered-pixel comparison of the re-encoded page.
+
 ## 2.18.0 — Automatic Cover Detection
 
 - `trarium/page_detector.py`: every page is classified on its own, before OCR and
