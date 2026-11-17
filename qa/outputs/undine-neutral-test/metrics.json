@@ -1,0 +1,46 @@
+{
+  "pages_total": 210,
+  "pages_translated": 211,
+  "seconds": 289.8,
+  "blocks": 826,
+  "translated_blocks": 776,
+  "failed_blocks": 3,
+  "write_failures": 1,
+  "skipped_artwork": 0,
+  "skipped_noise_pages": 0,
+  "reviewed_blocks": 8,
+  "persian_chars": 115575,
+  "latin_chars": 149,
+  "style": "neutral",
+  "translation_issues": 67,
+  "translation_issue_kinds": {
+    "missing_sentence": 11,
+    "untranslated": 50,
+    "expanded": 2,
+    "empty": 3,
+    "dropped": 1
+  },
+  "repaired_blocks": 0,
+  "qc_ok": false,
+  "qc_issues": [
+    "15 هم‌پوشانی متن با متن دیگر پیدا شد."
+  ],
+  "providers": {
+    "labels": [
+      "gemini/gemini-flash-lite-latest",
+      "gemini/gemini-3.1-flash-lite",
+      "gemini/gemini-3.5-flash",
+      "gemini/gemini-3-flash-preview",
+      "gemini/gemini-flash-latest",
+      "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      "openrouter/deepseek/deepseek-chat-v3.1:free",
+      "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+      "openrouter/qwen/qwen3-235b-a22b:free"
+    ],
+    "dead": {},
+    "calls": {
+      "gemini/gemini-flash-lite-latest": 24
+    },
+    "switches": []
+  }
+}

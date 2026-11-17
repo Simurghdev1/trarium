@@ -1546,24 +1546,6 @@ def translate_pdf_optimized(
             scanned_page = not page.get_text().strip() or _has_page_image(page)
             artwork = _artwork_rects(page) if skip_text_on_image else []
 
-            def _clip_to_next(bbox):
-                """Never let a paragraph grow into the one below it."""
-                x0, y0, x1, y1 = bbox
-                limit = None
-                for other in blocks:
-                    bx0, by0, bx1, by1 = other["bbox"]
-                    if by0 <= y0 + 1:
-                        continue
-                    overlap = min(x1, bx1) - max(x0, bx0)
-                    if overlap <= 0.3 * max(1.0, min(x1 - x0, bx1 - bx0)):
-                        continue
-                    limit = by0 if limit is None else min(limit, by0)
-                # A box that merely touches the next one is normal in a book; only
-                # a box that really runs into it gets shortened.
-                if limit is not None and y1 > limit + 2 and limit - 1 > y0 + 4:
-                    return (x0, y0, x1, limit - 1)
-                return bbox
-
             for idx, block, out in to_replace:
                 if artwork and _block_on_artwork(page, block["bbox"], artwork):
                     # Text printed on top of an illustration: translating it would
@@ -1571,7 +1553,7 @@ def translate_pdf_optimized(
                     stats.skipped_artwork += 1
                     continue
                 color = _sample_background(page, block["bbox"]) if (match_background and scanned_page) else None
-                ok, err = _write_text(page, _clip_to_next(block["bbox"]), out, block.get("font_size", 11), target_lang, scanned_page,
+                ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page,
                                       lines=block.get("lines"), size_cap=body_size if uniform_font else None,
                                       background=color)
                 if ok:
