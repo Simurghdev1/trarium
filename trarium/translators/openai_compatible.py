@@ -4,7 +4,6 @@ import math, time
 import requests
 from trarium.translators.base import BaseTranslator
 from trarium.utils import clean_translation as _clean_translation
-from trarium.prompt_rules import PERSIAN_NATURAL_ORDER
 
 LANG_NAMES = {"fa":"فارسی","en":"English","ar":"العربية","fr":"Français","de":"Deutsch","es":"Español","tr":"Türkçe","ja":"日本語","ko":"한국어","zh":"中文","ru":"Русский"}
 SYSTEM_PROMPT = ("You are a professional literary translator. Translate completely and faithfully into the requested target language. "
@@ -27,7 +26,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
 
     def translate(self, text, target_lang="fa"):
         lang = LANG_NAMES.get(target_lang, target_lang)
-        system = SYSTEM_PROMPT + (" Use natural Persian, correct نیم‌فاصله and Persian quotation marks «…». Avoid em dash and en dash." + " " + PERSIAN_NATURAL_ORDER if target_lang == "fa" else "")
+        system = SYSTEM_PROMPT + (" Use natural Persian, correct نیم‌فاصله and Persian quotation marks «…». Avoid em dash and en dash." if target_lang == "fa" else "")
         hint = getattr(self, "style_hint", "")
         if hint:
             system += " " + hint

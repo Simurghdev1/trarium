@@ -1,13 +1,3 @@
-## 2.18.2 — Persian order, not English order
-
-- `trarium/prompt_rules.py`: one short rule — the noun before its adjective
-  ("blue car" → «ماشین آبی»), each phrase built in Persian order rather than the
-  English sequence — is now part of every short prompt: PDF block batches and
-  their single-block retries, QC repairs, subtitle batches (SRT/VTT), and the
-  system prompt of every provider (OpenRouter, OpenAI-compatible, Gemini, 9Router).
-- Subtitle lines that read like translated English now come back as Persian.
-- 4 new tests (141 total).
-
 ## 2.18.1 — The pictures stay visible
 
 - `trarium/pdf_images.py`: after translation every JPEG 2000 (`/JPXDecode`) image in

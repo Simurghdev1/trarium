@@ -157,21 +157,6 @@ def test_every_cue_gets_a_translation():
     assert all("ترجمهٔ" in text for text in out)
 
 
-def test_the_prompt_asks_for_persian_word_order():
-    """A subtitle is Persian, not English words in English order."""
-    seen: list[str] = []
-
-    class _Recorder(_BatchTranslator):
-        def translate(self, text: str, target_lang: str = "fa") -> str:
-            seen.append(text)
-            return super().translate(text, target_lang)
-
-    translate_cues([Cue(0, 2, "blue car"), Cue(2, 4, "red door")], _Recorder())
-    assert seen
-    assert "ماشین آبی" in seen[0]
-    assert "word order" in seen[0]
-
-
 def test_a_short_answer_is_repaired_line_by_line():
     cues = [Cue(i, i + 2, f"line {i}") for i in range(4)]
     translator = _BatchTranslator(drop_first=True)

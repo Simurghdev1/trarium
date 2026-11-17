@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import re
 
-from trarium.prompt_rules import PERSIAN_NATURAL_ORDER
-
 _PERSIAN = re.compile(r"[\u0600-\u06ff]")
 _LATIN = re.compile(r"[A-Za-z]")
 
@@ -120,8 +118,7 @@ def check(pairs, glossary: dict[str, str] | None = None, *, limit: int = 200) ->
 REPAIR_PROMPT = (
     "The translation below is incomplete or wrong compared with the source. "
     "Translate the source again, completely, in natural Persian. Output only the "
-    "translation, with every sentence and every name kept. "
-    + PERSIAN_NATURAL_ORDER + "\n\n"
+    "translation, with every sentence and every name kept.\n\n"
     "Source:\n{source}\n\nCurrent translation:\n{current}"
 )
 

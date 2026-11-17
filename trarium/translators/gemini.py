@@ -3,7 +3,6 @@ from __future__ import annotations
 import math, time, requests
 from trarium.translators.base import BaseTranslator
 from trarium.utils import clean_translation as _clean_translation
-from trarium.prompt_rules import PERSIAN_NATURAL_ORDER
 
 # Model ids verified against GET /v1beta/models with a real key; the previous
 # list named models that the API does not serve at all.
@@ -56,7 +55,7 @@ class GeminiTranslator(BaseTranslator):
     def translate(self, text, target_lang="fa"):
         lang = LANG_NAMES.get(target_lang, target_lang)
         system = "You are a professional literary translator. Translate completely and faithfully. Output only the translation. Preserve names, numbers, URLs, paragraph order, dialogue structure and meaning. Never summarize, omit, censor or add commentary."
-        if target_lang == "fa": system += " Use natural Persian, correct نیم‌فاصله and «…». Avoid em dash and en dash. " + PERSIAN_NATURAL_ORDER
+        if target_lang == "fa": system += " Use natural Persian, correct نیم‌فاصله and «…». Avoid em dash and en dash."
         hint = getattr(self, "style_hint", "")
         if hint: system += " " + hint
         prompt = f"{system}\n\nTranslate to {lang}.\n\n{str(text)}"

@@ -7,7 +7,6 @@ import time
 import requests
 from trarium.translators.base import BaseTranslator
 from trarium.utils import clean_translation as _clean_translation
-from trarium.prompt_rules import PERSIAN_NATURAL_ORDER
 
 LANG_NAMES = {"fa": "فارسی", "en": "English", "ar": "العربية", "tr": "Türkçe", "zh": "中文", "ja": "日本語", "ko": "한국어", "ru": "Русский"}
 MODELS_9ROUTER = {
@@ -46,7 +45,7 @@ class Router9Translator(BaseTranslator):
         payload = {
             "model": self.model_name,
             "messages": [
-                {"role": "system", "content": SYSTEM + (" For Persian, use correct نیم‌فاصله and «…». Avoid em dash/en dash. " + PERSIAN_NATURAL_ORDER if target_lang == "fa" else "")},
+                {"role": "system", "content": SYSTEM + (" For Persian, use correct نیم‌فاصله and «…». Avoid em dash/en dash." if target_lang == "fa" else "")},
                 {"role": "user", "content": f"Translate to {lang}.\n\n{text}"},
             ],
             "max_tokens": max(4096, min(30000, math.ceil(len(str(text)) * 1.15))),
