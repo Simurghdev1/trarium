@@ -22,6 +22,7 @@ from trarium.translators.groq import GROQ_MODELS
 from trarium.translators.router9 import MODELS_9ROUTER
 from trarium.pdf_optimized import OPENROUTER_VISION_MODELS
 from trarium.cache import CachedTranslator, TranslationCache
+from trarium.short_prompt import SHORT_PROMPT_CHIPS, build_short_prompt
 from trarium.scheduler import FallbackTranslator
 
 st.set_page_config(page_title="Trarium", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
@@ -77,6 +78,12 @@ def _store_uploaded(uploaded):
         st.session_state["file_name"] = uploaded.name
     return digest
 
+
+
+def _clear_short_prompt():
+    # Runs as a widget callback, before the text area is created again.
+    st.session_state["short_prompt_selected"] = []
+    st.session_state["short_prompt_extra"] = ""
 
 
 def _show_direct_provider_test(provider: str, api_key: str, model: str, base_url: str = ""):
@@ -164,6 +171,35 @@ def _translator_settings():
             registry.save()
         st.caption(f"{len(registry.items)} اصطلاح ذخیره شده است.")
 
+        st.divider(); st.markdown("### ✍️ پرامپت کوتاه")
+        st.caption("با یک کلیک انتخاب می‌شود و همان‌جا در پرامپت می‌نشیند؛ برای ساختنش هیچ درخواستی به هوش مصنوعی نمی‌رود و توکنی مصرف نمی‌شود.")
+        selected_chips = st.session_state.setdefault("short_prompt_selected", [])
+        chip_labels = list(SHORT_PROMPT_CHIPS)
+        for row_start in range(0, len(chip_labels), 2):
+            chip_cols = st.columns(2)
+            for offset, chip_col in enumerate(chip_cols):
+                idx = row_start + offset
+                if idx >= len(chip_labels):
+                    break
+                label = chip_labels[idx]
+                active = label in selected_chips
+                if chip_col.button(("✅ " if active else "") + label, key=f"short_chip_{idx}",
+                                   type="primary" if active else "secondary", use_container_width=True):
+                    if active:
+                        selected_chips.remove(label)
+                    else:
+                        selected_chips.append(label)
+                    st.session_state["short_prompt_selected"] = selected_chips
+                    st.rerun()
+        chip_extra = st.text_area("متن دلخواه (اختیاری)", key="short_prompt_extra", height=80,
+                                  placeholder="مثلاً: نام‌های ژاپنی را همان‌طور که هستند بنویس")
+        short_prompt = build_short_prompt(selected_chips, chip_extra)
+        if short_prompt:
+            st.caption(f"فعال: {short_prompt}")
+            st.button("🧹 پاک کردن پرامپت کوتاه", key="short_prompt_clear", on_click=_clear_short_prompt)
+        else:
+            st.caption("هیچ دستوری فعال نیست؛ ترجمه با تنظیمات پیش‌فرض انجام می‌شود.")
+
         st.divider(); st.markdown("### ⚡ سرعت")
         chunk_size = st.slider("اندازه Batch (کاراکتر)", 4000, 24000, 14000, 1000)
         workers = st.slider("درخواست همزمان", 1, 10, 4)
@@ -175,10 +211,10 @@ def _translator_settings():
             CheckpointStore().clear(); st.success("Checkpointها پاک شد.")
         return (provider, api_key, model, target_lang, chunk_size, workers, delay,
                 use_memory, custom_base, fallback_cfg, safe_opt, protect_spans,
-                use_checkpoint, adaptive_batch, do_probe, smart_routing, registry)
+                use_checkpoint, adaptive_batch, do_probe, smart_routing, registry, short_prompt)
 
 
-provider, api_key, model, target_lang, chunk_size, workers, delay, use_cache, custom_base, fallback_cfg, safe_opt, protect_spans, use_checkpoint, adaptive_batch, do_probe, smart_routing, registry = _translator_settings()
+provider, api_key, model, target_lang, chunk_size, workers, delay, use_cache, custom_base, fallback_cfg, safe_opt, protect_spans, use_checkpoint, adaptive_batch, do_probe, smart_routing, registry, short_prompt = _translator_settings()
 
 def _make_translator(cfg):
     p, key, mdl, base = cfg
@@ -226,11 +262,12 @@ with book_tab:
                     else:
                         translator = primary_tr
                     if use_cache and not isinstance(translator, (FallbackTranslator,)):
-                        translator = CachedTranslator(translator, provider, model)
+                        translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
                     pipe = TranslationPipeline(translator, target_lang, chunk_size, delay, workers,
                                                safe_optimization=safe_opt, protect_nontranslatable=protect_spans,
                                                use_checkpoint=use_checkpoint, translation_memory=use_memory,
-                                               adaptive_batch=adaptive_batch, registry=registry)
+                                               adaptive_batch=adaptive_batch, registry=registry,
+                                               short_prompt=short_prompt)
                     if do_probe:
                         from trarium.preflight import probe as run_probe, estimate_book
                         total_tokens, estimated_batches = estimate_book([str(c.get("content", "")) for c in book.chapters], batch_chars=chunk_size)
@@ -403,7 +440,7 @@ with layout_tab:
                     else:
                         translator = primary_tr
                     if use_cache and not isinstance(translator, (FallbackTranslator,)):
-                        translator = CachedTranslator(translator, provider, model)
+                        translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
                     from trarium.pdf_optimized import translate_pdf_optimized
                     bar = st.progress(0.0)
                     def cb(p, msg): bar.progress(min(max(p, 0), 1), text=msg)
@@ -419,7 +456,8 @@ with layout_tab:
                                            protect_nontranslatable=protect_spans,
                                            adaptive_batch=adaptive_batch,
                                            use_checkpoint=use_checkpoint,
-                                           use_cache=use_cache)
+                                           use_cache=use_cache,
+                                           short_prompt=short_prompt)
                     st.session_state["layout_result"] = Path(out).read_bytes()
                     if stats.translated_blocks == 0 or stats.pages_written == 0:
                         st.session_state.pop("layout_result", None)
@@ -502,8 +540,9 @@ with web_tab:
                 try:
                     translator = get_translator(provider, api_key=api_key, model_name=model, base_url=custom_base, provider_name="OpenAI-compatible") if provider == "openai_compatible" else get_translator(provider, api_key=api_key, model_name=model)
                     if use_cache:
-                        translator = CachedTranslator(translator, provider, model)
-                    result = TranslationPipeline(translator, target_lang, chunk_size, delay, workers).run(book)
+                        translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
+                    result = TranslationPipeline(translator, target_lang, chunk_size, delay, workers,
+                                                 short_prompt=short_prompt).run(book)
                     st.session_state["novel_translation"] = result
                 except Exception as exc:
                     st.error(f"❌ {exc}")

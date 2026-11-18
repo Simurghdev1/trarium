@@ -61,10 +61,13 @@ class TranslationCache:
 
 class CachedTranslator:
     """Drop-in translator wrapper with persistent exact/normalized translation memory."""
-    def __init__(self, inner, provider: str = "", model: str = "", cache: TranslationCache | None = None):
+    def __init__(self, inner, provider: str = "", model: str = "", cache: TranslationCache | None = None,
+                 instructions: str = ""):
         self.inner = inner
         self.provider = provider
         self.model = model
+        # Router-style short prompt; keeps cached translations from another style apart.
+        self.instructions = instructions or ""
         self.cache = cache or TranslationCache()
         self.hits = 0
         self.misses = 0
@@ -75,7 +78,7 @@ class CachedTranslator:
         return self.inner.get_token_limit()
 
     def translate(self, text: str, target_lang: str = "fa") -> str:
-        hit = self.cache.get(text, target_lang, self.provider, self.model)
+        hit = self.cache.get(text, target_lang, self.provider, self.model, self.instructions)
         if hit is not None:
             self.hits += 1
             self.last_usage = {"cache_hit": True, "input_tokens": 0, "output_tokens": 0}
@@ -89,5 +92,5 @@ class CachedTranslator:
             self.last_error = str(exc)
             raise
         if value and str(value).strip():
-            self.cache.put(text, str(value), target_lang, self.provider, self.model)
+            self.cache.put(text, str(value), target_lang, self.provider, self.model, self.instructions)
         return str(value or "")

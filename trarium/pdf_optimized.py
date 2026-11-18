@@ -865,6 +865,7 @@ def translate_pdf_optimized(
     adaptive_batch: bool = True,
     use_checkpoint: bool = True,
     use_cache: bool = True,
+    short_prompt: str = "",
 ) -> str | tuple[str, PDFTranslationStats]:
     """Translate a PDF while preserving page positions; OCR is opt-in."""
     import pymupdf
@@ -941,6 +942,7 @@ def translate_pdf_optimized(
             return_stats=True, adaptive_batch=adaptive_batch,
             use_cache=use_cache, use_checkpoint=use_checkpoint,
             protect_nontranslatable=protect_nontranslatable,
+            short_prompt=short_prompt,
         )
 
         # Make a per-page map. Failed blocks intentionally keep the original text.
@@ -1059,7 +1061,7 @@ def _translator_identity(translator):
     return provider, model
 
 
-def _translate_marker_batch(translator, entries, target_lang, registry_prompt: str = "", protect_nontranslatable: bool = True):
+def _translate_marker_batch(translator, entries, target_lang, registry_prompt: str = "", protect_nontranslatable: bool = True, short_prompt: str = ""):
     prepared = []
     mappings = []
     for i, (_, _, text) in enumerate(entries):
@@ -1071,6 +1073,7 @@ def _translate_marker_batch(translator, entries, target_lang, registry_prompt: s
         "Translate every marked block completely and faithfully. Output only translated blocks. "
         "Keep [TRARIUM_BLOCK_n] markers exactly. Preserve every __TRARIUM_PH_####__ token exactly. "
         "Do not summarize or omit text.\n"
+        + (f"Style: {short_prompt}.\n" if short_prompt else "")
         + (registry_prompt + "\n" if registry_prompt else "")
         + f"Target language: {target_lang}\n\n{combined}"
     )
@@ -1093,7 +1096,7 @@ def _valid_translation_output(value: str, source: str) -> bool:
 def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4, max_chars=14000,
                                 progress_callback=None, return_stats=False, adaptive_batch=True,
                                 use_cache=True, use_checkpoint=True, cache=None, checkpoint=None,
-                                registry=None, protect_nontranslatable=True):
+                                registry=None, protect_nontranslatable=True, short_prompt: str = ""):
     """Batch + cache + checkpoint + placeholder translation with lossless recovery."""
     provider, model = _translator_identity(translator)
     cache = cache or TranslationCache()
@@ -1101,7 +1104,7 @@ def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4,
     source_fingerprint = __import__("hashlib").sha256(
         "\n".join(f"{p}:{i}:{safe_normalize_text(t)}" for p, i, t in entries).encode("utf-8")
     ).hexdigest()
-    job_id = stable_job_id(source_fingerprint, target_lang, provider, model)
+    job_id = stable_job_id(source_fingerprint, target_lang, provider, model + (f"|{short_prompt}" if short_prompt else ""))
     stats = {"cache_hits": 0, "checkpoint_hits": 0, "api_requests": 0, "input_tokens": 0, "output_tokens": 0, "protected_spans": 0}
     done, pending = {}, []
     checkpoint_values = checkpoint.load(job_id) if use_checkpoint else {}
@@ -1116,7 +1119,7 @@ def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4,
         if ((target_lang == "fa" and probably_already_in_persian(source)) or is_nontranslatable_token(source)):
             return source
         if use_cache:
-            hit = cache.get(source, target_lang, provider, model)
+            hit = cache.get(source, target_lang, provider, model, short_prompt)
             if hit is not None and _valid_translation_output(hit, source):
                 stats["cache_hits"] += 1
                 return hit
@@ -1150,7 +1153,7 @@ def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4,
         key = (p, i)
         done[key] = value
         if use_cache:
-            cache.put(source, value, target_lang, provider, model)
+            cache.put(source, value, target_lang, provider, model, short_prompt)
         if use_checkpoint:
             unit_key = __import__("hashlib").sha256((f"{job_id}|{p}|{i}|{source}").encode("utf-8")).hexdigest()
             checkpoint.put(job_id, unit_key, value)
@@ -1164,7 +1167,7 @@ def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4,
     def batch_call(batch):
         try:
             glossary = registry.prompt("\n".join(t for _, _, t in batch), target_lang) if registry else ""
-            out = _translate_marker_batch(translator, batch, target_lang, glossary, protect_nontranslatable=protect_nontranslatable)
+            out = _translate_marker_batch(translator, batch, target_lang, glossary, protect_nontranslatable=protect_nontranslatable, short_prompt=short_prompt)
             usage = getattr(translator, "last_usage", {}) or {}
             stats["api_requests"] += 1
             stats["input_tokens"] += int(usage.get("input_tokens") or estimate_tokens("\n\n".join(t for _, _, t in batch)))
@@ -1198,7 +1201,8 @@ def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4,
         prompt = (
             "Translate this literary text completely and faithfully. Output only the translation. "
             "Preserve __TRARIUM_PH_####__ tokens exactly. Do not summarize or omit.\n"
-            f"Target language: {target_lang}\n\n{protected.text}"
+            + (f"Style: {short_prompt}.\n" if short_prompt else "")
+            + f"Target language: {target_lang}\n\n{protected.text}"
         )
         try:
             out = translator.translate(prompt, target_lang)

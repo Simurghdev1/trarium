@@ -51,7 +51,7 @@ class TranslationPipeline:
                  max_workers=5, safe_optimization=True, protect_nontranslatable=True,
                  use_checkpoint=True, translation_memory=True, adaptive_batch=True,
                  registry: TermRegistry | None = None, checkpoint: CheckpointStore | None = None,
-                 cache: TranslationCache | None = None):
+                 cache: TranslationCache | None = None, short_prompt: str = ""):
         if max_workers < 1:
             raise ValueError("max_workers باید حداقل 1 باشد")
         self.translator = translator
@@ -65,6 +65,8 @@ class TranslationPipeline:
         self.translation_memory = translation_memory
         self.adaptive_batch = adaptive_batch
         self.registry = registry
+        # A single short line, reused in every request: no extra API call, no extra prompt block.
+        self.short_prompt = str(short_prompt or "").strip()
         self.checkpoint = checkpoint or CheckpointStore()
         self.cache = cache or TranslationCache()
         self.stats = {"cache_hits":0,"checkpoint_hits":0,"api_requests":0,"in_tokens":0,"out_tokens":0,"protected_spans":0}
@@ -115,6 +117,8 @@ class TranslationPipeline:
         the input tokens of every request without changing the output.
         """
         parts = []
+        if self.short_prompt:
+            parts.append("Style: " + self.short_prompt + ".")
         if registry_prompt:
             parts.append(registry_prompt)
         if "__TRARIUM_PH_" in prepared:
@@ -126,7 +130,7 @@ class TranslationPipeline:
     def _translated(self, source: str, key: str, prompt: str):
         provider = self._provider_name(); model = self._model_name()
         if self.translation_memory:
-            hit = self.cache.get(source, self.target_lang, provider, model)
+            hit = self.cache.get(source, self.target_lang, provider, model, self.short_prompt)
             if hit is not None:
                 self.stats["cache_hits"] += 1
                 return hit, True
@@ -144,7 +148,7 @@ class TranslationPipeline:
         self.stats["out_tokens"] += int(usage.get("output_tokens") or estimate_tokens(str(out)))
         out = clean_translation(str(out))
         if self.translation_memory:
-            self.cache.put(source, out, self.target_lang, provider, model)
+            self.cache.put(source, out, self.target_lang, provider, model, self.short_prompt)
         if self.use_checkpoint:
             self.checkpoint.put(key, "0", out)
         return out, False
@@ -155,7 +159,9 @@ class TranslationPipeline:
         if not chunks:
             raise ValueError("متنی قابل ترجمه پیدا نشد.")
         translated_parts = [None] * len(chunks)
-        job_id = stable_job_id(self._source_fingerprint(book), self.target_lang, self._provider_name(), self._model_name())
+        # The short prompt changes the output, so it belongs in the checkpoint key.
+        model_key = self._model_name() + (f"|{self.short_prompt}" if self.short_prompt else "")
+        job_id = stable_job_id(self._source_fingerprint(book), self.target_lang, self._provider_name(), model_key)
 
         def translate_one(idx, chunk):
             source = str(chunk.get("content", "") or "")
