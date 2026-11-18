@@ -30,7 +30,7 @@ class GeminiTranslator(BaseTranslator):
         for attempt in range(3):
             try:
                 url = self.API.format(model=self.model_name)
-                r = requests.post(url, headers={"Content-Type":"application/json","x-goog-api-key":self.api_key,"User-Agent":"Trarium/2.17.0"}, json=payload, timeout=180)
+                r = requests.post(url, headers={"Content-Type":"application/json","x-goog-api-key":self.api_key,"User-Agent":"Trarium/2.18.0"}, json=payload, timeout=180)
                 if r.status_code >= 400: raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:600]}")
                 data = r.json(); usage = data.get("usageMetadata") or {}
                 self.last_usage = {"input_tokens": int(usage.get("promptTokenCount") or 0), "output_tokens": int(usage.get("candidatesTokenCount") or 0)}

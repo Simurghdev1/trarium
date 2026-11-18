@@ -6,7 +6,12 @@ Trarium is a Persian/Farsi book translation tool with:
 - EPUB/TXT translation
 - Novel web scraper (GenericAdapter, Syosetu, Wuxia)
 - Multiple OCR engines (Tesseract, PaddleOCR, EasyOCR, OpenRouter Vision)
-- Multiple providers (OpenRouter, 9Router, Gemini)
+- Multiple providers (OpenRouter, 9Router, Gemini, Groq, OpenAI-compatible)
+- Persistent background jobs, a translation queue and live monitoring
+- Smart provider failover with local quotas, cost caps and history
+- Manga/webtoon image enhancement (optional, originals untouched)
+- Structure-preserving website translation (robots.txt aware)
+- Local usage/billing ledger for LLM and OCR
 
 ## Capabilities
 1. **PDF Translation**: Upload scanned or text PDF → OCR → Translate → Output PDF with same layout
@@ -52,6 +57,18 @@ python -m trarium.cli novel https://example.com/novel/1/ -o output/
 - **9Router**: Local router (localhost:20128) — smart fallback to free/cheap providers
 - **Gemini**: Google models — requires API key (may be geo-blocked in Iran)
 - **Custom Model**: Any OpenAI-compatible model can be specified
+
+## Background jobs, queue and metering
+
+- `trarium/jobs/` owns durable jobs (`~/.trarium/jobs.sqlite3`), the dispatcher thread and handlers.
+  UI code must go through `get_manager()`; never run a long translation on the Streamlit thread when the
+  background toggle is on.
+- Job handlers are idempotent at unit level: completed units and Checkpoint/cache entries are reused on resume.
+- `trarium/usage.py` records every metered call. Wrap translators with `UsageTrackingTranslator`;
+  never estimate a provider's official quota, keep local estimates separately labelled.
+- `trarium/failover.py` classifies errors; permanent/auth/network errors must not loop on the same endpoint.
+- `trarium/manga/` and `trarium/websites.py` must never overwrite an input file.
+- `TRARIUM_HOME` overrides `~/.trarium` (tests set it, plus `HOME`).
 
 ## Project Repositories
 - **Main repo (ship all code and docs here):** https://github.com/subaruvibe1/trarium — branch `main`.

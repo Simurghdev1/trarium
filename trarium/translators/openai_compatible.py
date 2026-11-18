@@ -31,7 +31,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
         last = None
         for attempt in range(3):
             try:
-                r = requests.post(self.base_url + "/chat/completions", headers={"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json","User-Agent":"Trarium/2.17.0"}, json=payload, timeout=180)
+                r = requests.post(self.base_url + "/chat/completions", headers={"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json","User-Agent":"Trarium/2.18.0"}, json=payload, timeout=180)
                 if r.status_code >= 400: raise RuntimeError(f"{self.provider_name} HTTP {r.status_code}: {r.text[:600]}")
                 data = r.json()
                 usage = data.get("usage") or {}
@@ -49,7 +49,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
     def test_connection(self):
         """Small authenticated request used by the UI diagnostics."""
         payload = {"model": self.model_name, "messages":[{"role":"user","content":"Reply only with OK"}],"max_tokens":8,"temperature":0}
-        r = requests.post(self.base_url + "/chat/completions", headers={"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json","User-Agent":"Trarium/2.17.0"}, json=payload, timeout=30)
+        r = requests.post(self.base_url + "/chat/completions", headers={"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json","User-Agent":"Trarium/2.18.0"}, json=payload, timeout=30)
         if r.status_code >= 400:
             raise RuntimeError(f"{self.provider_name} HTTP {r.status_code}: {r.text[:600]}")
         data=r.json(); choices=data.get("choices") or []

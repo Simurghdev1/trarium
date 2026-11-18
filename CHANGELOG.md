@@ -1,3 +1,20 @@
+## 2.18.0 — Persistent Jobs & Provider Control
+
+- Persistent job manager with SQLite state: Pause, Resume, Cancel, Delete and crash recovery.
+- Translation queue with priorities, reordering, concurrency limit and per-project errors.
+- Web-novel chapter ranges with an independent status for every chapter.
+- Live monitor ("Show Details"): real token counts, requests, cost, stage, page/unit, ETA from actual speed.
+- Smart provider failover: provider fallback, model fallback and smart routing, with local quota and cost caps.
+- Permanent errors are not retried; uncertain network requests are not blindly resent.
+- Usage & billing tab for LLM and OCR, with daily/monthly charts, per-model and per-project breakdown,
+  local limits, warnings and a failover history. API keys stay masked.
+- Optional manga enhancement: Auto/1x/2x/4x, denoise, deblur, color, contrast, deskew, Pillow/OpenCV,
+  optional Real-ESRGAN/SwinIR. Originals are never modified; a failed step falls back to the original page.
+- Website translation: structure-preserving HTML, multi-page crawl, robots.txt, deduplication,
+  resumable per-page cache and HTML/TXT/EPUB output.
+- OCR pages and requests are now metered separately from LLM tokens.
+- New `numpy` dependency; OpenCV remains optional (`.[image-opencv]`).
+
 ## 2.17.0 — Safe Translation Engine
 
 - Hybrid PDF extraction: native text first; OCR only on pages without text.

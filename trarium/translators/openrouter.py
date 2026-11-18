@@ -61,7 +61,7 @@ class OpenRouterTranslator(BaseTranslator):
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "Trarium/2.17.0",
+            "User-Agent": "Trarium/2.18.0",
         }
 
     def translate(self, text, target_lang="fa"):

@@ -905,6 +905,12 @@ def translate_pdf_optimized(
                 ocr_map = extract_ocr_blocks_batch_openrouter(scanned_pages, api_key, vision_model, batch_size)
                 for page_num, _ in scanned_pages:
                     all_blocks[page_num] = _normalise_layout_blocks(ocr_map.get(page_num, []), doc[page_num].rect)
+                try:
+                    from trarium.usage import record_ocr
+                    record_ocr(pages=len(ocr_map), requests=max(1, (len(scanned_pages) + batch_size - 1) // batch_size),
+                               provider="openrouter", model=str(vision_model or "vision"))
+                except Exception:
+                    pass
             else:
                 for i, (page_num, page) in enumerate(scanned_pages, 1):
                     try:
@@ -913,6 +919,12 @@ def translate_pdf_optimized(
                         console.print(f"  ⚠️ OCR صفحه {page_num + 1}: {exc}")
                     if progress_callback:
                         progress_callback(0.15 + 0.25 * i / max(len(scanned_pages), 1), f"OCR صفحه {page_num + 1}/{total_pages}...")
+                try:
+                    from trarium.usage import record_ocr
+                    record_ocr(pages=len(scanned_pages), requests=len(scanned_pages),
+                               provider="local", model=str(ocr_method))
+                except Exception:
+                    pass
 
         entries = []
         for page_num, blocks in enumerate(all_blocks):

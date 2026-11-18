@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trarium"
-version = "2.17.0"
+version = "2.18.0"
 description = "ترجمه خودکار کتاب با هوش مصنوعی"
 readme = "README.md"
 license = {text = "MIT"}
@@ -22,6 +22,7 @@ dependencies = [
     "rich>=13.0.0",
     "click>=8.1.0",
     "tiktoken>=0.8.0",
+    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,7 @@ ocr-paddle = ["paddleocr>=3.0.0,<4", "paddlepaddle>=3.0.0,<4"]
 ocr-easy = ["easyocr>=1.7.2"]
 ocr-surya = ["surya-ocr>=0.22.1"]
 ocr-tesseract = ["pytesseract>=0.3.13"]
+image-opencv = ["opencv-python-headless>=4.8.0"]
 ocr-all = ["paddleocr>=3.0.0,<4", "paddlepaddle>=3.0.0,<4", "easyocr>=1.7.2", "surya-ocr>=0.22.1", "pytesseract>=0.3.13"]
 
 [project.scripts]

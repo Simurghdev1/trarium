@@ -51,7 +51,8 @@ class TranslationPipeline:
                  max_workers=5, safe_optimization=True, protect_nontranslatable=True,
                  use_checkpoint=True, translation_memory=True, adaptive_batch=True,
                  registry: TermRegistry | None = None, checkpoint: CheckpointStore | None = None,
-                 cache: TranslationCache | None = None, short_prompt: str = ""):
+                 cache: TranslationCache | None = None, short_prompt: str = "",
+                 control=None, on_unit_done=None):
         if max_workers < 1:
             raise ValueError("max_workers باید حداقل 1 باشد")
         self.translator = translator
@@ -69,6 +70,9 @@ class TranslationPipeline:
         self.short_prompt = str(short_prompt or "").strip()
         self.checkpoint = checkpoint or CheckpointStore()
         self.cache = cache or TranslationCache()
+        # Optional hooks used by persistent jobs; defaults keep the old behaviour.
+        self.control = control
+        self.on_unit_done = on_unit_done
         self.stats = {"cache_hits":0,"checkpoint_hits":0,"api_requests":0,"in_tokens":0,"out_tokens":0,"protected_spans":0}
         self._rate_lock = Lock()
         self._next_request_at = 0.0
@@ -164,6 +168,8 @@ class TranslationPipeline:
         job_id = stable_job_id(self._source_fingerprint(book), self.target_lang, self._provider_name(), model_key)
 
         def translate_one(idx, chunk):
+            if self.control:
+                self.control()
             source = str(chunk.get("content", "") or "")
             if not source.strip():
                 return idx, {"title":chunk.get("title","متن"),"content":"","failed":False,"error":""}
@@ -196,6 +202,10 @@ class TranslationPipeline:
             for future in as_completed(futures):
                 idx, result = future.result()
                 translated_parts[idx] = result
+                if self.on_unit_done:
+                    self.on_unit_done(idx, result)
+                if self.control:
+                    self.control()
 
         failed = [p for p in translated_parts if p and p.get("failed")]
         translated_text = "\n\n".join(f"--- {p['title']} ---\n\n{p['content']}" for p in translated_parts if p)

@@ -26,6 +26,11 @@ from trarium.short_prompt import SHORT_PROMPT_CHIPS, build_short_prompt
 from trarium.scheduler import FallbackTranslator
 from trarium.extractors.formats import DISPLAY_FORMAT_GROUPS, format_stats, search_formats
 from trarium.extractors.generic import UnsupportedFormatError
+from trarium.jobs import get_manager
+from trarium.local_state import chain_to_text, get_provider_config, load_settings, mask_secret, save_settings, split_chain_text
+from trarium.provider_registry import chain_from_settings, has_credentials, label as provider_label, remember
+from trarium.usage import UsageTrackingTranslator, default_store as usage_store
+from trarium import ui_panels
 
 st.set_page_config(page_title="Trarium", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 
@@ -150,6 +155,34 @@ def _translator_settings():
             fallback_cfg = provider_config(fallback_label, " (پشتیبان)")
             st.caption("در صورت خطا، Trarium ارائه‌دهنده پشتیبان را امتحان می‌کند؛ تقسیم کورکورانه صفحات انجام نمی‌شود.")
 
+        st.divider(); st.markdown("### 🔁 جابه‌جایی هوشمند")
+        failover_enabled = st.checkbox("Failover (انتقال خودکار در خطا، Rate Limit یا اتمام سهمیه)", value=False, key="failover_enabled")
+        default_chain = chain_to_text(chain_from_settings())
+        if not default_chain:
+            default_chain = f"{provider}:{model}" + (f"\n{fallback_cfg[0]}:{fallback_cfg[2]}" if fallback_cfg else "")
+        failover_chain_text = st.text_area(
+            "زنجیرهٔ ارائه‌دهنده‌ها (هر خط: provider:model)", value=default_chain, height=92,
+            key="failover_chain_text", placeholder="openrouter:model/a\ngemini:gemini-3.8-flash",
+            help="ترتیب خط‌ها همان اولویت است. مدل را خالی بگذارید تا مدل پیش‌فرض همان ارائه‌دهنده استفاده شود.",
+        )
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            failover_retries = st.number_input("تلاش مجدد", 0, 6, 2, key="failover_retries")
+        with fc2:
+            failover_cost_cap = st.number_input("سقف هزینه ماهانه ($، ۰=بی‌نهایت)", 0.0, 1000.0, 0.0, 0.5, key="failover_cost_cap")
+        failover_smart = st.checkbox("Smart Routing (انتخاب بر اساس مصرف و کیفیت)", value=False, key="failover_smart")
+        if st.button("💾 ذخیرهٔ کلیدها و زنجیره برای اجرای پس‌زمینه", key="save_provider_chain"):
+            remember(provider, api_key=api_key, model=model, base_url=custom_base)
+            if fallback_cfg:
+                remember(fallback_cfg[0], api_key=fallback_cfg[1], model=fallback_cfg[2], base_url=fallback_cfg[3])
+            settings = load_settings()
+            settings["failover_chain"] = split_chain_text(failover_chain_text)
+            settings["failover_enabled"] = bool(failover_enabled)
+            save_settings(settings)
+            st.success("ذخیره شد. کلید فقط روی همین دستگاه (دسترسی ۶۰۰) نگه داشته می‌شود.")
+        saved_key = get_provider_config(provider)["api_key"]
+        st.caption(f"کلید ذخیره‌شدهٔ {provider_label(provider)}: {mask_secret(saved_key) or '—'} · برای تسک‌های پس‌زمینه لازم است.")
+
         target_label = st.selectbox("زبان مقصد", list(LANGUAGES.keys()), index=0)
         target_lang = LANGUAGES[target_label]
         st.divider(); st.markdown("### 🧠 صرفه‌جویی و پایداری")
@@ -206,6 +239,7 @@ def _translator_settings():
         chunk_size = st.slider("اندازه Batch (کاراکتر)", 4000, 24000, 14000, 1000)
         workers = st.slider("درخواست همزمان", 1, 10, 4)
         delay = st.slider("تاخیر بین درخواست‌ها", 0.0, 3.0, 0.0, 0.1)
+        show_details = st.checkbox("Show Details — نمایش زندهٔ مصرف و پیشرفت", value=False, key="show_details")
         if st.button("🧹 پاک کردن Translation Memory", key="clear_translation_cache"):
             TranslationCache().clear(); st.success("حافظه ترجمه پاک شد.")
         if st.button("🧹 پاک کردن Checkpointها", key="clear_checkpoints"):
@@ -214,12 +248,14 @@ def _translator_settings():
         return (provider, api_key, model, target_lang, chunk_size, workers, delay,
                 use_memory, custom_base, fallback_cfg, safe_opt, protect_spans,
                 use_checkpoint, adaptive_batch, do_probe, smart_routing, registry, short_prompt,
-                fallback_label)
+                fallback_label, failover_enabled, failover_chain_text, failover_retries,
+                failover_cost_cap, failover_smart, show_details)
 
 
 (provider, api_key, model, target_lang, chunk_size, workers, delay, use_cache, custom_base,
  fallback_cfg, safe_opt, protect_spans, use_checkpoint, adaptive_batch, do_probe,
- smart_routing, registry, short_prompt, fallback_name) = _translator_settings()
+ smart_routing, registry, short_prompt, fallback_name, failover_enabled, failover_chain_text,
+ failover_retries, failover_cost_cap, failover_smart, show_details) = _translator_settings()
 
 def _make_translator(cfg):
     p, key, mdl, base = cfg
@@ -227,10 +263,78 @@ def _make_translator(cfg):
         return get_translator(p, api_key=key, model_name=mdl, base_url=base, provider_name="OpenAI-compatible")
     return get_translator(p, api_key=key, model_name=mdl)
 
+
 primary_cfg = (provider, api_key, model, custom_base)
+
+
+def _metered(cfg, project: str = ""):
+    """Every foreground request is recorded in the local usage ledger."""
+    p, _key, mdl, _base = cfg
+    return UsageTrackingTranslator(_make_translator(cfg), provider=p, model=mdl, project=project)
+
+
+def _resolve_translator(project: str = "", job_id: str = ""):
+    """Failover-aware translator used by all foreground tabs."""
+    if failover_enabled:
+        chain = split_chain_text(failover_chain_text)
+        if not chain:
+            chain = [{"provider": provider, "model": model}]
+        from trarium.failover import build_chain
+        return build_chain(chain, retries=int(failover_retries),
+                           cost_cap_usd=float(failover_cost_cap) or None,
+                           smart=bool(failover_smart), project=project, job_id=job_id)
+    primary_tr = _metered(primary_cfg, project)
+    if fallback_cfg:
+        fallback_tr = _metered(fallback_cfg, project)
+        if smart_routing:
+            from trarium.smart_router import SmartRoutingTranslator
+            return SmartRoutingTranslator(primary_tr, fallback_tr)
+        return FallbackTranslator([(provider, primary_tr), (fallback_name, fallback_tr)])
+    return primary_tr
+
+
+def _chain_config() -> list[dict]:
+    if failover_enabled:
+        chain = split_chain_text(failover_chain_text)
+        if chain:
+            return chain
+    chain = [{"provider": provider, "model": model}]
+    if fallback_cfg:
+        chain.append({"provider": fallback_cfg[0], "model": fallback_cfg[2]})
+    return chain
+
+
+def _job_config(output_format: str = "txt", extra: dict | None = None) -> dict:
+    config = {
+        "provider_chain": _chain_config(),
+        "provider": provider, "model": model,
+        "chunk_size": int(chunk_size), "workers": int(workers), "delay": float(delay),
+        "safe_optimization": bool(safe_opt), "protect_spans": bool(protect_spans),
+        "use_checkpoint": bool(use_checkpoint), "use_cache": bool(use_cache),
+        "adaptive_batch": bool(adaptive_batch), "short_prompt": str(short_prompt or ""),
+        "output_format": output_format,
+        "failover": {"retries": int(failover_retries),
+                     "cost_cap_usd": float(failover_cost_cap) or None,
+                     "smart": bool(failover_smart)},
+    }
+    config.update(extra or {})
+    return config
+
+
+job_manager = get_manager().start()
+ui_ctx = {
+    "provider": provider, "model": model, "api_key": api_key, "custom_base": custom_base,
+    "target_lang": target_lang, "chunk_size": chunk_size, "workers": workers,
+    "delay": delay, "short_prompt": short_prompt, "show_details": show_details,
+    "failover_enabled": failover_enabled, "failover_chain_text": failover_chain_text,
+    "job_config": _job_config, "resolve_translator": _resolve_translator,
+    "save_uploaded": _store_uploaded, "manager": job_manager,
+}
 st.markdown(f'<div class="hero"><h1>🌿 Trarium</h1><p>ترجمه‌ی کتاب، PDF و وب‌ناول با تمرکز روی سرعت، حفظ قالب و جلوگیری از توقف‌های بی‌دلیل.</p><span class="status-pill">v{__version__}</span></div>', unsafe_allow_html=True)
 
-book_tab, layout_tab, web_tab = st.tabs(["📄 ترجمه متنی", "🎨 حفظ قالب PDF", "🌐 وب‌ناول"])
+book_tab, layout_tab, web_tab, queue_tab, site_tab, manga_tab, usage_tab = st.tabs([
+    "📄 ترجمه متنی", "🎨 حفظ قالب PDF", "🌐 وب‌ناول", "🗂️ صف و تسک‌ها",
+    "🌐 ترجمه وب‌سایت", "🖼️ افزایش کیفیت مانگا", "📊 مصرف و هزینه"])
 
 
 def render_upload(accepted=None, key="book"):
@@ -270,7 +374,21 @@ with book_tab:
     if uploaded:
         digest = _store_uploaded(uploaded)
         suffix = Path(uploaded.name).suffix.lower()
-        if st.button("🔍 تحلیل و ترجمه", type="primary", key="translate_text"):
+        background = st.checkbox(
+            "🕓 اجرا در پس‌زمینه (مستقل از صفحه؛ بعد از رفرش و ری‌استارت ادامه می‌دهد)",
+            value=False, key="book_background",
+            help="تسک در سرور اجرا می‌شود و در تب «صف و تسک‌ها» دیده می‌شود.",
+        )
+        bg_fmt = "txt"
+        if background:
+            bg_fmt = st.selectbox("فرمت خروجی تسک پس‌زمینه", ["txt", "epub", "html", "pdf"],
+                                  key="book_bg_fmt")
+        if background and st.button("🕓 افزودن به صف پس‌زمینه", type="primary", key="translate_text_bg"):
+            job_id = ui_panels.submit_upload_job(ui_ctx, uploaded, config=_job_config(bg_fmt))
+            st.success(f"تسک در صف قرار گرفت: {job_id}")
+            st.query_params["job"] = job_id
+            st.session_state["book_job_id"] = job_id
+        if st.button("🔍 تحلیل و ترجمه", type="primary", key="translate_text", disabled=background):
             from trarium.extractors import get_extractor
             from trarium.extractors.generic import sniff_container
             path = _tmp_from_session(suffix)
@@ -285,16 +403,7 @@ with book_tab:
                 elif not api_key:
                     st.error("API Key لازم است.")
                 else:
-                    primary_tr = _make_translator(primary_cfg)
-                    if fallback_cfg:
-                        fallback_tr = _make_translator(fallback_cfg)
-                        if smart_routing:
-                            from trarium.smart_router import SmartRoutingTranslator
-                            translator = SmartRoutingTranslator(primary_tr, fallback_tr)
-                        else:
-                            translator = FallbackTranslator([(provider, primary_tr), (fallback_name, fallback_tr)])
-                    else:
-                        translator = primary_tr
+                    translator = _resolve_translator(project=uploaded.name)
                     if use_cache and not isinstance(translator, (FallbackTranslator,)):
                         translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
                     pipe = TranslationPipeline(translator, target_lang, chunk_size, delay, workers,
@@ -331,6 +440,8 @@ with book_tab:
             c.metric("Cache/Resume", f"{result.cache_hits + result.checkpoint_hits}")
             d.metric("درخواست API", result.api_requests)
             st.caption(f"توکن ورودی تقریبی/واقعی: {result.estimated_input_tokens:,} · خروجی: {result.estimated_output_tokens:,} · Placeholder: {result.protected_spans}")
+            if show_details:
+                ui_panels.render_foreground_details(result, provider, model, target_lang)
             st.text_area("پیش‌نمایش", result.translated_text[:12000], height=300)
             if result.translated_chunks == 0 and result.failed_chunks > 0:
                 st.error("❌ هیچ بخش ترجمه نشد؛ خروجی قابل دانلود ساخته نمی‌شود.")
@@ -343,6 +454,10 @@ with book_tab:
                     elif fmt == "EPUB": save_as_epub(result, out); mime = "application/epub+zip"
                     else: save_as_html(result, out); mime = "text/html"
                     st.download_button("⬇️ دانلود خروجی", Path(out).read_bytes(), Path(out).name, mime, type="primary", key="download_text_result")
+        if st.session_state.get("book_job_id"):
+            st.divider()
+            st.markdown("#### 🕓 تسک پس‌زمینه")
+            ui_panels.render_job_monitor(st.session_state["book_job_id"], live=show_details, prefix="book")
 
 with layout_tab:
     st.markdown("### 🎨 حفظ قالب PDF")
@@ -449,6 +564,14 @@ with layout_tab:
                             bar.empty()
                         doc.close()
                         st.session_state["layout_ocr"] = result_map
+                        try:
+                            from trarium.usage import record_ocr
+                            record_ocr(pages=sum(bool(v) for v in result_map.values()),
+                                       requests=len(analysis["scanned"]),
+                                       provider="openrouter" if method == "openrouter" else method,
+                                       project=uploaded.name)
+                        except Exception:
+                            pass
                         st.success(f"✅ OCR برای {sum(bool(v) for v in result_map.values())} صفحه نتیجه داد.")
                     except Exception as exc:
                         st.error(f"❌ OCR: {exc}")
@@ -458,23 +581,24 @@ with layout_tab:
 
         ocr_results = st.session_state.get("layout_ocr", {})
         skip = st.multiselect("صفحات بدون ترجمه (اختیاری)", list(range(1, analysis["total"] + 1)), key="layout_skip")
-        if st.button("🚀 شروع ترجمه PDF", type="primary", key="layout_translate"):
+        layout_background = st.checkbox(
+            "🕓 اجرا در پس‌زمینه (مستقل از صفحه)", value=False, key="layout_background",
+            help="برای PDFهای دارای لایهٔ متن. OCR پیش‌محاسبه‌شده در حالت پس‌زمینه اعمال نمی‌شود.",
+        )
+        if layout_background and st.button("🕓 افزودن PDF به صف", type="primary", key="layout_queue"):
+            job_id = ui_panels.submit_upload_job(ui_ctx, uploaded, kind="pdf",
+                                                 config=_job_config("pdf"))
+            st.success(f"تسک PDF در صف قرار گرفت: {job_id}")
+            st.query_params["job"] = job_id
+            st.session_state["layout_job_id"] = job_id
+        if st.button("🚀 شروع ترجمه PDF", type="primary", key="layout_translate", disabled=layout_background):
             if not api_key:
                 st.error("API Key لازم است.")
             else:
                 path = _tmp_from_session(".pdf")
                 out = Path(tempfile.gettempdir()) / f"trarium_{digest[:10]}_translated.pdf"
                 try:
-                    primary_tr = _make_translator(primary_cfg)
-                    if fallback_cfg:
-                        fallback_tr = _make_translator(fallback_cfg)
-                        if smart_routing:
-                            from trarium.smart_router import SmartRoutingTranslator
-                            translator = SmartRoutingTranslator(primary_tr, fallback_tr)
-                        else:
-                            translator = FallbackTranslator([(provider, primary_tr), (fallback_name, fallback_tr)])
-                    else:
-                        translator = primary_tr
+                    translator = _resolve_translator(project=uploaded.name)
                     if use_cache and not isinstance(translator, (FallbackTranslator,)):
                         translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
                     from trarium.pdf_optimized import translate_pdf_optimized
@@ -522,6 +646,8 @@ with layout_tab:
 
         if st.session_state.get("layout_result"):
             st.download_button("⬇️ دانلود PDF ترجمه‌شده", st.session_state["layout_result"], f"{_safe_name(uploaded.name.rsplit('.',1)[0])}_fa.pdf", "application/pdf", type="primary", key="layout_download")
+        if st.session_state.get("layout_job_id"):
+            ui_panels.render_job_monitor(st.session_state["layout_job_id"], live=show_details, prefix="layout")
 
 with web_tab:
     st.markdown("### 🌐 ترجمه وب‌ناول")
@@ -574,8 +700,8 @@ with web_tab:
                 from trarium.extractors.base import ExtractedBook
                 book = ExtractedBook(title=chapters[0].title or "Web Novel", author="", chapters=[{"title": f"فصل {c.number or i+1}: {c.title}", "content": c.text} for i, c in enumerate(chapters) if c.text])
                 try:
-                    translator = get_translator(provider, api_key=api_key, model_name=model, base_url=custom_base, provider_name="OpenAI-compatible") if provider == "openai_compatible" else get_translator(provider, api_key=api_key, model_name=model)
-                    if use_cache:
+                    translator = _resolve_translator(project="وب‌ناول")
+                    if use_cache and not isinstance(translator, (FallbackTranslator,)):
                         translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
                     result = TranslationPipeline(translator, target_lang, chunk_size, delay, workers,
                                                  short_prompt=short_prompt).run(book)
@@ -601,5 +727,17 @@ with web_tab:
                     else: save_as_html(result, out); mime = "text/html"
                     st.download_button("⬇️ دانلود خروجی", Path(out).read_bytes(), Path(out).name, mime, type="primary", key="novel_download")
 
+with queue_tab:
+    ui_panels.render_queue_tab(ui_ctx)
+
+with site_tab:
+    ui_panels.render_website_tab(ui_ctx)
+
+with manga_tab:
+    ui_panels.render_manga_tab(ui_ctx)
+
+with usage_tab:
+    ui_panels.render_usage_tab(ui_ctx)
+
 st.divider()
-st.caption("Trarium — OCR اختیاری • ترجمه مقاوم • حفظ قالب PDF • فونت Sahel")
+st.caption("Trarium — OCR اختیاری • ترجمه مقاوم • حفظ قالب PDF • تسک پس‌زمینه • فونت Sahel")
