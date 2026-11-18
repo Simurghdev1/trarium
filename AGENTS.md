@@ -53,6 +53,11 @@ python -m trarium.cli novel https://example.com/novel/1/ -o output/
 - **Gemini**: Google models — requires API key (may be geo-blocked in Iran)
 - **Custom Model**: Any OpenAI-compatible model can be specified
 
+## Project Repositories
+- **Main repo (ship all code and docs here):** https://github.com/subaruvibe1/trarium — branch `main`.
+- **Files repo (test inputs, sample files and test outputs):** https://github.com/subaruvibe1/trarium-files — branch `main`. Put translated outputs, QA logs and sample inputs here and link them when reporting a test.
+- Both repos are private, so `raw.githubusercontent.com` returns 404 without a token. Check published content with `curl -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/subaruvibe1/trarium/contents/README.md` instead.
+
 ## Reporting Test Outputs
 - Whenever you test Trarium with a file, always hand the user a download link to the produced output (the translated PDF/TXT/EPUB/DOCX, the QA log, and the input file when it is a sample), in this project's `trarium-files` repository or as an attached artifact. "Tests passed" is not enough; the user must be able to open the result.
 
