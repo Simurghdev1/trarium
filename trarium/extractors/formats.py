@@ -8,6 +8,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from trarium.extractors.catalog import (
+    ALL_EXTENSIONS as CATALOG_EXTENSIONS,
+    AUDIO_EXTENSIONS as CATALOG_AUDIO_EXTENSIONS,
+    BINARY_EXTENSIONS as CATALOG_BINARY_EXTENSIONS,
+    DATABASE_EXTENSIONS as CATALOG_DATABASE_EXTENSIONS,
+    DISPLAY_EXTENSIONS,
+    DISPLAY_GROUPS,
+    EXECUTABLE_EXTENSIONS as CATALOG_EXECUTABLE_EXTENSIONS,
+    IMAGE_EXTENSIONS as CATALOG_IMAGE_EXTENSIONS,
+    NON_TEXT_EXTENSIONS,
+    TRANSLATABLE_EXTENSIONS as CATALOG_TRANSLATABLE_EXTENSIONS,
+    VIDEO_EXTENSIONS as CATALOG_VIDEO_EXTENSIONS,
+    search_extensions,
+)
+
 # --- متن ساده و نشانه‌گذاری ------------------------------------------------
 PLAIN_TEXT_EXTENSIONS = {
     ".txt", ".text", ".md", ".markdown", ".mdx", ".rst", ".rest", ".adoc",
@@ -115,6 +130,40 @@ TRANSLATABLE_EXTENSIONS = sorted(
 # پسوندهایی که فقط با استخراج بهترین‌تلاش خوانده می‌شوند
 BEST_EFFORT_EXTENSIONS = LEGACY_DOCUMENT_EXTENSIONS | {".doc", ".wps", ".wpd"}
 
+# --- ادغام کاتالوگ کامل پسوندها --------------------------------------------
+# کاتالوگ (catalog.py) فهرست اولویت‌دار و کامل پسوندها را دارد؛ اینجا فقط
+# مجموعه‌های موجود گسترش می‌یابند تا رفتار قبلی حفظ شود.
+IMAGE_EXTENSIONS = IMAGE_EXTENSIONS | CATALOG_IMAGE_EXTENSIONS
+AUDIO_EXTENSIONS = AUDIO_EXTENSIONS | CATALOG_AUDIO_EXTENSIONS
+VIDEO_EXTENSIONS = VIDEO_EXTENSIONS | CATALOG_VIDEO_EXTENSIONS
+
+# فایل‌های باینری/تخصصی که متن قابل استخراج ندارند (اجرایی، دیتابیس، مدل سه‌بعدی).
+BINARY_ONLY_EXTENSIONS = (
+    (CATALOG_EXECUTABLE_EXTENSIONS | CATALOG_DATABASE_EXTENSIONS | CATALOG_BINARY_EXTENSIONS)
+    & CATALOG_EXTENSIONS
+) - set(TRANSLATABLE_EXTENSIONS)
+
+# همهٔ پسوندهای شناسایی‌شدهٔ تراریوم (بیش از ۷۴۰ مورد) و زیرمجموعهٔ متن‌دار آن.
+SUPPORTED_EXTENSIONS = sorted(CATALOG_EXTENSIONS)
+TRANSLATABLE_EXTENSIONS = sorted(set(TRANSLATABLE_EXTENSIONS) | set(CATALOG_TRANSLATABLE_EXTENSIONS))
+
+# فقط همین‌ها در فهرست نمایشی دیده می‌شوند؛ بقیه با جست‌وجو پیدا می‌شوند.
+DISPLAY_FORMAT_GROUPS = DISPLAY_GROUPS
+
+
+def format_stats() -> tuple[int, int]:
+    """(تعداد کل پسوندهای شناسایی‌شده، تعداد پسوندهای متن‌دار قابل ترجمه)"""
+    return len(SUPPORTED_EXTENSIONS), len(TRANSLATABLE_EXTENSIONS)
+
+
+def search_formats(query: str, limit: int = 120) -> list[str]:
+    """جست‌وجو در کل کاتالوگ پسوندها (برای باکس جست‌وجوی رابط کاربری)."""
+    return search_extensions(query, limit=limit)
+
+
+def is_known_extension(ext: str) -> bool:
+    return ext.lower() in SUPPORTED_EXTENSIONS
+
 
 def extension_of(file_path: str | Path) -> str:
     return Path(file_path).suffix.lower()
@@ -123,6 +172,11 @@ def extension_of(file_path: str | Path) -> str:
 def is_translatable_extension(ext: str) -> bool:
     ext = ext.lower()
     return ext in TRANSLATABLE_EXTENSIONS or ext in SUBTITLE_EXTENSIONS
+
+
+def is_non_text_extension(ext: str) -> bool:
+    """پسوندی که در کاتالوگ هست ولی متن ندارد (عکس/صدا/ویدیو/باینری)."""
+    return ext.lower() in NON_TEXT_EXTENSIONS
 
 
 def human_format(ext: str) -> str:

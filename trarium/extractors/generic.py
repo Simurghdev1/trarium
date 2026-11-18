@@ -16,6 +16,7 @@ from trarium.extractors.base import BaseExtractor, ExtractedBook
 from trarium.extractors.formats import (
     ARCHIVE_EXTENSIONS,
     AUDIO_EXTENSIONS,
+    BINARY_ONLY_EXTENSIONS,
     HTML_LIKE_EXTENSIONS,
     IMAGE_EXTENSIONS,
     LEGACY_DOCUMENT_EXTENSIONS,
@@ -459,6 +460,12 @@ class GenericTextExtractor(BaseExtractor):
             raise UnsupportedFormatError(
                 f"«{path.name}» یک فایل فشرده/اجرایی است و متن قابل ترجمه ندارد. "
                 "اگر داخلش فایل متنی هست، ابتدا از حالت فشرده خارج کنید."
+            )
+        if ext in BINARY_ONLY_EXTENSIONS and container in {"executable", "binary"}:
+            raise UnsupportedFormatError(
+                f"«{path.name}» یک فایل باینری/تخصصی است و متن قابل استخراجی ندارد. "
+                "این پسوند در فهرست تراریوم شناسایی می‌شود، اما محتوایش متن نیست؛ "
+                "لطفاً نسخهٔ متنی، PDF یا DOCX آن را بفرستید."
             )
 
         text = ""

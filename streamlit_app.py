@@ -24,7 +24,7 @@ from trarium.pdf_optimized import OPENROUTER_VISION_MODELS
 from trarium.cache import CachedTranslator, TranslationCache
 from trarium.short_prompt import SHORT_PROMPT_CHIPS, build_short_prompt
 from trarium.scheduler import FallbackTranslator
-from trarium.extractors.formats import FORMAT_FAMILIES
+from trarium.extractors.formats import DISPLAY_FORMAT_GROUPS, format_stats, search_formats
 from trarium.extractors.generic import UnsupportedFormatError
 
 st.set_page_config(page_title="Trarium", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
@@ -248,9 +248,23 @@ with book_tab:
     st.markdown("### 📄 ترجمه متنی")
     st.caption("برای PDF متنی، TXT یا EPUB. صفحه‌آرایی اصلی هدف نیست و هر خروجی یک بخش پایانی «ترجمه شده توسط تراریوم» دارد.")
     st.caption("هر فایلی که متن داشته باشد ترجمه می‌شود؛ حتی اگر پسوندش در لیست نباشد. اگر فایل ذاتاً متن ندارد (ویدیو، صدا، عکس) تراریوم صریح می‌گوید که نمی‌تواند.")
-    with st.expander("📚 فرمت‌های پشتیبانی‌شده"):
-        for family, examples in FORMAT_FAMILIES:
+    with st.expander(f"📚 فرمت‌های پشتیبانی‌شده ({format_stats()[0]} پسوند)"):
+        total_formats, translatable_formats = format_stats()
+        st.caption(
+            f"تراریوم {total_formats} پسوند را می‌شناسد و از این میان {translatable_formats} پسوندِ متن‌دار "
+            "ترجمه می‌شود. عکس، صدا، ویدیو و فایل باینری شناسایی می‌شوند اما ترجمه نمی‌شوند و دلیلش گفته می‌شود."
+        )
+        for family, examples in DISPLAY_FORMAT_GROUPS:
             st.markdown(f"**{family}** — `{examples}`")
+        st.caption("فقط پرکاربردترین‌ها اینجاست. بقیهٔ پسوندها را با جست‌وجو پیدا کنید.")
+        query = st.text_input("🔎 جست‌وجوی فرمت", placeholder="مثلاً srt یا kicad", key="format_search")
+        if query.strip():
+            found = search_formats(query)
+            if found:
+                st.code("  ".join(found), language=None)
+                st.caption(f"{len(found)} پسوند پیدا شد.")
+            else:
+                st.caption("پسوندی با این نام پیدا نشد؛ با این حال فایل‌های متنیِ ناشناخته هم امتحان می‌شوند.")
         st.caption("سند Word/OpenDocument، PowerPoint، Excel، RTF، HTML/XML، FB2/MOBI، زیرنویس، کد، آرشیو ZIP با فایل متنی و پسوند ناشناخته هم امتحان می‌شوند.")
     uploaded = render_upload(key="book")
     if uploaded:

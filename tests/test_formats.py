@@ -154,5 +154,78 @@ class FormatSupportTests(unittest.TestCase):
         self.assertIn("تصویر", str(ctx.exception))
 
 
+class FormatCatalogTests(unittest.TestCase):
+    """فهرست کامل پسوندها باید بدون جا افتادن و بدون ادعای اضافی باشد."""
+
+    def setUp(self):
+        from trarium.extractors import catalog
+        from trarium.extractors.formats import (
+            SUPPORTED_EXTENSIONS,
+            TRANSLATABLE_EXTENSIONS,
+            DISPLAY_FORMAT_GROUPS,
+        )
+
+        self.catalog = catalog
+        self.supported = set(SUPPORTED_EXTENSIONS)
+        self.translatable = set(TRANSLATABLE_EXTENSIONS)
+        self.display_groups = DISPLAY_FORMAT_GROUPS
+
+    def test_catalog_has_more_than_six_hundred_formats(self):
+        self.assertGreaterEqual(len(self.supported), 600)
+        self.assertEqual(len(self.supported), len(self.catalog.ALL_EXTENSIONS))
+
+    def test_every_extension_is_either_translatable_or_refused(self):
+        gaps = self.supported - self.translatable - set(self.catalog.NON_TEXT_EXTENSIONS)
+        self.assertEqual(gaps, set(), f"این پسوندها دسته‌بندی نشده‌اند: {sorted(gaps)[:20]}")
+        # آرشیوهای زیپ‌محور می‌توانند متن داخلشان داشته باشند، پس هم "بدون متن"
+        # فهرست می‌شوند و هم ترجمه‌شدنی؛ بقیه نباید هم‌زمان در هر دو باشند.
+        allowed_overlap = set(self.catalog.ZIP_CONTAINER_EXTENSIONS)
+        unexpected = (self.translatable & set(self.catalog.NON_TEXT_EXTENSIONS)) - allowed_overlap
+        self.assertEqual(unexpected, set())
+
+    def test_source_list_is_fully_covered(self):
+        raw = set().union(*self.catalog.PRIORITY_EXTENSIONS.values())
+        self.assertEqual(raw - self.supported, set())
+        self.assertEqual(len(raw), len(self.catalog.ALL_EXTENSIONS))
+
+    def test_display_list_is_short_and_valid(self):
+        shown = [
+            ext
+            for _, examples in self.display_groups
+            for ext in examples.split()
+            if ext.startswith(".")
+        ]
+        self.assertLessEqual(len(shown), 80)
+        self.assertEqual([ext for ext in shown if ext not in self.supported], [])
+
+    def test_search_reaches_formats_hidden_from_the_short_list(self):
+        from trarium.extractors.formats import search_formats
+
+        self.assertIn(".srt", search_formats("srt"))
+        self.assertIn(".sas7bdat", search_formats("sas7b"))
+        self.assertIn(".kicad_pcb", search_formats("KICAD"))
+        self.assertIn(".mp4", search_formats("mp4"))
+        self.assertEqual(search_formats("zzzz"), [])
+
+    def test_new_text_formats_are_translatable(self):
+        for ext in (".qmd", ".rmd", ".ifc", ".sdf", ".proto", ".eml"):
+            self.assertIn(ext, self.translatable, ext)
+
+    def test_quarto_file_translates(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "chapter.qmd"
+            path.write_text("# Title\n\nThis is a translatable paragraph.\n\nSecond one.", encoding="utf-8")
+            book = get_extractor(str(path)).extract(str(path))
+            self.assertIn("translatable paragraph", book.full_text)
+
+    def test_three_d_binary_is_refused_with_clear_message(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "scene.blend"
+            path.write_bytes(b"BLENDER" + b"\x00" * 256)
+            with self.assertRaises(UnsupportedFormatError) as ctx:
+                get_extractor(str(path)).extract(str(path))
+            self.assertIn("باینری", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
