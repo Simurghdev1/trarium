@@ -1,4 +1,4 @@
-"""Real end-to-end audit suite for Trarium v2.17.0 (and any patched copy).
+"""Real end-to-end audit suite for Trarium v2.18.0 (and any patched copy).
 
 Everything here runs for real: an HTTP mock provider speaks the same protocol as
 OpenRouter/Groq/OpenAI-compatible endpoints, so the transport, retry, parsing,

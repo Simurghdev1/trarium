@@ -100,7 +100,7 @@ def save_as_pdf(result, output_path: str | None = None) -> str:
     rtl = (getattr(result, "target_lang", "fa") or "fa") in {"fa", "ar", "he", "ur"}
     font = pymupdf.Font(fontfile=str(_FONT_PATH))
     width, height, margin = 595, 842, 52
-    body_size, leading = 12.5, 19.0
+    body_size = 12.5
     usable = width - 2 * margin
 
     doc = pymupdf.open()

@@ -2,17 +2,15 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 import re
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from threading import Lock
 from typing import Callable
 from dataclasses import dataclass
 
-import requests
 from rich.console import Console
 
 from trarium.utils import clean_translation as _clean_translation
@@ -64,24 +62,21 @@ OPENROUTER_VISION_MODELS = {
 
 def _has_paddleocr() -> bool:
     try:
-        import paddleocr  # noqa: F401
-        return True
+        return importlib.util.find_spec("paddleocr") is not None
     except Exception:
         return False
 
 
 def _has_surya() -> bool:
     try:
-        import surya  # noqa: F401
-        return True
+        return importlib.util.find_spec("surya") is not None
     except Exception:
         return False
 
 
 def _has_easyocr() -> bool:
     try:
-        import easyocr  # noqa: F401
-        return True
+        return importlib.util.find_spec("easyocr") is not None
     except Exception:
         return False
 
@@ -309,7 +304,6 @@ def extract_ocr_blocks_tesseract(page, lang: str = "eng") -> list[dict]:
 def extract_ocr_blocks_easyocr(page, languages=None) -> list[dict]:
     try:
         import easyocr
-        from PIL import Image
     except ImportError as exc:
         raise RuntimeError("EasyOCR نصب نیست.") from exc
     languages = languages or ["en"]
@@ -1123,8 +1117,6 @@ def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4,
     duplicate_entries: dict[str, list[tuple[int,int,str]]] = {}
 
     token_limit = max(256, int(max_chars / 3)) if adaptive_batch else max(256, int(max_chars / 2))
-    batches = _translation_chunks(entries, max_chars=max_chars, max_tokens=token_limit)
-
     def resolve_reuse(entry):
         p, i, text = entry
         source = safe_normalize_text(text)

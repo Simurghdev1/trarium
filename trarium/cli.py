@@ -6,7 +6,7 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
-from trarium import __version__, __app_name__
+from trarium import __version__
 from trarium.cache import CachedTranslator
 from trarium.extractors import get_extractor
 from trarium.translators import get_translator

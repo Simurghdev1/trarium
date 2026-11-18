@@ -123,7 +123,7 @@ def install_tesseract_silent(user_confirm: bool = True) -> bool:
     # ویندوز
     if sys.platform == "win32":
         if user_confirm:
-            print(f"\n  📥 Tesseract OCR (~60MB) نیاز به دانلود داره.")
+            print("\n  📥 Tesseract OCR (~60MB) نیاز به دانلود داره.")
             answer = input("  آیا دانلود کنم؟ (y/n): ").strip().lower()
             if answer not in ("y", "yes", "بله", "ب"):
                 print("  ⏹️ دانلود لغو شد")

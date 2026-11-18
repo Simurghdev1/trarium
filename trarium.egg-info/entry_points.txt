@@ -1,0 +1,2 @@
+[console_scripts]
+trarium = trarium.cli:main

@@ -18,6 +18,7 @@ from xml.etree import ElementTree as ET
 
 from trarium.extractors.base import BaseExtractor, ExtractedBook
 from trarium.extractors.catalog import COMIC_EXTENSIONS
+from trarium.extractors.watermark import strip_watermarks
 from trarium.extractors.formats import (
     ARCHIVE_EXTENSIONS,
     AUDIO_EXTENSIONS,
@@ -156,6 +157,7 @@ def _strip_inline_markup(text: str) -> str:
 
 def _clean_plain(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+    text = strip_watermarks(text)
     return re.sub(r"\n{4,}", "\n\n\n", text).strip()
 
 
@@ -209,46 +211,88 @@ def _metadata_of(path: Path) -> tuple[str, str]:
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
+def _local_name(tag: str) -> str:
+    """نام تگ بدون namespace؛ سندهای بدون xmlns هم مثل بقیه خوانده می‌شوند."""
+    return str(tag).rsplit("}", 1)[-1].lower()
+
+
 def _docx_regex_lines(xml_bytes: bytes) -> list[str]:
-    """پشتیبان برای XML بدون namespace (سندهایی که xmlns ندارند)."""
+    """پشتیبان برای XML خراب: مرز پاراگراف‌ها (از جمله تکست‌باکس) حفظ می‌شود."""
     raw = xml_bytes.decode("utf-8", errors="replace")
+    raw = re.sub(r"(?i)<w:tab\s*/>", "\t", raw)
+    raw = re.sub(r"(?i)<w:br\s*/>", "\n", raw)
+    pieces = re.findall(
+        r"(?is)<w:t\b[^>]*>(.*?)</w:t\s*>|(<w:p\b[^>]*/?>)|(</w:p\s*>)", raw
+    )
     lines: list[str] = []
-    for paragraph in re.findall(r"(?is)<w:p\b[^>]*>.*?</w:p>", raw):
-        paragraph = re.sub(r"(?i)<w:tab\s*/>", "\t", paragraph)
-        paragraph = re.sub(r"(?i)<w:br\s*/>", "\n", paragraph)
-        pieces = re.findall(r"(?is)<w:t\b[^>]*>(.*?)</w:t>", paragraph)
-        line = unescape("".join(pieces)).strip()
-        if line:
-            lines.append(line)
+    buffer: list[str] = []
+
+    def flush() -> None:
+        text = unescape("".join(buffer)).strip()
+        if text:
+            lines.append(text)
+        buffer.clear()
+
+    for text_piece, _open, _close in pieces:
+        if text_piece:
+            buffer.append(text_piece)
+        else:
+            flush()
+    flush()
     return lines
 
 
 def _docx_paragraph_lines(xml_bytes: bytes) -> list[str]:
-    """پاراگراف‌ها را به ترتیب سند می‌خواند؛ تکست‌باکس‌ها هم جدا نمی‌شوند."""
+    """پاراگراف‌ها را به ترتیب سند می‌خواند و متن تکست‌باکس را جدا نگه می‌دارد.
+
+    تکست‌باکس یک ‎<w:p> تودرتو داخل پاراگراف بیرونی است. اگر مرز آن رعایت نشود،
+    متن قبل و بعد از کادر بی‌فاصله به هم می‌چسبد: «Outer beforeOuter after».
+    """
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError:
         return _docx_regex_lines(xml_bytes)
+
+    paragraphs = [element for element in root.iter() if _local_name(element.tag) == "p"]
+    nested = {
+        child
+        for paragraph in paragraphs
+        for child in paragraph.iter()
+        if _local_name(child.tag) == "p" and child is not paragraph
+    }
     lines: list[str] = []
-    for paragraph in root.iter(f"{_W}p"):
-        pieces: list[str] = []
 
-        def walk(element) -> None:
-            for child in element:
-                if child.tag == f"{_W}p":  # پاراگراف تودرتو (تکست‌باکس) جدا پردازش می‌شود
-                    continue
-                if child.tag == f"{_W}t":
-                    pieces.append(child.text or "")
-                elif child.tag == f"{_W}tab":
-                    pieces.append("\t")
-                elif child.tag in (f"{_W}br", f"{_W}cr"):
-                    pieces.append("\n")
-                walk(child)
+    def walk(element, buffer: list[str]) -> None:
+        def flush() -> None:
+            text = "".join(buffer).strip()
+            if text:
+                lines.append(text)
+            buffer.clear()
 
-        walk(paragraph)
-        line = "".join(pieces).strip()
-        if line:
-            lines.append(line)
+        for child in element:
+            name = _local_name(child.tag)
+            if name == "p":  # پاراگراف تودرتو (تکست‌باکس)
+                flush()
+                walk(child, buffer)
+                flush()
+                continue
+            if name == "t":
+                buffer.append(child.text or "")
+            elif name == "tab":
+                buffer.append("\t")
+            elif name in ("br", "cr"):
+                buffer.append("\n")
+            else:
+                walk(child, buffer)
+
+    for paragraph in paragraphs:
+        if paragraph in nested:
+            continue
+        buffer: list[str] = []
+        walk(paragraph, buffer)
+        text = "".join(buffer).strip()
+        if text:
+            lines.append(text)
     return lines
 
 

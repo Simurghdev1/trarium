@@ -15,7 +15,7 @@ from pathlib import Path
 import streamlit as st
 
 from trarium.jobs import get_manager
-from trarium.local_state import get_provider_config, mask_secret, trarium_home
+from trarium.local_state import get_provider_config, mask_secret
 from trarium.manga import (OPERATIONS, MangaSettings, availability, enhance,
                            enhance_file)
 from trarium.monitor import format_duration, job_snapshot
@@ -178,6 +178,7 @@ def render_queue_tab(ctx: dict) -> None:
                                  help="عدد بیشتر زودتر اجرا می‌شود.")
         with q2:
             out_fmt = st.selectbox("فرمت خروجی", ["txt", "epub", "html", "pdf"], key="queue_format")
+            st.caption("برای زیرنویس، Word/PowerPoint/Excel، JSON/CSV، نوت‌بوک و فایل کد، خروجی همیشه با فرمت خودِ فایل ساخته می‌شود.")
         with q3:
             kind_override = st.selectbox("نوع تسک", ["تشخیص خودکار", "متن/کتاب", "PDF"],
                                          key="queue_kind")
@@ -251,8 +252,8 @@ def render_queue_tab(ctx: dict) -> None:
                                 f"${job.get('cost_usd') or 0:.4f}")
                 if job.get("error"):
                     st.caption(f"❌ {job['error']}")
-                bar = st.progress(min(1.0, float(job.get("progress") or 0)),
-                                  text=job.get("stage") or "")
+                st.progress(min(1.0, float(job.get("progress") or 0)),
+                            text=job.get("stage") or "")
                 buttons = st.columns(6)
                 if job["status"] in {"running", "pausing"}:
                     if buttons[0].button("⏸️ Pause", key=f"pause_{job_id}"):

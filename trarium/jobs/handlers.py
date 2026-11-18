@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from pathlib import Path
 
 from trarium.extractors import get_extractor
 from trarium.extractors.base import ExtractedBook
+from trarium.extractors.formats import SUBTITLE_EXTENSIONS
 from trarium.extractors.generic import UnsupportedFormatError, sniff_container
 from trarium.output import save_as_epub, save_as_html, save_as_pdf, save_as_text
 from trarium.processors import TextChunker
@@ -54,14 +56,160 @@ def _save_book_result(ctx, result, fmt: str, stem: str) -> Path:
     return path
 
 
+# -------------------------------------------------------------------------- office
+def _handle_office(ctx, source: Path, suffix: str) -> bool:
+    """DOCX/PPTX/XLSX را در همان فرمت و با همان ساختار برمی‌گرداند."""
+    from trarium.office import SUPPORTED_EXTENSIONS, translate_office
+
+    if suffix not in SUPPORTED_EXTENSIONS:
+        return False
+    cfg = ctx.config
+    ctx.set_stage("ترجمه سند آفیس")
+    ctx.ensure_units([f"سند {suffix}"])
+    pipeline = _pipeline(ctx, chunk_size=int(cfg.get("chunk_size", 14000)),
+                         workers=1, delay=float(cfg.get("delay", 0.0)))
+    ctx.unit_started(0, suffix)
+    try:
+        content = translate_office(source, suffix, pipeline)
+    except Exception as exc:
+        ctx.unit_done(0, failed=True, error=str(exc), title=suffix)
+        raise RuntimeError(f"ترجمهٔ سند آفیس انجام نشد: {exc}") from exc
+    out_dir = ctx.directory / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target_lang = ctx.job.get("target_lang") or "fa"
+    out = out_dir / f"{_safe_name(ctx.job['title'])}_{target_lang}{suffix}"
+    out.write_bytes(content)
+    stats = pipeline.stats
+    ctx.unit_done(0, title=suffix)
+    ctx.update(total_units=1, completed_units=1, progress=1.0,
+               input_tokens=stats.get("in_tokens", 0), output_tokens=stats.get("out_tokens", 0),
+               api_requests=stats.get("api_requests", 0))
+    ctx.finish(out)
+    return True
+
+
+# ------------------------------------------------------------------- structured
+def _handle_structured(ctx, source: Path, suffix: str) -> bool:
+    """JSON/CSV/نوت‌بوک/کد را با حفظ ساختار ترجمه می‌کند."""
+    from trarium.structured import STRUCTURED_EXTENSIONS, translate_structured
+
+    if suffix not in STRUCTURED_EXTENSIONS:
+        return False
+    cfg = ctx.config
+    ctx.set_stage("ترجمه ساختاریافته")
+    ctx.ensure_units([f"ساختار {suffix}"])
+    pipeline = _pipeline(ctx, chunk_size=int(cfg.get("chunk_size", 14000)),
+                         workers=1, delay=float(cfg.get("delay", 0.0)))
+    ctx.unit_started(0, suffix)
+    try:
+        content = translate_structured(source, suffix, pipeline)
+    except Exception as exc:
+        ctx.unit_done(0, failed=True, error=str(exc), title=suffix)
+        raise RuntimeError(f"ترجمهٔ ساختاریافته انجام نشد: {exc}") from exc
+    if content is None:
+        return False
+    out_dir = ctx.directory / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target_lang = ctx.job.get("target_lang") or "fa"
+    out = out_dir / f"{_safe_name(ctx.job['title'])}_{target_lang}{suffix}"
+    out.write_text(content, encoding="utf-8")
+    stats = pipeline.stats
+    ctx.unit_done(0, title=suffix)
+    ctx.update(total_units=1, completed_units=1, progress=1.0,
+               input_tokens=stats.get("in_tokens", 0), output_tokens=stats.get("out_tokens", 0),
+               api_requests=stats.get("api_requests", 0))
+    ctx.finish(out)
+    return True
+
+
+# ----------------------------------------------------------------------- subtitle
+def _handle_subtitle(ctx, source: Path, suffix: str) -> bool:
+    """زیرنویس را با همان زمان‌بندی برمی‌گرداند؛ اگر نشد False می‌دهد."""
+    from trarium.subtitles import read_subtitles
+
+    document = read_subtitles(source)
+    if document is None or not document.cues:
+        return False
+
+    cfg = ctx.config
+    ctx.set_stage("ترجمه زیرنویس")
+    store_file = ctx.directory / "subtitle_texts.json"
+    try:
+        texts = json.loads(store_file.read_text(encoding="utf-8")) if store_file.exists() else []
+    except ValueError:
+        texts = []
+    if len(texts) != len(document.cues):
+        texts = [cue.text for cue in document.cues]
+
+    batches: list[list[int]] = []
+    current: list[int] = []
+    size = 0
+    for index, cue in enumerate(document.cues):
+        if not cue.text.strip():
+            continue
+        if current and size + len(cue.text) + 2 > 3000:
+            batches.append(current)
+            current, size = [], 0
+        current.append(index)
+        size += len(cue.text) + 2
+    if current:
+        batches.append(current)
+    if not batches:
+        return False
+
+    ctx.ensure_units([f"زیرنویس بخش {i + 1}" for i in range(len(batches))])
+    pipeline = _pipeline(ctx, chunk_size=int(cfg.get("chunk_size", 14000)),
+                         workers=1, delay=float(cfg.get("delay", 0.0)))
+    failed = 0
+    for index, batch in enumerate(batches):
+        if ctx.is_done(index):
+            continue
+        ctx.unit_started(index, f"زیرنویس بخش {index + 1}")
+        joined = "\n\n".join(document.cues[i].text.strip() for i in batch)
+        try:
+            output = pipeline.translate_block(joined)
+            parts = [part.strip() for part in re.split(r"\n\s*\n", output.strip()) if part.strip()]
+            if len(parts) == len(batch):
+                for cue_index, part in zip(batch, parts):
+                    texts[cue_index] = part
+            else:
+                # اگر مدل مرزها را نگه نداشت، cue‌به‌cue ترجمه می‌شود تا زمان‌بندی به هم نریزد.
+                for cue_index in batch:
+                    texts[cue_index] = pipeline.translate_block(document.cues[cue_index].text.strip())
+            ctx.unit_done(index, title=f"زیرنویس بخش {index + 1}")
+        except Exception as exc:
+            failed += 1
+            ctx.unit_done(index, failed=True, error=str(exc), title=f"زیرنویس بخش {index + 1}")
+        store_file.write_text(json.dumps(texts, ensure_ascii=False), encoding="utf-8")
+        ctx.checkpoint()
+
+    out_dir = ctx.directory / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target_lang = ctx.job.get("target_lang") or "fa"
+    out = out_dir / f"{_safe_name(ctx.job['title'])}_{target_lang}{suffix}"
+    out.write_text(document.render(texts), encoding="utf-8")
+    stats = pipeline.stats
+    ctx.update(total_units=len(batches), completed_units=len(batches) - failed, failed_units=failed,
+               progress=1.0, input_tokens=stats.get("in_tokens", 0),
+               output_tokens=stats.get("out_tokens", 0), api_requests=stats.get("api_requests", 0))
+    ctx.finish(out)
+    return True
+
+
 # --------------------------------------------------------------------------- book
 def handle_book(ctx) -> None:
     cfg = ctx.config
     source = Path(ctx.job.get("source_path") or "")
     if not source.exists():
         raise FileNotFoundError("فایل ورودی تسک پیدا نشد.")
-    ctx.set_stage("استخراج متن")
     suffix = source.suffix.lower()
+    if suffix in SUBTITLE_EXTENSIONS and _handle_subtitle(ctx, source, suffix):
+        return
+    if _handle_office(ctx, source, suffix):
+        return
+    if _handle_structured(ctx, source, suffix):
+        return
+    ctx.set_stage("استخراج متن")
     is_pdf = suffix == ".pdf" or sniff_container(source) == "pdf"
     book = get_extractor(str(source), use_ocr=is_pdf).extract(str(source))
     if not book.chapters:
@@ -194,7 +342,6 @@ def handle_novel(ctx) -> None:
         translated = json.loads(translated_file.read_text(encoding="utf-8")) if translated_file.exists() else {}
     except ValueError:
         translated = {}
-    cfg_prompt = str(cfg.get("short_prompt") or "")
     ctx.set_stage("ترجمه فصل‌ها")
     for idx, chapter in enumerate(selected):
         if ctx.is_done(idx):

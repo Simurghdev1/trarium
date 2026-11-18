@@ -1,6 +1,7 @@
 """استخراج متن از فایل‌های متنی ساده."""
 
 from trarium.extractors.base import BaseExtractor, ExtractedBook
+from trarium.extractors.generic import UnsupportedFormatError
 
 
 class TXTExtractor(BaseExtractor):
@@ -19,7 +20,10 @@ class TXTExtractor(BaseExtractor):
                 continue
 
         if not text.strip():
-            raise ValueError("فایل متنی خالیه یا encoding ناشناخته‌ای داره")
+            raise UnsupportedFormatError(
+                f"«{path.name}» خالی است یا متن قابل خواندنی ندارد؛ "
+                "فایل متنی بدون محتوا قابل ترجمه نیست."
+            )
 
         # تقسیم بر اساس خطوط خالی (پاراگراف‌ها)
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]

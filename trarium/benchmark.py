@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 
 def benchmark_ocr(pdf_path: str, methods: list[str], page_numbers: list[int] | None = None, lang: str = "eng") -> list[dict]:

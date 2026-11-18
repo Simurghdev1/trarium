@@ -97,8 +97,11 @@ VIDEO_EXTENSIONS = {
     ".f4v", ".asf", ".rm", ".rmvb", ".divx", ".mxf", ".y4m",
 }
 
+# ‎.zip/‎.txtz/‎.htmlz ظرف متنی‌اند و ترجمه می‌شوند؛ پس آرشیو «بدون متن» نیستند.
+ZIP_TEXT_CONTAINERS = {".zip", ".txtz", ".htmlz"}
+
 ARCHIVE_EXTENSIONS = {
-    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".tbz", ".tbz2",
+    ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".tbz", ".tbz2",
     ".xz", ".txz", ".lzma", ".zst", ".z", ".lz", ".lzh", ".lha", ".cpio",
     ".lz4", ".cab", ".arj", ".ace", ".sit", ".sitx", ".iso", ".img",
     ".dmg", ".apk", ".aab", ".ipa", ".deb", ".rpm", ".pkg", ".msi",
@@ -125,7 +128,8 @@ TRANSLATABLE_EXTENSIONS = sorted(
     | ZIP_DOCUMENT_EXTENSIONS
     | LEGACY_DOCUMENT_EXTENSIONS
     | SUBTITLE_EXTENSIONS
-    | {".pdf", ".txt", ".epub", ".zip"}
+    | {".pdf", ".txt", ".epub"}
+    | ZIP_TEXT_CONTAINERS
 )
 
 # پسوندهایی که فقط با استخراج بهترین‌تلاش خوانده می‌شوند
@@ -152,9 +156,17 @@ TRANSLATABLE_EXTENSIONS = sorted(set(TRANSLATABLE_EXTENSIONS) | set(CATALOG_TRAN
 DISPLAY_FORMAT_GROUPS = DISPLAY_GROUPS
 
 
-def format_stats() -> tuple[int, int]:
-    """(تعداد کل پسوندهای شناسایی‌شده، تعداد پسوندهای متن‌دار قابل ترجمه)"""
-    return len(SUPPORTED_EXTENSIONS), len(TRANSLATABLE_EXTENSIONS)
+def format_stats() -> tuple[int, int, int]:
+    """(پسوندهای متن‌دار قابل ترجمه، کل پسوندهای شناسایی‌شده، پسوندهای بدون متن)
+
+    عدد بزرگ کاتالوگ (شناخته‌شده) نباید به‌جای «قابل ترجمه» به کاربر نشان داده شود:
+    بیش از نیمی از آن عکس/صدا/ویدیو/باینری است.
+    """
+    return (
+        len(TRANSLATABLE_EXTENSIONS),
+        len(SUPPORTED_EXTENSIONS),
+        len(SUPPORTED_EXTENSIONS) - len(TRANSLATABLE_EXTENSIONS),
+    )
 
 
 def search_formats(query: str, limit: int = 120) -> list[str]:
@@ -183,9 +195,17 @@ def is_translatable_extension(ext: str) -> bool:
     return ext in TRANSLATABLE_EXTENSIONS or ext in SUBTITLE_EXTENSIONS
 
 
+def is_archive_extension(ext: str) -> bool:
+    """آرشیو بدون متن؛ ‎.zip و ظرف‌های متنی زیپ جزو این دسته نیستند."""
+    return ext.lower() in ARCHIVE_EXTENSIONS
+
+
 def is_non_text_extension(ext: str) -> bool:
     """پسوندی که در کاتالوگ هست ولی متن ندارد (عکس/صدا/ویدیو/باینری)."""
-    return ext.lower() in NON_TEXT_EXTENSIONS
+    ext = ext.lower()
+    if ext in ZIP_TEXT_CONTAINERS:
+        return False
+    return ext in NON_TEXT_EXTENSIONS
 
 
 def human_format(ext: str) -> str:

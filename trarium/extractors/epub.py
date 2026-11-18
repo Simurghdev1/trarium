@@ -6,6 +6,7 @@ from html import unescape
 import ebooklib
 from ebooklib import epub
 from trarium.extractors.base import BaseExtractor, ExtractedBook
+from trarium.extractors.watermark import strip_watermarks
 
 
 class EPUBExtractor(BaseExtractor):
@@ -49,6 +50,8 @@ class EPUBExtractor(BaseExtractor):
                 text = unescape(text)
                 text = re.sub(r"[ \t]+", " ", text)
                 text = re.sub(r"\n{3,}", "\n\n", text).strip()
+                # خطوط واترمارک (مثل OceanofPDF.com) نه ترجمه می‌شوند نه در کتاب می‌مانند.
+                text = strip_watermarks(text)
                 if text:
                     chapters.append({"title": item.get_name(), "content": text})
                     full_text_parts.append(text)

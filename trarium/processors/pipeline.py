@@ -157,6 +157,32 @@ class TranslationPipeline:
             self.checkpoint.put(key, "0", out)
         return out, False
 
+    def translate_block(self, source: str) -> str:
+        """یک قطعهٔ مستقل (مثل متن یک cue زیرنویس) را ترجمه می‌کند.
+
+        همان مسیر امنِ ترجمهٔ کتاب را می‌رود: placeholder protection، cache،
+        checkpoint و سه تلاش مجدد.
+        """
+        text = str(source or "")
+        if not text.strip():
+            return text
+        prepared, mapping = self._prepare(text)
+        prompt = self._prompt(prepared)
+        key = hashlib.sha256(("block|" + self.target_lang + "|" + prepared).encode("utf-8")).hexdigest()
+        last: Exception | None = None
+        for attempt in range(3):
+            try:
+                output, _reused = self._translated(prepared, key, prompt)
+                output = restore(output, mapping)
+                if not output.strip():
+                    raise RuntimeError("پاسخ ترجمه خالی بود")
+                return output
+            except Exception as exc:
+                last = exc
+                if attempt < 2:
+                    time.sleep(0.8 * (2 ** attempt))
+        raise RuntimeError(str(last or "ترجمه انجام نشد"))
+
     def run(self, book: ExtractedBook) -> TranslationResult:
         started = time.monotonic()
         chunks = self.chunker.chunk_by_chapters(book.chapters)

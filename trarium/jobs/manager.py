@@ -161,9 +161,9 @@ class JobManager:
     # -------------------------------------------------------------- recovery
     def _recover(self) -> None:
         try:
-            recovered = self.store.requeue_orphans()
+            self.store.requeue_orphans()
         except Exception:
-            recovered = 0
+            pass
         for job in self.store.list_jobs():
             if job["status"] == "queued" and job.get("stage") == "بازیابی پس از توقف سرور":
                 self.store.add_event(job["id"],

@@ -98,6 +98,27 @@ RAW_PRIORITY_LISTS = r"""
 .sh
 .ps1
 .bat
+.bash
+.cmd
+.patch
+.diff
+.text
+.pyi
+.rss
+.atom
+.cc
+.cxx
+.hpp
+.jl
+.kts
+.mm
+.odg
+.odf
+.fodp
+.m3u
+.pls
+.pml
+.smil
 .ipynb
 .tex
 .latex
@@ -831,8 +852,8 @@ VIDEO_EXTENSIONS = frozenset(
 ARCHIVE_EXTENSIONS = frozenset(
     """
     .rar .7z .tar .gz .tgz .bz .bz2 .tbz .tbz2 .xz .txz .lzma .zst .z .br
-    .cpio .lz4 .sz .sit .sitx .sea .hqx .cab .arj .ace .lz .lzh .lha .txtz
-    .htmlz .cbz .cbr .cbt .cb7 .cba .cb8
+    .cpio .lz4 .sz .sit .sitx .sea .hqx .cab .arj .ace .lz .lzh .lha
+    .cbz .cbr .cbt .cb7 .cba .cb8
     """.split()
 )
 
@@ -896,7 +917,7 @@ DISPLAY_GROUPS = [
     ("🎬 زیرنویس", ".srt .vtt .ass .ssa .sub .smi .lrc"),
     ("💻 کد و داده", ".py .js .ts .java .cpp .go .rs .sql .json .yaml .toml"),
     ("✉️ ایمیل و تقویم", ".eml .mbox .vcf .ics"),
-    ("🧬 دادهٔ متنی علمی", ".fasta .vcf .gff .gff3 .sam .wig .pdb .cif"),
+    ("🧬 دادهٔ متنی علمی", ".fasta .gff .gff3 .sam .wig .pdb .cif"),
     ("🔧 فنی و CAD متنی", ".gcode .nc .dxf .step .stl .obj .gltf .kicad_pcb"),
     ("🗜️ آرشیو متنی", ".zip (فایل‌های متنی داخلش)"),
 ]

@@ -1,3 +1,19 @@
+## 2.18.1 — Output fidelity and format safety
+
+- Subtitles keep their timing: SRT, WebVTT, SBV, LRC, ASS/SSA and MicroDVD are translated cue by cue
+  (with a batching fast path) and written back in the same format instead of a plain TXT.
+- DOCX/PPTX/XLSX are translated in place: the original package is copied and only the text runs change,
+  so styles, layout, slides and sheets stay intact.
+- JSON/JSONL values, CSV/TSV cells, notebook markdown cells and code comments are translated without
+  touching keys, code, headers or numbers; the output stays valid JSON/CSV/IPYNB/code.
+- One format catalog: every translatable extension (`.bash`, `.patch`, `.pyi`, `.diff`, `.rss`, `.odg`, …)
+  is now searchable in the UI; `.zip/.txtz/.htmlz` are text containers, not "archive, no text".
+- The format counter shows translatable extensions first and explains how many are images/audio/video/binary.
+- Empty text files raise `UnsupportedFormatError` with a Persian message instead of a bare `ValueError`.
+- DOCX text boxes no longer glue their text to the surrounding paragraph ("Outer beforeInside box").
+- EPUB watermarks (OceanofPDF.com and similar) are removed before translation.
+- Removed the duplicate `.vcf` entry and all pyflakes warnings in the app package.
+
 ## 2.18.0 — Persistent Jobs & Provider Control
 
 - Persistent job manager with SQLite state: Pause, Resume, Cancel, Delete and crash recovery.

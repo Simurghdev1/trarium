@@ -1,14 +1,12 @@
-"""🌿 Trarium 2.17 — clean Streamlit UI for book and web-novel translation."""
+"""🌿 Trarium 2.18 — clean Streamlit UI for book and web-novel translation."""
 from __future__ import annotations
 
 import hashlib
 import io
 import os
 import tempfile
-import time
 import zipfile
 from pathlib import Path
-from typing import Any
 
 import streamlit as st
 
@@ -28,8 +26,8 @@ from trarium.extractors.formats import DISPLAY_FORMAT_GROUPS, format_stats, sear
 from trarium.extractors.generic import UnsupportedFormatError
 from trarium.jobs import get_manager
 from trarium.local_state import chain_to_text, get_provider_config, load_settings, mask_secret, save_settings, split_chain_text
-from trarium.provider_registry import chain_from_settings, has_credentials, label as provider_label, remember
-from trarium.usage import UsageTrackingTranslator, default_store as usage_store
+from trarium.provider_registry import chain_from_settings, label as provider_label, remember
+from trarium.usage import UsageTrackingTranslator
 from trarium import ui_panels
 
 st.set_page_config(page_title="Trarium", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
@@ -352,11 +350,11 @@ with book_tab:
     st.markdown("### 📄 ترجمه متنی")
     st.caption("برای PDF، TXT، EPUB، سندهای آفیس و هر فایلی که متن دارد. صفحه‌آرایی اصلی هدف نیست و هر خروجی یک بخش پایانی «ترجمه شده توسط تراریوم» دارد.")
     st.caption("هر فایلی که متن داشته باشد ترجمه می‌شود؛ حتی اگر پسوندش در لیست نباشد. اگر فایل ذاتاً متن ندارد (ویدیو، صدا، عکس) تراریوم صریح می‌گوید که نمی‌تواند.")
-    with st.expander(f"📚 فرمت‌های پشتیبانی‌شده ({format_stats()[0]} پسوند)"):
-        total_formats, translatable_formats = format_stats()
+    translatable_formats, total_formats, non_text_formats = format_stats()
+    with st.expander(f"📚 فرمت‌های پشتیبانی‌شده ({translatable_formats} پسوند قابل ترجمه)"):
         st.caption(
-            f"تراریوم {total_formats} پسوند را می‌شناسد و از این میان {translatable_formats} پسوندِ متن‌دار "
-            "ترجمه می‌شود. عکس، صدا، ویدیو و فایل باینری شناسایی می‌شوند اما ترجمه نمی‌شوند و دلیلش گفته می‌شود."
+            f"تراریوم {total_formats} پسوند را می‌شناسد؛ {translatable_formats} پسوند متن دارد و ترجمه می‌شود "
+            f"و {non_text_formats} پسوند عکس، صدا، ویدیو، آرشیو یا باینری است که با دلیل روشن رد می‌شود."
         )
         for family, examples in DISPLAY_FORMAT_GROUPS:
             st.markdown(f"**{family}** — `{examples}`")
@@ -383,6 +381,7 @@ with book_tab:
         if background:
             bg_fmt = st.selectbox("فرمت خروجی تسک پس‌زمینه", ["txt", "epub", "html", "pdf"],
                                   key="book_bg_fmt")
+            st.caption("زیرنویس، سند آفیس، JSON/CSV و فایل کد همیشه با فرمت خودشان ذخیره می‌شوند.")
         if background and st.button("🕓 افزودن به صف پس‌زمینه", type="primary", key="translate_text_bg"):
             job_id = ui_panels.submit_upload_job(ui_ctx, uploaded, config=_job_config(bg_fmt))
             st.success(f"تسک در صف قرار گرفت: {job_id}")

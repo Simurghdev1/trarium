@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlparse
 
 try:
     from bs4 import BeautifulSoup
-except ImportError as exc:  # imported lazily elsewhere, but give a useful error here
+except ImportError:  # imported lazily elsewhere, but give a useful error here
     BeautifulSoup = None
 
 from rich.console import Console

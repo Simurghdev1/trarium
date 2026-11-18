@@ -13,7 +13,7 @@ because the request may already have been billed and served.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from trarium.usage import KIND_LLM, UsageStore, default_store
 
