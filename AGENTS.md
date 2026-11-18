@@ -53,6 +53,9 @@ python -m trarium.cli novel https://example.com/novel/1/ -o output/
 - **Gemini**: Google models — requires API key (may be geo-blocked in Iran)
 - **Custom Model**: Any OpenAI-compatible model can be specified
 
+## Reporting Test Outputs
+- Whenever you test Trarium with a file, always hand the user a download link to the produced output (the translated PDF/TXT/EPUB/DOCX, the QA log, and the input file when it is a sample), in this project's `trarium-files` repository or as an attached artifact. "Tests passed" is not enough; the user must be able to open the result.
+
 ## Important Notes
 - OpenRouter and 9Router use OpenAI-compatible API format
 - For Iranian users: Google Gemini may be blocked, use OpenRouter or 9Router
