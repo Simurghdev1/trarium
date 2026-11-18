@@ -13,7 +13,6 @@ from trarium.extractors.catalog import (
     AUDIO_EXTENSIONS as CATALOG_AUDIO_EXTENSIONS,
     BINARY_EXTENSIONS as CATALOG_BINARY_EXTENSIONS,
     DATABASE_EXTENSIONS as CATALOG_DATABASE_EXTENSIONS,
-    DISPLAY_EXTENSIONS,
     DISPLAY_GROUPS,
     EXECUTABLE_EXTENSIONS as CATALOG_EXECUTABLE_EXTENSIONS,
     IMAGE_EXTENSIONS as CATALOG_IMAGE_EXTENSIONS,
@@ -54,8 +53,9 @@ HTML_LIKE_EXTENSIONS = {
 }
 
 # --- زیرنویس ----------------------------------------------------------------
+# نکته: ‎.scc و ‎.stl زیرنویس هگز/باینری‌اند و در دستهٔ بدون‌متن می‌مانند.
 SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".sub", ".smi",
-                       ".sami", ".sbv", ".lrc", ".scc", ".stl"}
+                       ".sami", ".sbv", ".lrc"}
 
 # --- فایل‌های ZIP-محور (سند آفیس / ODF) ------------------------------------
 ZIP_DOCUMENT_EXTENSIONS = {
@@ -66,8 +66,9 @@ ZIP_DOCUMENT_EXTENSIONS = {
 }
 
 # --- اسناد قدیمی/باینری که فقط «بهترین تلاش» ممکن است ----------------------
+# ‎.rb عمداً اینجا نیست: در این پروژه یعنی Ruby و در PLAIN_TEXT است.
 LEGACY_DOCUMENT_EXTENSIONS = {
-    ".doc", ".wps", ".wpd", ".wri", ".lrf", ".lit", ".pdb", ".prc", ".rb",
+    ".doc", ".wps", ".wpd", ".wri", ".lrf", ".lit", ".pdb", ".prc",
     ".snb", ".oeb", ".ibooks", ".tcr", ".mobi", ".azw", ".azw1", ".azw3",
     ".azw4", ".kf8", ".pml", ".pmd", ".sxw", ".sxc", ".sxi", ".sxd", ".sda",
     ".uot", ".uof", ".pages", ".numbers", ".key",
@@ -166,7 +167,15 @@ def is_known_extension(ext: str) -> bool:
 
 
 def extension_of(file_path: str | Path) -> str:
-    return Path(file_path).suffix.lower()
+    """پسوند فایل؛ برای فایل‌هایی مثل ‎.gitignore و ‎.env هم درست کار می‌کند."""
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+    if suffix:
+        return suffix
+    name = path.name.lower()
+    if name.startswith(".") and name.count(".") == 1:
+        return name
+    return ""
 
 
 def is_translatable_extension(ext: str) -> bool:

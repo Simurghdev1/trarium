@@ -863,7 +863,7 @@ BINARY_EXTENSIONS = frozenset(
     .blend .ma .mb .usdz .usd .abc .sldprt .sldasm .ipt .iam .f3d .skp
     .rvt .rfa .dwg .dwf .brd .pcbdoc .schdoc .odb .ses .sesx .bam .cram .bcf
     .bai .bw .bigwig .ab1 .gnm .kmz .pst .ost
-    .msg .mode .icns .idx
+    .msg .mode .icns .idx .scc .stl .cbr .cbt .cb7 .cba .cb8
     """.split()
 )
 
@@ -880,7 +880,10 @@ NON_TEXT_EXTENSIONS = (
 # همهٔ پسوندهایی که واقعاً متن دارند و به استخراج می‌روند.
 TEXT_EXTENSIONS = ALL_EXTENSIONS - NON_TEXT_EXTENSIONS
 # آرشیو ZIP (و مشتقات زیپ) می‌تواند متن داخلش داشته باشد، پس ترجمه‌شدنی است.
-ZIP_CONTAINER_EXTENSIONS = frozenset({".zip", ".epub", ".cbz", ".cbt", ".cb7", ".cba", ".cb8", ".txtz", ".htmlz"})
+# کتاب‌های کمیک آرشیو تصویری‌اند و متن قابل ترجمه ندارند.
+COMIC_EXTENSIONS = frozenset({".cbz", ".cbr", ".cbt", ".cb7", ".cba", ".cb8"})
+
+ZIP_CONTAINER_EXTENSIONS = frozenset({".zip", ".epub", ".txtz", ".htmlz"})
 TRANSLATABLE_EXTENSIONS = (TEXT_EXTENSIONS | ZIP_CONTAINER_EXTENSIONS) - {
     ext for ext in NON_TEXT_EXTENSIONS if ext not in ZIP_CONTAINER_EXTENSIONS
 }

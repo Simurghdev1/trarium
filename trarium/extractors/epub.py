@@ -2,6 +2,8 @@
 
 import re
 from html import unescape
+
+import ebooklib
 from ebooklib import epub
 from trarium.extractors.base import BaseExtractor, ExtractedBook
 
@@ -36,7 +38,8 @@ class EPUBExtractor(BaseExtractor):
                 spine_items.append(item)
 
         for item in spine_items:
-            if item.get_type() == epub.ITEM_DOCUMENT:
+            # ebooklib 0.21 ثابت را در ebooklib نگه می‌دارد، نه epub.
+            if item.get_type() == ebooklib.ITEM_DOCUMENT:
                 content = item.get_content().decode("utf-8", errors="replace")
                 # B20: Better HTML handling — preserve line breaks
                 content = re.sub(r"<br\s*/?>", "\n", content)

@@ -25,7 +25,6 @@ class GeminiTranslator(BaseTranslator):
         lang = LANG_NAMES.get(target_lang, target_lang)
         system = "You are a professional literary translator. Translate completely and faithfully. Output only the translation. Preserve names, numbers, URLs, paragraph order, dialogue structure and meaning. Never summarize, omit, censor or add commentary."
         if target_lang == "fa": system += " Use natural Persian, correct نیم‌فاصله and «…». Avoid em dash and en dash."
-        prompt = f"{system}\n\nTranslate to {lang}.\n\n{str(text)}"
         payload = {"systemInstruction":{"parts":[{"text":system}]},"contents":[{"parts":[{"text":f"Translate to {lang}.\n\n{str(text)}"}]}],"generationConfig":{"maxOutputTokens":max(4096,min(30000,math.ceil(len(str(text))*1.15)))}}
         last = None
         for attempt in range(3):

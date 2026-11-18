@@ -246,7 +246,7 @@ def render_upload(accepted=None, key="book"):
 
 with book_tab:
     st.markdown("### 📄 ترجمه متنی")
-    st.caption("برای PDF متنی، TXT یا EPUB. صفحه‌آرایی اصلی هدف نیست و هر خروجی یک بخش پایانی «ترجمه شده توسط تراریوم» دارد.")
+    st.caption("برای PDF، TXT، EPUB، سندهای آفیس و هر فایلی که متن دارد. صفحه‌آرایی اصلی هدف نیست و هر خروجی یک بخش پایانی «ترجمه شده توسط تراریوم» دارد.")
     st.caption("هر فایلی که متن داشته باشد ترجمه می‌شود؛ حتی اگر پسوندش در لیست نباشد. اگر فایل ذاتاً متن ندارد (ویدیو، صدا، عکس) تراریوم صریح می‌گوید که نمی‌تواند.")
     with st.expander(f"📚 فرمت‌های پشتیبانی‌شده ({format_stats()[0]} پسوند)"):
         total_formats, translatable_formats = format_stats()
@@ -272,10 +272,13 @@ with book_tab:
         suffix = Path(uploaded.name).suffix.lower()
         if st.button("🔍 تحلیل و ترجمه", type="primary", key="translate_text"):
             from trarium.extractors import get_extractor
+            from trarium.extractors.generic import sniff_container
             path = _tmp_from_session(suffix)
             try:
                 with st.spinner("در حال استخراج متن..."):
-                    book = get_extractor(path, use_ocr=(suffix == ".pdf")).extract(path)
+                    # OCR فقط برای PDF معنا دارد؛ تشخیص از روی محتوا، نه پسوند.
+                    is_pdf = suffix == ".pdf" or sniff_container(Path(path)) == "pdf"
+                    book = get_extractor(path, use_ocr=is_pdf).extract(path)
                 st.info(f"📖 {book.title} — {book.total_chars:,} کاراکتر — {len(book.chapters)} بخش")
                 if not book.chapters:
                     st.error("هیچ متن قابل ترجمه‌ای پیدا نشد.")
