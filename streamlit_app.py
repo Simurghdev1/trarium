@@ -1,4 +1,4 @@
-"""🌿 Trarium 2.18 — clean Streamlit UI for book and web-novel translation."""
+"""🌿 Trarium 2.19 — clean Streamlit UI for book and web-novel translation."""
 from __future__ import annotations
 
 import hashlib
@@ -330,9 +330,14 @@ ui_ctx = {
 }
 st.markdown(f'<div class="hero"><h1>🌿 Trarium</h1><p>ترجمه‌ی کتاب، PDF و وب‌ناول با تمرکز روی سرعت، حفظ قالب و جلوگیری از توقف‌های بی‌دلیل.</p><span class="status-pill">v{__version__}</span></div>', unsafe_allow_html=True)
 
-book_tab, layout_tab, web_tab, queue_tab, site_tab, manga_tab, usage_tab = st.tabs([
-    "📄 ترجمه متنی", "🎨 حفظ قالب PDF", "🌐 وب‌ناول", "🗂️ صف و تسک‌ها",
-    "🌐 ترجمه وب‌سایت", "🖼️ افزایش کیفیت مانگا", "📊 مصرف و هزینه"])
+from trarium import expansion_ui
+
+(book_tab, layout_tab, web_tab, library_tab, queue_tab, site_tab, manga_tab,
+ repair_tab, usage_tab) = st.tabs([
+    "📄 ترجمه متنی", "🎨 حفظ قالب PDF", "🌐 وب‌ناول", "📚 کتابخانه",
+    "🗂️ صف و تسک‌ها", "🌐 ترجمه وب‌سایت", "🖼️ افزایش کیفیت مانگا",
+    "🩺 تعمیر و تبدیل", "📊 مصرف و هزینه"])
+
 
 
 def render_upload(accepted=None, key="book"):
@@ -726,8 +731,12 @@ with web_tab:
                     else: save_as_html(result, out); mime = "text/html"
                     st.download_button("⬇️ دانلود خروجی", Path(out).read_bytes(), Path(out).name, mime, type="primary", key="novel_download")
 
+with library_tab:
+    expansion_ui.render_library_tab(ui_ctx)
+
 with queue_tab:
     ui_panels.render_queue_tab(ui_ctx)
+    expansion_ui.render_resume_section()
 
 with site_tab:
     ui_panels.render_website_tab(ui_ctx)
@@ -735,8 +744,12 @@ with site_tab:
 with manga_tab:
     ui_panels.render_manga_tab(ui_ctx)
 
+with repair_tab:
+    expansion_ui.render_repair_tab(ui_ctx)
+
 with usage_tab:
     ui_panels.render_usage_tab(ui_ctx)
+    expansion_ui.render_analytics_section()
 
 st.divider()
 st.caption("Trarium — OCR اختیاری • ترجمه مقاوم • حفظ قالب PDF • تسک پس‌زمینه • فونت Sahel")

@@ -40,6 +40,23 @@ def _pipeline(ctx, *, chunk_size: int, workers: int, delay: float, on_unit_done=
     )
 
 
+def _ledger(ctx, source: Path):
+    """دفتر مراحل Smart Resume؛ خطای آن هرگز ترجمه را متوقف نمی‌کند."""
+    try:
+        from trarium.resume import ResumeLedger, project_key
+        cfg = ctx.config
+        target_lang = ctx.job.get("target_lang") or "fa"
+        key = project_key(source, target_lang, str(cfg.get("provider") or ""),
+                          str(cfg.get("model") or ""))
+        ledger = ResumeLedger()
+        ledger.ensure(key, title=ctx.job.get("title") or source.name, source_path=str(source),
+                      target_lang=target_lang, provider=str(cfg.get("provider") or ""),
+                      model=str(cfg.get("model") or ""))
+        return ledger, key
+    except Exception:
+        return None, None
+
+
 def _save_book_result(ctx, result, fmt: str, stem: str) -> Path:
     fmt = (fmt or "txt").lower()
     out_dir = ctx.directory / "output"
@@ -209,11 +226,30 @@ def handle_book(ctx) -> None:
         return
     if _handle_structured(ctx, source, suffix):
         return
+    ledger, track = _ledger(ctx, source)
+    ctx.set_stage("بررسی کیفیت صفحات")
+    if track:
+        ledger.start(track, "repair")
+    try:
+        from trarium.repair import analyze_book
+        quality = analyze_book(source)
+        for issue in quality.issues:
+            if issue.severity != "info":
+                ctx.log(f"کیفیت صفحه {issue.page or '-'}: {issue.detail}", "warning")
+        if track:
+            ledger.complete(track, "repair", quality.summary_fa())
+    except Exception as exc:
+        if track:
+            ledger.fail(track, "repair", str(exc))
     ctx.set_stage("استخراج متن")
+    if track:
+        ledger.start(track, "ingest")
     is_pdf = suffix == ".pdf" or sniff_container(source) == "pdf"
     book = get_extractor(str(source), use_ocr=is_pdf).extract(str(source))
     if not book.chapters:
         raise UnsupportedFormatError("هیچ متن قابل ترجمه‌ای در فایل پیدا نشد.")
+    if track:
+        ledger.complete(track, "ingest", f"{len(book.chapters)} بخش")
     chunk_size = int(cfg.get("chunk_size", 14000))
     chunker = TextChunker(max_chars=max(2000, chunk_size), overlap=0)
     chunks = chunker.chunk_by_chapters(book.chapters)
@@ -223,11 +259,17 @@ def handle_book(ctx) -> None:
     if ctx.completed_indexes():
         ctx.log("بخش‌های تکمیل‌شده از Checkpoint خوانده می‌شوند و دوباره به API نمی‌روند.")
     ctx.set_stage("ترجمه")
+    if track:
+        ledger.start(track, "translate")
 
     def on_unit(idx: int, unit: dict) -> None:
         total = len(chunks)
-        ctx.unit_done(idx, failed=bool(unit.get("failed")), error=str(unit.get("error") or ""),
+        failed = bool(unit.get("failed"))
+        ctx.unit_done(idx, failed=failed, error=str(unit.get("error") or ""),
                       title=str(unit.get("title") or ""), total=total)
+        if track:
+            ledger.mark_unit(track, "translate", str(idx), "failed" if failed else "completed",
+                             str(unit.get("error") or ""))
 
     pipeline = _pipeline(ctx, chunk_size=chunk_size, workers=int(cfg.get("workers", 3)),
                          delay=float(cfg.get("delay", 0.0)), on_unit_done=on_unit)
@@ -236,12 +278,22 @@ def handle_book(ctx) -> None:
     if result.translated_chunks == 0:
         raise RuntimeError("هیچ بخشی ترجمه نشد؛ خطا: "
                            + (ctx.store.events(ctx.job_id, 1)[-1]["message"] if ctx.store.events(ctx.job_id, 1) else ""))
+    if track:
+        ledger.complete(track, "translate",
+                        f"{result.translated_chunks}/{len(chunks)} بخش",
+                        progress=len(chunks) and result.translated_chunks / len(chunks))
+        ledger.complete(track, "ocr", "برای این فایل OCR لازم نبود")
     ctx.set_stage("ساخت خروجی")
+    if track:
+        ledger.start(track, "output")
     path = _save_book_result(ctx, result, str(cfg.get("output_format") or "txt"),
                              book.title or ctx.job["title"])
     ctx.update(total_units=len(chunks), completed_units=result.translated_chunks,
                failed_units=result.failed_chunks, input_tokens=result.estimated_input_tokens,
                output_tokens=result.estimated_output_tokens, api_requests=result.api_requests)
+    if track:
+        ledger.complete(track, "output", path.name)
+        ledger.set_status(track, "completed")
     ctx.finish(path)
 
 
@@ -255,7 +307,25 @@ def handle_pdf(ctx) -> None:
     source = Path(ctx.job.get("source_path") or "")
     if not source.exists():
         raise FileNotFoundError("فایل PDF تسک پیدا نشد.")
+    ledger, track = _ledger(ctx, source)
+    try:
+        from trarium.repair import analyze_book
+        ctx.set_stage("بررسی کیفیت صفحات")
+        if track:
+            ledger.start(track, "repair")
+        quality = analyze_book(source)
+        for issue in quality.issues:
+            if issue.severity != "info":
+                ctx.log(f"کیفیت صفحه {issue.page or '-'}: {issue.detail}", "warning")
+        if track:
+            ledger.complete(track, "repair", quality.summary_fa())
+    except Exception as exc:
+        if track:
+            ledger.fail(track, "repair", str(exc))
     ctx.set_stage("تحلیل صفحه‌ها")
+    if track:
+        ledger.complete(track, "ingest", f"{Path(source).name}")
+        ledger.start(track, "ocr")
     doc = pymupdf.open(str(source))
     total_pages = len(doc)
     doc.close()
@@ -296,6 +366,14 @@ def handle_pdf(ctx) -> None:
     )
     for idx in range(total_pages):
         ctx.store.set_unit(ctx.job_id, idx, "completed")
+    if track:
+        if bool(cfg.get("enable_ocr", False)):
+            ledger.complete(track, "ocr", "OCR صفحات تصویری انجام شد")
+        else:
+            ledger.complete(track, "ocr", "OCR خاموش بود؛ لایهٔ متن موجود استفاده شد")
+        ledger.complete(track, "translate", f"{total_pages} صفحه", progress=1.0)
+        ledger.complete(track, "output", Path(out).name)
+        ledger.set_status(track, "completed")
     ctx.update(progress=1.0, completed_units=total_pages, stage="PDF آماده شد",
                input_tokens=stats.input_tokens, output_tokens=stats.output_tokens,
                api_requests=stats.api_requests, failed_units=stats.failed_blocks)

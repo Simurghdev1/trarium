@@ -1,3 +1,20 @@
+## 2.19.0 — Library, repair and analytics
+
+- Automatic book repair: duplicate, blank, unreadable, low-quality and out-of-order PDF pages are detected
+  with a quality score; the repaired copy is always a new file and the original is left byte-identical.
+- Cross-format conversion between PDF, EPUB, DOCX, HTML and TXT through one block model that keeps headings,
+  paragraphs and tables, keeps Persian text RTL (`dir="rtl"`, `w:bidi`/`w:rtl`) and reports what was not kept.
+- Smart Resume: a durable per-project stage ledger (`~/.trarium/resume.sqlite3`) records ingest, repair, OCR,
+  translation and output; completed stages and units are never recomputed after a restart or crash.
+- Seven built-in project templates (Manga, Manhwa, Manhua, Web Novel, Light Novel, Academic, Technical) plus
+  custom templates stored in settings; a template only touches its own keys.
+- Translation analytics from real job and usage records: completed books, pages, tokens, cost, average speed,
+  OCR errors, project history and per-provider/per-model usage.
+- Permanent library and playlists on the existing local storage (`~/.trarium/library`), with covers, search,
+  sorting, statuses (Ready/Queued/Processing/Paused/Completed/Failed), per-book settings and a dedicated book
+  page. Adding a book never starts a translation or spends API tokens; deleting from the library keeps the file.
+- New tests in `tests/test_expansion_218.py`; suite now 130 passing.
+
 ## 2.18.1 — Output fidelity and format safety
 
 - Subtitles keep their timing: SRT, WebVTT, SBV, LRC, ASS/SSA and MicroDVD are translated cue by cue

@@ -11,6 +11,7 @@ Trarium is a Persian/Farsi book translation tool with:
 - Smart provider failover with local quotas, cost caps and history
 - Manga/webtoon image enhancement (optional, originals untouched)
 - Structure-preserving website translation (robots.txt aware)
+- Permanent library/playlists (`~/.trarium/library`), smart-resume stage ledger (`resume.sqlite3`), automatic PDF repair, cross-format conversion (`pdf/epub/docx/html/txt`), project templates and real analytics
 - Local usage/billing ledger for LLM and OCR
 
 ## Capabilities
