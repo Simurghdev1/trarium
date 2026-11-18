@@ -24,6 +24,8 @@ from trarium.pdf_optimized import OPENROUTER_VISION_MODELS
 from trarium.cache import CachedTranslator, TranslationCache
 from trarium.short_prompt import SHORT_PROMPT_CHIPS, build_short_prompt
 from trarium.scheduler import FallbackTranslator
+from trarium.extractors.formats import FORMAT_FAMILIES
+from trarium.extractors.generic import UnsupportedFormatError
 
 st.set_page_config(page_title="Trarium", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 
@@ -211,10 +213,13 @@ def _translator_settings():
             CheckpointStore().clear(); st.success("Checkpointها پاک شد.")
         return (provider, api_key, model, target_lang, chunk_size, workers, delay,
                 use_memory, custom_base, fallback_cfg, safe_opt, protect_spans,
-                use_checkpoint, adaptive_batch, do_probe, smart_routing, registry, short_prompt)
+                use_checkpoint, adaptive_batch, do_probe, smart_routing, registry, short_prompt,
+                fallback_label)
 
 
-provider, api_key, model, target_lang, chunk_size, workers, delay, use_cache, custom_base, fallback_cfg, safe_opt, protect_spans, use_checkpoint, adaptive_batch, do_probe, smart_routing, registry, short_prompt = _translator_settings()
+(provider, api_key, model, target_lang, chunk_size, workers, delay, use_cache, custom_base,
+ fallback_cfg, safe_opt, protect_spans, use_checkpoint, adaptive_batch, do_probe,
+ smart_routing, registry, short_prompt, fallback_name) = _translator_settings()
 
 def _make_translator(cfg):
     p, key, mdl, base = cfg
@@ -228,14 +233,26 @@ st.markdown(f'<div class="hero"><h1>🌿 Trarium</h1><p>ترجمه‌ی کتاب
 book_tab, layout_tab, web_tab = st.tabs(["📄 ترجمه متنی", "🎨 حفظ قالب PDF", "🌐 وب‌ناول"])
 
 
-def render_upload(accepted):
-    return st.file_uploader("فایل را انتخاب کنید", type=accepted, key=f"uploader_{accepted[0]}_{accepted[-1]}")
+def render_upload(accepted=None, key="book"):
+    if accepted:
+        return st.file_uploader("فایل را انتخاب کنید", type=accepted, key=f"uploader_{key}")
+    return st.file_uploader(
+        "فایل را انتخاب کنید",
+        type=None,
+        key=f"uploader_{key}",
+        help="هر فایلی که متن دارد. اگر فرمت قابل ترجمه نباشد، دلیلش را می‌گوید.",
+    )
 
 
 with book_tab:
     st.markdown("### 📄 ترجمه متنی")
     st.caption("برای PDF متنی، TXT یا EPUB. صفحه‌آرایی اصلی هدف نیست و هر خروجی یک بخش پایانی «ترجمه شده توسط تراریوم» دارد.")
-    uploaded = render_upload(["pdf", "epub", "txt"])
+    st.caption("هر فایلی که متن داشته باشد ترجمه می‌شود؛ حتی اگر پسوندش در لیست نباشد. اگر فایل ذاتاً متن ندارد (ویدیو، صدا، عکس) تراریوم صریح می‌گوید که نمی‌تواند.")
+    with st.expander("📚 فرمت‌های پشتیبانی‌شده"):
+        for family, examples in FORMAT_FAMILIES:
+            st.markdown(f"**{family}** — `{examples}`")
+        st.caption("سند Word/OpenDocument، PowerPoint، Excel، RTF، HTML/XML، FB2/MOBI، زیرنویس، کد، آرشیو ZIP با فایل متنی و پسوند ناشناخته هم امتحان می‌شوند.")
+    uploaded = render_upload(key="book")
     if uploaded:
         digest = _store_uploaded(uploaded)
         suffix = Path(uploaded.name).suffix.lower()
@@ -244,7 +261,7 @@ with book_tab:
             path = _tmp_from_session(suffix)
             try:
                 with st.spinner("در حال استخراج متن..."):
-                    book = get_extractor(path, use_ocr=True).extract(path)
+                    book = get_extractor(path, use_ocr=(suffix == ".pdf")).extract(path)
                 st.info(f"📖 {book.title} — {book.total_chars:,} کاراکتر — {len(book.chapters)} بخش")
                 if not book.chapters:
                     st.error("هیچ متن قابل ترجمه‌ای پیدا نشد.")
@@ -258,14 +275,14 @@ with book_tab:
                             from trarium.smart_router import SmartRoutingTranslator
                             translator = SmartRoutingTranslator(primary_tr, fallback_tr)
                         else:
-                            translator = FallbackTranslator([(provider, primary_tr), (fallback_label, fallback_tr)])
+                            translator = FallbackTranslator([(provider, primary_tr), (fallback_name, fallback_tr)])
                     else:
                         translator = primary_tr
                     if use_cache and not isinstance(translator, (FallbackTranslator,)):
                         translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
                     pipe = TranslationPipeline(translator, target_lang, chunk_size, delay, workers,
                                                safe_optimization=safe_opt, protect_nontranslatable=protect_spans,
-                                               use_checkpoint=use_checkpoint, translation_memory=use_memory,
+                                               use_checkpoint=use_checkpoint, translation_memory=use_cache,
                                                adaptive_batch=adaptive_batch, registry=registry,
                                                short_prompt=short_prompt)
                     if do_probe:
@@ -280,6 +297,8 @@ with book_tab:
                         result = pipe.run(book)
                     progress.progress(1.0, text="✅ تمام شد")
                     st.session_state["text_result"] = result
+            except UnsupportedFormatError as exc:
+                st.warning(f"⚠️ {exc}")
             except Exception as exc:
                 st.error(f"❌ {exc}")
             finally:
@@ -312,7 +331,7 @@ with layout_tab:
     st.markdown("### 🎨 حفظ قالب PDF")
     st.caption("متن اصلی در نواحی خودش جایگزین می‌شود. OCR کاملاً اختیاری است؛ PDFهای متنی و PDFهای OCR‌شده مستقیماً قابل استفاده‌اند.")
     st.info("💡 اگر فایل قبلاً با PDF24/iLovePDF OCR شده، OCR را دوباره روشن نکن؛ Trarium ابتدا لایه متن موجود را استفاده می‌کند.")
-    uploaded = render_upload(["pdf"])
+    uploaded = render_upload(["pdf"], key="layout")
     if uploaded:
         digest = _store_uploaded(uploaded)
         if st.session_state.get("layout_hash") != digest:
@@ -436,7 +455,7 @@ with layout_tab:
                             from trarium.smart_router import SmartRoutingTranslator
                             translator = SmartRoutingTranslator(primary_tr, fallback_tr)
                         else:
-                            translator = FallbackTranslator([(provider, primary_tr), (fallback_label, fallback_tr)])
+                            translator = FallbackTranslator([(provider, primary_tr), (fallback_name, fallback_tr)])
                     else:
                         translator = primary_tr
                     if use_cache and not isinstance(translator, (FallbackTranslator,)):

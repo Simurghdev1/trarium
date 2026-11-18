@@ -20,20 +20,37 @@ def _get_extractor_class(ext: str):
 
 
 def get_extractor(file_path: str, use_ocr: bool = False, ocr_lang: str = "eng", ocr_method: str = "auto") -> BaseExtractor:
-    """یک extractor مناسب برای فایل ورودی برمی‌گرداند."""
+    """یک extractor مناسب برای فایل ورودی برمی‌گرداند.
+
+    فرمت‌های شناخته‌شده extractor اختصاصی دارند و بقیهٔ فایل‌ها (سند، زیرنویس،
+    کد، آرشیو متنی و حتی پسوند ناشناخته) به extractor عمومی می‌روند تا اگر متن
+    دارند ترجمه شوند. اگر فایل ذاتاً متن نداشته باشد (ویدیو/صدا/عکس)،
+    `UnsupportedFormatError` با پیام روشن بالا می‌رود.
+    """
     from pathlib import Path
 
-    ext = Path(file_path).suffix.lower()
+    from trarium.extractors.formats import ALREADY_NATIVE
+    from trarium.extractors.generic import GenericTextExtractor, sniff_container
 
-    if use_ocr and ext != ".pdf":
-        raise ValueError("OCR فقط برای فایل‌های PDF پشتیبانی می‌شود؛ برای TXT/EPUB گزینه --ocr را بردارید.")
+    path = Path(file_path)
+    ext = path.suffix.lower()
+    container = sniff_container(path)
 
-    if ext == ".pdf":
+    # OCR فقط برای PDF معنا دارد؛ برای بقیهٔ فرمت‌ها بی‌صدا نادیده گرفته می‌شود
+    # تا یک فلگ اشتباه باعث خطای بی‌دلیل نشود.
+    if ext == ".pdf" or container == "pdf":
         from trarium.extractors.pdf import PDFExtractor
         return PDFExtractor(use_ocr=use_ocr, ocr_lang=ocr_lang, ocr_method=ocr_method)
 
-    extractor_class = _get_extractor_class(ext)
-    if extractor_class is not None:
-        return extractor_class()
+    if ext in ALREADY_NATIVE:
+        extractor_class = _get_extractor_class(ext)
+        if extractor_class is not None:
+            return extractor_class()
 
-    raise ValueError(f"فرمت پشتیبانی نمی‌شود: {ext}. فرمت‌های مجاز: .pdf, .epub, .txt")
+    return GenericTextExtractor()
+
+
+def supported_formats() -> list[str]:
+    """فهرست پسوندهای قابل ترجمه برای نمایش در رابط کاربری."""
+    from trarium.extractors.formats import TRANSLATABLE_EXTENSIONS
+    return list(TRANSLATABLE_EXTENSIONS)

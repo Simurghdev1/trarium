@@ -7,3 +7,4 @@ qa/qa_results_*.json
 *.sqlite3
 qa/_pdf_out/
 qa/_cn/
+.venv/
