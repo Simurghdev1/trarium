@@ -1,326 +1,123 @@
-# Trarium Beta
+# 🌿 Trarium 1.1
 
+[![Trarium QA](https://github.com/Simurghdev1/trarium/actions/workflows/qa.yml/badge.svg?branch=main)](https://github.com/Simurghdev1/trarium/actions/workflows/qa.yml)
 
-> **فایل‌های سنگین تست (PDF/PNG خروجی و ورودی) از این ریپو به [trarium-files](https://github.com/alimahamdarijanipro-stack/trarium-files) منتقل شده‌اند تا کلون‌کردن کد سبک بماند؛ لینک‌های زیر به همان‌جا اشاره می‌کنند.**
+**تراریوم** یک برنامهٔ ساده برای ترجمهٔ کتاب، PDF، مانگا، وب‌ناول، وب‌سایت و زیرنویس با هوش مصنوعیه.
+فایل یا لینک رو می‌دی، زبان مقصد (پیش‌فرض فارسی) رو انتخاب می‌کنی و خروجی رو با همون فرمت اصلی تحویل می‌گیری.
+همه‌چیز روی دستگاه خودت (یا سرور خودت) اجرا می‌شه و فقط متن برای ترجمه به سرویس هوش مصنوعی‌ای که انتخاب کردی فرستاده می‌شه.
 
-[![Trarium QA](https://github.com/alimahamdarijanipro-stack/trarium-/actions/workflows/qa.yml/badge.svg?branch=qa%2Fv2.17.0-audit)](https://github.com/alimahamdarijanipro-stack/trarium-/actions/workflows/qa.yml)
+![تراریوم، خانه و تب ترجمهٔ متنی](docs/ui/01-home.png)
 
-📦 **[خروجی‌های تست و اکشنز (Release)](https://github.com/alimahamdarijanipro-stack/trarium-/releases/tag/qa-2.17.0-2026-11-13)** — PDF گزارش، بستهٔ آرتیفکت و لاگ اجرا.
+---
 
-🧪 **[خروجی تست چینی → فارسی](https://github.com/alimahamdarijanipro-stack/trarium-files/blob/main/qa/outputs/zh-to-fa/trarium_zh_to_fa_text.pdf)** — PDF فارسی ساخته‌شده توسط خود تراریوم، همراه با [گزارش کامل](QA_REPORT.md).
+## ✨ چه کارهایی می‌کنه؟
 
-📋 **[گزارش تست و ممیزی (QA_REPORT.md)](QA_REPORT.md)** — نتایج واقعی تست‌های واحد، مجموعهٔ QA، و گردش‌کار PDF با فایل‌های ورودی واقعی، عددهای اندازه‌گیری‌شده و تصویر صفحات.
+### ترجمه
+- **📄 ترجمهٔ متنی:** PDF، EPUB، TXT، DOCX، PPTX، XLSX، HTML و تقریباً هر فایلی که متن داره. خروجی TXT، PDF، EPUB یا HTML با فونت فارسی Sahel.
+- **🎨 حفظ قالب PDF:** ترجمه دقیقاً جای متن اصلی نوشته می‌شه؛ رنگ کاغذ، اندازهٔ فونت و چیدمان صفحه حفظ می‌شه. صفحه‌های اسکن‌شده با OCR خونده می‌شن (OCR.space یا مدل تصویری OpenRouter).
+- **🖼️ مانگا و اسکن:** عنوان‌ها و حباب‌های گفتگو روی همون جای متن انگلیسی و با همون اندازه نوشته می‌شن؛ نوشته‌های داخل طراحی صفحه دست نمی‌خورن.
+- **🌐 وب‌ناول:** لینک فصل اول رو بده؛ تراریوم خودش لینک «فصل بعد» رو دنبال می‌کنه. محدودهٔ فصل (مثلاً ۱ تا ۱۰۰) قابل انتخابه.
+- **🌐 وب‌سایت:** یک یا چند صفحه با حفظ ساختار HTML ترجمه می‌شه؛ robots.txt رعایت می‌شه. خروجی HTML، TXT یا EPUB.
+- **🎬 زیرنویس یوتیوب:** لینک ویدیو رو بده؛ زیرنویس اصلی (دستی، وگرنه خودکار) با [yt-dlp](https://github.com/yt-dlp/yt-dlp) بدون دانلود ویدیو گرفته، تمیز و با همون زمان‌بندی ترجمه می‌شه. خروجی SRT.
+- **🎞️ فایل زیرنویس:** SRT، WebVTT، SBV، LRC، ASS/SSA و MicroDVD با همون زمان‌بندی و همون فرمت برمی‌گردن.
+- **🧾 فایل‌های داده و کد:** در JSON/CSV فقط مقدارها، در نوت‌بوک فقط بخش‌های متنی و در کد فقط کامنت‌ها ترجمه می‌شن تا فایل خراب نشه.
 
-نسخهٔ جدید هستهٔ ترجمه با تمرکز روی حفظ متن، کاهش مصرف API و امکان ادامهٔ امن کار
+### کیفیت و صرفه‌جویی
+- **حافظهٔ ترجمه و کش:** متن تکراری یک بار ترجمه می‌شه؛ بعد از قطع شدن، از همون‌جا ادامه می‌ده و بخش‌های ترجمه‌شده دوباره هزینه ندارن.
+- **فرهنگ واژه و اسامی:** اسم شخصیت‌ها و اصطلاحات در کل کتاب یکسان می‌مونن.
+- **پرامپت کوتاه:** لحن و سبک ترجمه رو با چند انتخاب ساده تعیین کن.
+- **محافظت از لینک، ایمیل و کد:** دست‌نخورده در خروجی می‌مونن.
 
-### قابلیت‌های 2.17
-- استخراج متن PDF قبل از OCR و اجرای OCR فقط روی صفحات واقعاً بدون لایهٔ متن
-- Safe Optimization بدون حذف محتوای داستان
-- Translation Memory / Cache نرمال‌شده و حذف درخواست‌های تکراری
-- Checkpoint دائمی SQLite برای resume پس از خاموشی یا خطا
-- Batch و تقسیم‌بندی Token-aware با اندازهٔ تطبیقی
-- Placeholder برای URL، ایمیل، تگ و کد
-- Character/Term Registry برای ثبات اسامی و اصطلاحات
-- Fallback Scheduler برای عبور از خطای یک Provider
-- Pre-flight estimation و connectivity probe
-- حفظ فونت Sahel و صفحهٔ «ترجمه شده توسط تراریوم» در خروجی‌های متنی/PDF/EPUB/HTML
+### مدیریت کار
+- **🗂️ صف و تسک‌های پس‌زمینه:** چند فایل رو با هم بذار؛ با بستن مرورگر یا ری‌استارت چیزی متوقف نمی‌شه. توقف / ادامه / لغو / حذف.
+- **📡 پایش زنده:** توکن، تعداد درخواست، هزینهٔ تخمینی، صفحهٔ فعلی و زمان باقی‌مونده.
+- **⏯️ ادامهٔ هوشمند:** بعد از کرش، از آخرین مرحلهٔ موفق ادامه می‌ده.
+- **🔁 جابه‌جایی هوشمند ارائه‌دهنده:** اگه یک سرویس خطا یا محدودیت داد، خودکار سراغ بعدی می‌ره. پشتیبانی از OpenRouter، Google Gemini، Groq، 9Router و هر API سازگار با OpenAI.
+- **📊 مصرف و هزینه:** توکن و هزینهٔ روزانه/ماهانه، نمودار و سقف هزینه.
+- **📚 کتابخانه و پلی‌لیست:** کتاب‌هات رو با جلد، دسته‌بندی و تنظیمات اختصاصی نگه دار.
+- **🧩 قالب‌های آماده:** Manga، Manhwa، Manhua، Web Novel، Light Novel، کتاب دانشگاهی و سند فنی.
+- **🩺 تعمیر کتاب:** صفحه‌های تکراری، سفید، خراب یا جابه‌جا پیدا و در یک فایل جدید اصلاح می‌شن.
+- **🔄 تبدیل فرمت:** PDF، EPUB، DOCX، HTML و TXT به هم.
+- **🖼️ افزایش کیفیت مانگا:** حذف نویز، رفع تاری، بزرگ‌نمایی ۲x/۴x (با Real-ESRGAN/SwinIR اختیاری) و مقایسهٔ قبل و بعد.
 
-این نسخه بر پایهٔ ساختار 2.16.4 ارتقا داده شده و قابلیت‌های قبلی پروژه حفظ شده‌اند.
+---
 
+## 🚀 اجرا
 
-## 🚀 قابلیت‌های جدید 2.18.0
-
-هفت قابلیت زیر روی همان معماری هستهٔ ترجمه اضافه شده‌اند؛ ترجمه، OCR، PDF و EPUB قبلی دست‌نخورده مانده‌اند.
-
-### 1) تسک‌های پایدار (Persistent Jobs)
-ترجمه در سرور اجرا می‌شود، نه در صفحهٔ مرورگر. وضعیت هر تسک در `~/.trarium/jobs.sqlite3` ذخیره می‌شود؛
-بستن/رفرش مرورگر یا ری‌استارت برنامه آن را متوقف نمی‌کند. پس از هر توقف، از آخرین بخش ذخیره‌شده ادامه می‌دهد
-و بخش‌های موفق دوباره به API فرستاده نمی‌شوند (Checkpoint + Translation Memory).
-دکمه‌های Pause / Resume / Cancel / Delete هر کدام مستقل‌اند و Delete فقط پس از تأیید انجام می‌شود.
-
-### 2) صف ترجمه (Translation Queue)
-در تب «صف و تسک‌ها» چند فایل را هم‌زمان اضافه کنید، اولویت بدهید، ترتیب را با ⬆️/⬇️ عوض کنید،
-صف را متوقف/ادامه دهید و تعداد پردازش هم‌زمان را تعیین کنید. خطای یک پروژه بقیهٔ صف را متوقف نمی‌کند.
-برای وب‌ناول محدودهٔ فصل (مثلاً ۱ تا ۱۰۰ یا ۱۰۱ تا آخر) پشتیبانی می‌شود و هر فصل وضعیت مستقل دارد.
-
-### 3) پایش زندهٔ ترجمه (Show Details)
-با روشن‌کردن **Show Details** در نوار کنار یا هنگام ترجمه، توکن ورودی/خروجی، مجموع توکن، تعداد درخواست،
-هزینهٔ تخمینی، مرحلهٔ فعلی (OCR/ترجمه/بازبینی/خروجی)، صفحه/بخش جاری، درصد پیشرفت، تعداد باقی‌مانده،
-پرووایدر و مدل، خطاها و زمان تقریبی باقی‌مانده نمایش داده می‌شود. تخمین زمان از سرعت واقعی بخش‌های
-تکمیل‌شده محاسبه می‌شود و شمارش معکوس ساختگی ندارد. این اطلاعات از پایگاه‌داده خوانده می‌شوند و با Reload از بین نمی‌روند.
-
-### 4) جابه‌جایی هوشمند پرووایدر (Smart Failover)
-در نوار کنار یک زنجیرهٔ `provider:model` تعریف کنید (هر خط یک اولویت). حالت‌ها:
-Provider Fallback، Model Fallback و Smart Routing. محرک‌ها: Rate Limit (429)، اتمام سهمیه، خطای موقت،
-قطع ارتباط، مدل غیرفعال. خطاهای دائمی (400/401/403/مدل نامعتبر) بی‌پایان تکرار نمی‌شوند و درخواست
-نامشخص بعد از قطع ارتباط دوباره به همان ارائه‌دهنده فرستاده نمی‌شود. هر جابه‌جایی در تاریخچه ثبت می‌شود
-و مصرف/هزینه به تفکیک هر ارائه‌دهنده حساب می‌شود. سقف هزینهٔ ماهانه قابل تنظیم است.
-
-### 5) مصرف و صورتحساب (Usage & Billing)
-تب «مصرف و هزینه» برای LLM و OCR جداگانه: توکن ورودی/خروجی، مجموع، مصرف روزانه و ماهانه، تعداد درخواست،
-هزینهٔ تخمینی، نمودار مصرف، تفکیک بر اساس مدل و پروژه، محدودیت‌های محلی و هشدار نزدیک‌شدن به سقف،
-آخرین زمان به‌روزرسانی و تاریخچهٔ Failover. کلید API فقط ماسک‌شده نمایش داده می‌شود.
-اعداد هزینه «تخمینی» هستند و از سهمیهٔ رسمی جدا نمایش داده می‌شوند؛ چون API صورتحساب ارائه‌دهنده‌ها
-عمومی نیست، سهمیهٔ رسمی فقط وقتی می‌آید که خود سرویس آن را برگرداند.
-
-### 6) افزایش کیفیت مانگا
-تب «افزایش کیفیت مانگا»: حالت Auto/1x/2x/4x و عملیات مستقل Denoise، Deblur، Color Restoration،
-Contrast، Deskew، Pillow، OpenCV، Real-ESRGAN و SwinIR. پیش‌نمایش مقایسه‌ای قبل/بعد و گزارش هر مرحله
-وجود دارد. تصویر اصلی هرگز بازنویسی نمی‌شود؛ خروجی در فایل/ ZIP جدید ساخته می‌شود و اگر پردازشی شکست بخورد
-همان تصویر اصلی در خروجی می‌آید. در حالت Auto، تصاویر باکیفیت پردازش غیرضروری نمی‌شوند.
-Real-ESRGAN و SwinIR فقط با نصب و وزن مدل فعال می‌شوند؛ در غیر این صورت از Lanczos استفاده می‌شود و گزارش می‌دهد.
-برای Real-ESRGAN مسیر وزن با `TRARIUM_REALESRGAN_MODEL` تنظیم می‌شود. OpenCV اختیاری است
-(`pip install -e ".[image-opencv]"`).
-
-### 7) ترجمهٔ وب‌سایت
-URL صفحه یا چند صفحه، حفظ ساختار HTML و ترتیب عناصر، حذف ترجمهٔ تکراری، مدیریت لینک‌های داخلی،
-وضعیت هر صفحه و ادامه پس از توقف. خروجی HTML (تک‌صفحه یا ZIP چندصفحه)، TXT و EPUB.
-`robots.txt` رعایت می‌شود، فقط دامنهٔ شروع دنبال می‌شود و خطاهای 401/403/429 هر صفحه را ناموفق ثبت می‌کنند
-بدون متوقف‌کردن بقیه. برای صفحات JavaScript می‌توان Playwright را روشن کرد. صفحه‌های ترجمه‌شده در
-`~/.trarium/jobs/<id>/pages` ذخیره می‌شوند تا Resume خروجی کامل بسازد.
-
-### 8) خروجی هم‌فرمت (زیرنویس، آفیس، داده و کد)
-- زیرنویس SRT/WebVTT/SBV/LRC/ASS/MicroDVD با همان زمان‌بندی و همان فرمت تحویل داده می‌شود.
-- DOCX/PPTX/XLSX بازنویسی می‌شوند و قالب، استایل، اسلایدها و شیت‌ها دست‌نخورده می‌مانند.
-- JSON/JSONL فقط مقدارها را ترجمه می‌کند و کلیدها را نگه می‌دارد؛ CSV/TSV سلول‌ها را؛ نوت‌بوک فقط سلول‌های
-  markdown را؛ و در فایل‌های کد فقط کامنت‌ها ترجمه می‌شوند تا خروجی همچنان معتبر بماند.
-
-## 🚀 قابلیت‌های جدید 2.19.0
-
-شش قابلیت تازه روی همان معماری اضافه شده‌اند؛ ترجمه، OCR، PDF، صف، Failover و آمار مصرفِ قبلی دست‌نخورده مانده‌اند
-و مسیر ترجمهٔ قبلی هنوز همان است. هیچ‌کدام از این بخش‌ها داده‌سازی نمی‌کنند: هر عدد از تسک‌ها، دفتر مصرف و فایل‌های واقعی خوانده می‌شود.
-
-### 1) تعمیر خودکار کتاب (Automatic Book Repair)
-پیش از ترجمه، صفحه‌های PDF بررسی می‌شوند: صفحهٔ تکراری، سفید، خراب (قابل بازخوانی نبودن)، کم‌کیفیت/بدون لایهٔ متن
-و جابه‌جا. برای هر مشکل، صفحه، نوع، شدت و توضیح در یک جدول نشان داده می‌شود و یک امتیاز کیفیت از ۱۰۰ می‌گیرید.
-اصلاح فقط با تأیید شما انجام می‌شود و همیشه در یک فایل جدید است: صفحه‌های تکراری/سفید حذف می‌شوند و ترتیب
-(اگر شمارهٔ چاپ‌شدهٔ صفحه‌ها پیدا شود) اصلاح می‌شود. فایل اصلی هرگز بازنویسی نمی‌شود و هش بایت‌به‌بایت آن بعد از اصلاح یکسان می‌ماند.
-برای EPUB/TXT و بقیهٔ فرمت‌ها هم گزارش کیفیت (بخش‌های خالی و تکراری) قبل از ترجمه ساخته می‌شود.
-
-### 2) تبدیل بین فرمت‌ها (Cross-Format Conversion)
-تبدیل PDF، EPUB، DOCX، HTML و TXT به یکدیگر با یک ساختار میانی مشترک. عنوان‌ها، پاراگراف‌ها، جدول‌ها و تعداد تصاویر
-شناسایی و دوباره ساخته می‌شوند؛ متن فارسی راست‌چین می‌ماند (HTML با `dir="rtl"`، DOCX با `w:bidi` و `w:rtl`).
-گزارش تبدیل می‌گوید چند عنوان/جدول/تصویر شناسایی شد و چه چیزی حفظ نشده (مثلاً تصویر در TXT یا جدول در EPUB).
-ورودی هرگز تغییر نمی‌کند و تبدیل به همان مسیر ورودی رد می‌شود.
-
-### 3) ادامهٔ هوشمند (Smart Resume)
-برای هر پروژه یک دفتر مراحل در `~/.trarium/resume.sqlite3` ساخته می‌شود: خواندن فایل، تعمیر/کیفیت، OCR، ترجمه و خروجی.
-هر مرحله وضعیت، درصد، جزئیات و خطا دارد و واحدهای تمام‌شدهٔ ترجمه هم ثبت می‌شوند. بعد از ری‌استارت یا کرش،
-تسک به صف برمی‌گردد و از آخرین مرحلهٔ موفق ادامه می‌دهد؛ مرحله‌های کامل دوباره اجرا نمی‌شوند و بخش‌های موفق
-دوباره به API نمی‌روند (Checkpoint و Translation Memory). در تب «صف و تسک‌ها» بخش «ادامهٔ هوشمند» این وضعیت را نشان می‌دهد.
-
-### 4) قالب‌های پروژه (Project Templates)
-هفت پروفایل آماده: Manga، Manhwa، Manhua، Web Novel، Light Novel، Academic Book و Technical Document.
-هر قالب اندازهٔ دسته، هم‌زمانی، زبان/روش OCR، فرمت خروجی و پرامپت مخصوص خودش را دارد (مثلاً OCR ژاپنی و PDF برای مانگا،
-EPUB و دستهٔ بزرگ‌تر برای وب‌ناول، و حفاظت از کد برای سند فنی). قالب فقط کلیدهای خودش را تغییر می‌دهد و بقیهٔ تنظیمات
-دست‌نخورده می‌ماند. می‌توانید از تنظیمات فعلی یک قالب اختصاصی بسازید؛ در `settings.json` ذخیره می‌شود و قابل حذف است.
-
-### 5) آمار پروژه‌ها (Translation Analytics)
-در انتهای تب «مصرف و هزینه»: تعداد کتاب‌های کامل‌شده و ناموفق، صفحه/واحد پردازش‌شده، توکن مصرفی، هزینهٔ ماه،
-سرعت متوسط (صفحه بر دقیقه از زمان واقعی اجرای تسک‌ها)، خطاهای OCR، تاریخچهٔ پروژه‌ها و مصرف هر ارائه‌دهنده و مدل.
-همهٔ اعداد از `jobs.sqlite3` و `usage.sqlite3` همین دستگاه می‌آیند؛ اگر داده‌ای نباشد صفر است و عدد ساختگی نمایش داده نمی‌شود.
-
-### 6) کتابخانه و پلی‌لیست (My Library / Playlist)
-کتابخانهٔ دائمی روی همان ذخیره‌سازی محلی پروژه (`~/.trarium/library`) بدون نیاز به VPS یا سرویس جداگانه.
-کتاب (و جلدش) به کتابخانه کپی می‌شود تا فایل اصلی مستقل بماند؛ رفرش صفحه، بستن مرورگر یا ری‌استارت چیزی را پاک نمی‌کند.
-- جلد، نام، فرمت، اندازه، دسته‌بندی و وضعیت (Ready، Queued، Processing، Paused، Completed، Failed) نمایش داده می‌شود.
-- جست‌وجو، مرتب‌سازی (تاریخ، نام، وضعیت) و پلی‌لیست‌های اختصاصی؛ حذف از پلی‌لیست یا کتابخانه فایل اصلی را پاک نمی‌کند.
-- صفحهٔ هر کتاب: زبان، Provider، Model، قالب پروژه، فرمت خروجی، اندازهٔ دسته، هم‌زمانی و پرامپت اختصاصی؛ تنظیمات ذخیره می‌شود.
-- ترجمه فقط با دکمهٔ «شروع ترجمه» شروع می‌شود. افزودن کتاب به کتابخانه هیچ درخواست API و هیچ پردازشی ایجاد نمی‌کند.
-
-### تست‌ها و فایل‌های جدید 2.19
-```bash
-.venv/bin/python -m pytest tests -q   # 130 passed
-```
-ماژول‌های تازه: `trarium/repair.py`، `trarium/convert.py`، `trarium/resume.py`، `trarium/templates.py`،
-`trarium/analytics.py`، `trarium/library.py` و پنل‌های `trarium/expansion_ui.py`.
-تست‌های تازه در `tests/test_expansion_218.py` (۱۸ تست): تشخیص صفحهٔ تکراری/سفید و حفظ فایل اصلی،
-رفت‌وبرگشت DOCX و تبدیل به هر پنج فرمت، ماندگاری کتابخانه و پلی‌لیست بدون شروع تسک، دفتر مراحل بعد از بازشدن دوباره،
-قالب‌های آماده/اختصاصی و آمار واقعی از تسک‌ها.
-
-### 🖼️ تصاویر قابلیت‌های 2.18
-هر هفت قابلیت بالا تصویر واقعی دارند؛ برای دیدن‌شان به گالری **[🖼️ UI/UX تراریوم (2.18)](#️-uiux-تراریوم-218)** در انتهای همین صفحه بروید.
-تصاویر از خود برنامهٔ v2.18.0 گرفته شده‌اند: صف و تسک‌ها، پایش زنده با توکن ورودی/خروجی و زمان تقریبی، مصرف و هزینه،
-ترجمهٔ وب‌سایت، افزایش کیفیت مانگا و زنجیرهٔ failover در نوار کنار.
-برای اینکه پنل‌ها خالی نباشند، در پایگاه‌دادهٔ محلیِ همان اجرا چند تسک و رکورد مصرف نمونه ثبت شده بود؛ داده‌ای به کد یا خروجی ترجمه اضافه نشده است.
-
-### داده‌های محلی و امنیت
-همه چیز در `~/.trarium` است (با `TRARIUM_HOME` قابل تغییر):
-- `jobs.sqlite3` — تسک‌ها، واحدها و رویدادها
-- `usage.sqlite3` — مصرف، محدودیت‌ها و تاریخچهٔ Failover
-- `settings.json` — کلیدهای ذخیره‌شده برای اجرای پس‌زمینه، با دسترسی `600`
-- `jobs/<id>/` — فایل ورودی، صفحات میانی و خروجی
-
-کلیدها فقط برای اجرای مستقل از مرورگر ذخیره می‌شوند، هرگز کامل در UI نمایش داده نمی‌شوند و در مخزن کد قرار نمی‌گیرند.
-
-### تست‌ها
-```bash
-.venv/bin/python -m pytest tests -q   # 89 passed
-```
-تست‌های جدید: `tests/test_expansion.py` (۲۲ تست) شامل صف/اولویت، Pause/Resume/Cancel/Delete،
-بازیابی پس از Crash، Failover (429، خطای دائمی، قطع ارتباط، سقف هزینه)، مصرف و محدودیت،
-افزایش کیفیت مانگا روی تصویر واقعی، استخراج/ترجمه/خزش وب‌سایت با سرور محلی و robots.txt.
-
-# 🌿 Trarium 2.19.0
-
-Trarium is a small Streamlit application for translating books and web novels with AI, with an optional OCR layer and a PDF layout-preserving mode.
-
-## What changed in 2.18.0
-
-- Persistent background jobs, queue, live monitor, provider failover, usage ledger, manga enhancement and website translation. See the Persian section above for details.
-
-## What changed in 2.16.2
-
-- Fixed the `ترجمه صفحه ... شامل ... بلاک خالی است` failure mode. Missing markers now trigger per-block recovery instead of aborting the whole page.
-- PDF translation now batches blocks across pages and uses parallel requests. One API call is no longer forced per page.
-- Failed text-translation chunks keep their original source text instead of disappearing.
-- OCR is **optional**. Native PDF text is always tried first. Pages without a text layer are only OCRed when you explicitly enable OCR.
-- PaddleOCR integration supports the modern 3.x `predict()` path and legacy 2.x fallback without passing the obsolete `show_log` argument.
-- The layout mode can consume PDFs already OCRed by another tool; no second OCR pass is required when a text layer exists.
-- Web-novel crawling follows real `rel=next` / “Next Chapter” links and stops on loops instead of inventing chapter URLs.
-- Web-novel image downloads are parallelized and deduplicated.
-- Added TXT/PDF/EPUB/HTML outputs and bundled the Sahel font for Persian output.
-- Reworked the Streamlit UI into three clear modes: text translation, layout-preserving PDF, and web novel.
-- Added a small OCR benchmark helper for testing about 10 pages.
-- OCR dependencies moved out of the core requirements; Tesseract remains available only as an explicit fallback, not the automatic OCR path.
-
-## Windows quick start
-
-Run:
-
+### ویندوز
 ```bat
 install_core.bat
 run_trarium.bat
 ```
 
-The core installation does **not** install heavy OCR engines.
-
-### Optional PaddleOCR
-
-For Windows OCR, use a separate Python environment. The included helper creates `.venv-paddle` with Python 3.12:
-
-```bat
-install_paddle_windows.bat
-```
-
-After that, `run_trarium.bat` automatically uses the Paddle environment when it exists, so PaddleOCR is visible to the UI. Current PaddleOCR documentation exposes OCR through its local Python pipeline and returns recognized text plus bounding boxes; the Trarium integration uses those results to place text back on PDF pages. See the current official docs for the exact environment support and models.
-
-
-## AI providers
-
-- **OpenRouter**: current free-model catalog with `openrouter/free`; automatic transport prefers `curl` when available on Windows and falls back to Python requests.
-- **Google Gemini (direct REST)**: current Gemini 3.8/3.7/3.6/3.5 Flash model IDs. Google’s official available-region list currently does not include Iran, while it does include Azerbaijan.
-- **Groq (direct)**: current GPT-OSS 120B/20B and Qwen 3.8 27B through Groq’s OpenAI-compatible endpoint.
-- **OpenAI-compatible**: custom Base URL + key + model for other compatible gateways.
-
-The UI has a small authenticated request test for direct providers and a two-step OpenRouter diagnostic (public `/models` plus a tiny chat completion).
-
-## OCR workflow
-
-There are three useful cases:
-
-1. **Normal text PDF** → leave OCR off.
-2. **PDF already OCRed by a service such as PDF24/iLovePDF** → leave OCR off; Trarium reads the existing text layer.
-3. **Image-only scan** → enable OCR and choose an installed engine.
-
-## Layout mode
-
-Trarium reads native text blocks and their positions, translates them in batches, then replaces only blocks that were successfully translated. When a block cannot be translated, the original block is kept so content is not silently lost.
-
-This mode is intended for clean, text-heavy book pages. Pages with complex artwork or text baked into a non-white image may need a specialized page compositor rather than a simple white redaction.
-
-## Web novel mode
-
-Enter a starting chapter URL and Trarium follows the site's actual next-chapter link. The scraper has site adapters for several common novel platforms plus a generic fallback.
-
-JavaScript-heavy pages can be opened with the optional Playwright browser mode:
-
+### لینوکس / مک / ترموکس
 ```bash
-pip install playwright
-playwright install chromium
+pip install -r requirements.txt
+streamlit run streamlit_app.py
 ```
+بعد آدرس `http://localhost:8501` رو باز کن، کلید API یک سرویس رو در نوار کنار وارد کن و شروع کن.
 
-## Notes on free models
+> OCR سنگین (PaddleOCR، EasyOCR، Surya) اختیاریه: `pip install -r requirements-ocr.txt`
+> برای سایت‌های جاوااسکریپتی: `pip install playwright && playwright install chromium`
 
-OpenRouter's `openrouter/free` route is used by default in the UI. Free endpoints are rate-limited, so increasing parallelism does not always increase throughput. For stable results on a slower connection, start with 3–4 workers.
+---
 
-## OCR benchmark
+## ☁️ دیپلوی روی Railway (یا هر سرویس Docker)
 
-In **حفظ قالب PDF**, enable OCR and use **بنچمارک ۱۰ صفحه** to compare the installed OCR engines on the first 10 scanned pages. It reports total time, average seconds/page, successful pages, detected blocks and errors.
+1. ریپو رو در Railway وصل کن؛ `Dockerfile` و `railway.json` آماده‌ان و پورت از `$PORT` خونده می‌شه.
+2. یک Volume روی مسیر `/root/.trarium` وصل کن تا تسک‌ها، کش و کتابخانه بعد از ری‌استارت بمونن.
+3. متغیرهای محیطی رو در بخش Variables بذار (هیچ کلیدی داخل کد نیست و نباید باشه):
 
-## Tests
+| متغیر | کاربرد |
+|---|---|
+| `TRARIUM_APP_PASSWORD` | **روی سرور عمومی حتماً بذار.** بدون رمز، هر کسی می‌تونه با کلیدهای تو ترجمه کنه. |
+| `OPENROUTER_API_KEY` | کلید OpenRouter |
+| `GOOGLE_API_KEY` | کلید Google Gemini |
+| `GROQ_API_KEY` | کلید Groq |
+| `TRARIUM_API_KEY`، `TRARIUM_BASE_URL`، `TRARIUM_MODEL` | هر API سازگار با OpenAI (کلید فقط به همین Base URL فرستاده می‌شه) |
+| `TRARIUM_OCR_SPACE_KEY` | کلید OCR.space برای صفحه‌های اسکن‌شده (بدون آن، کلید عمومی محدود استفاده می‌شه) |
+| `TRARIUM_YT_COOKIES`، `TRARIUM_YT_PROXY` | اختیاری؛ یوتیوب IP سرورها رو می‌بنده، با فایل کوکی یا پروکسی باز می‌شه. فایل کوکی رو می‌شه در خود تب یوتیوب هم آپلود کرد. |
+| `TRARIUM_HOME` | مسیر داده‌ها (پیش‌فرض `~/.trarium`) |
 
-The project includes a smoke suite:
+کلیدهای سرور هیچ‌وقت به مرورگر فرستاده نمی‌شن و در رابط کاربری نمایش داده نمی‌شن.
 
+---
+
+## 🔒 داده‌ها و امنیت
+- همهٔ داده‌ها در `~/.trarium` می‌مونن: تسک‌ها، مصرف، کش، کتابخانه و فایل‌های خروجی.
+- درخواست به آدرس‌های داخلی شبکه (localhost، 10.x، 169.254.x و…) در ترجمهٔ وب‌سایت و وب‌ناول مسدوده.
+- فایل کوکی یوتیوب فقط برای همون دریافت استفاده و بلافاصله پاک می‌شه.
+
+---
+
+## 🧪 تست
 ```bash
-.venv/bin/python -m pytest tests -q -p no:cacheprovider -v
+python -m pytest tests -q
 ```
 
-It covers marker recovery, PDF layout output, failed-chunk preservation, native PDF extraction and Next Chapter detection.
+---
 
-## Project structure
-
+## 🗂️ ساختار پروژه
 ```text
-streamlit_app.py
+streamlit_app.py      رابط کاربری
 trarium/
-  pdf_optimized.py
-  benchmark.py
-  processors/
-  translators/
-  extractors/
-  novel/
-  output/
+  translators/        اتصال به سرویس‌های هوش مصنوعی
+  extractors/         خواندن فرمت‌ها
+  pdf_optimized.py    ترجمه با حفظ قالب PDF
+  ocr_space.py        OCR صفحه‌های اسکن‌شده
+  youtube.py          زیرنویس یوتیوب
+  websites.py         ترجمهٔ وب‌سایت
+  novel/              وب‌ناول
+  jobs/               صف و تسک‌های پس‌زمینه
   fonts/Sahel.ttf
 tests/
 ```
 
-
-### v2.16.2
-- Red/black UI and visible Trarium title.
-- Fixed PDF layout font path and surfaced no-write failures.
-- Added Trarium attribution to translated outputs.
-
-
-## v2.16.2 highlights
-- Reliable layout PDF pipeline for native and OCR text layers.
-- Paragraph grouping for OCR lines to reduce API calls and improve context.
-- Safe preflight before source redaction; no destructive redaction on failed insertion.
-- Persistent translation cache in `~/.trarium/cache.sqlite3` for resume and duplicate-request avoidance.
-- Automatic retry in text translation.
-- No translated PDF is saved when zero blocks were successfully written.
-- Detailed PDF layout write diagnostics.
-- OCR text-layer fallback and OCR-line paragraph grouping.
-- Echo detection: a model returning the source text is treated as a failed translation and retried.
-- Web-novel next links are constrained to the same host.
-## OpenRouter 403 diagnostic
-
-If OpenRouter returns `403` with `Access denied by security policy`, Trarium now classifies it separately from a translation failure. In automatic transport mode it retries the request once through `curl` when available, because some security layers can treat HTTP clients differently. If both transports are blocked, the app stops immediately instead of retrying every block and wasting time.
-
-The Streamlit UI also includes an **OpenRouter connection test** under the provider settings. A structured OpenRouter 403 (for example an account/guardrail restriction) is reported separately from a WAF-style 403. OpenRouter documents that guardrails can return HTTP 403, while its standard API examples use the same `/api/v1/chat/completions` endpoint and optional attribution headers.
-
-
-## 🧪 QA و استقرار
-
-- ممیزی کامل نسخهٔ ۲٫۱۷٫۰ با اندازه‌گیری واقعی: [QA_REPORT.md](QA_REPORT.md)
-- مجموعهٔ تست واقعی (بدون کلید API، با سرور mock محلی): `python -m pytest qa/qa_suite.py -q`
-- استقرار Railway: `Dockerfile` + `railway.json` آماده است؛ پورت از `$PORT` خوانده می‌شود.
-  برای ماندگاری کش SQLite یک Volume روی `/root/.trarium` وصل کنید.
-
 ---
 
-## 🖼️ UI/UX تراریوم (2.18 و 2.19)
-
-نگاهی به رابط کاربری تراریوم. تصاویر از خود برنامه گرفته شده‌اند و همهٔ بخش‌های اصلی را نشان می‌دهند:
-ترجمهٔ متنی، فهرست فرمت‌های پشتیبانی‌شده، حفظ قالب PDF، وب‌ناول، تنظیمات صرفه‌جویی و سرعت، و پنل‌های تازهٔ صف،
-پایش زنده با توکن و زمان تقریبی، مصرف و هزینه، ترجمهٔ وب‌سایت، افزایش کیفیت مانگا و جابه‌جایی هوشمند ارائه‌دهنده.
-تصاویر ۰۱ تا ۰۸ مربوط به ۲٫۱۷ هستند و از ۰۹ به بعد قابلیت‌های ۲٫۱۸ را نشان می‌دهند.
-<br>
-
-### 🏠 خانه و ترجمهٔ متنی
-![تراریوم، خانه و تب ترجمهٔ متنی](docs/ui/01-home.png)
+## 🖼️ تصاویر برنامه
 
 ### 📚 فرمت‌های پشتیبانی‌شده
-هر فایلی که متن داشته باشد ترجمه می‌شود؛ فایل‌های ویدیو، صدا و عکس با پیام روشن رد می‌شوند.
 ![تراریوم، فهرست فرمت‌های پشتیبانی‌شده](docs/ui/02-formats.png)
 
 ### 🎨 حفظ قالب PDF
@@ -340,60 +137,43 @@ The Streamlit UI also includes an **OpenRouter connection test** under the provi
 ![تراریوم، تنظیمات صرفه‌جویی و فرهنگ واژه](docs/ui/08-savings-glossary.png)
 
 ### 🗂️ صف و تسک‌های پس‌زمینه
-اولویت، تعداد واحد، توکن، هزینهٔ تخمینی، درصد پیشرفت و دکمه‌های Pause/Resume/Cancel/Delete برای هر تسک.
 ![تراریوم، تب صف و تسک‌ها](docs/ui/09-queue.png)
 
-### 📡 پایش زندهٔ یک تسک (توکن، درخواست، ETA)
-درصد پیشرفت، مرحلهٔ جاری، توکن ورودی/خروجی، مجموع توکن، تعداد درخواست، هزینهٔ تخمینی، زمان سپری‌شده و
-زمان تقریبی باقی‌مانده بر اساس سرعت واقعی بخش‌های تکمیل‌شده.
+### 📡 پایش زندهٔ یک تسک
 ![تراریوم، پایش زندهٔ تسک با توکن و زمان تقریبی](docs/ui/10-job-monitor.png)
 
 ### 🌐 ترجمهٔ وب‌سایت
-نشانی صفحه، حداکثر صفحه، محدودکردن به همان دامنه، انتخاب مرورگر برای صفحات JS، فرمت خروجی و تأخیر بین صفحه‌ها.
 ![تراریوم، تب ترجمهٔ وب‌سایت](docs/ui/11-website.png)
 
 ### 🖼️ افزایش کیفیت مانگا
-حالت رزولوشن، حداکثر بُعد خروجی، کیفیت، و انتخاب جداگانهٔ عملیات‌ها؛ وضعیت در دسترس بودن OpenCV، Real-ESRGAN و SwinIR
-همان‌جا اعلام می‌شود.
 ![تراریوم، تب افزایش کیفیت مانگا](docs/ui/12-manga.png)
-
-گزینه‌های همین تب روی یک صفحهٔ واقعی اسکن‌شده: رزولوشن `2x`، حداکثر بُعد خروجی، کیفیت JPEG/WebP و
-فعال/غیرفعال‌کردن جداگانهٔ هر عملیات (Denoise، Deblur، Color Restoration، Contrast، Deskew).
 ![تراریوم، گزینه‌های افزایش کیفیت مانگا](docs/ui/21-quality-options.png)
-
-مقایسهٔ قبل/بعد در همان تب: تصویر اصلی ۸۲۰×۱۲۰۰ و خروجی ۱۶۴۰×۲۴۰۰ با Lanczos و اصلاح کنتراست،
-همراه گزارش پردازش.
 ![تراریوم، مقایسهٔ قبل و بعد افزایش کیفیت](docs/ui/22-quality-preview.png)
 
-### 📊 مصرف و هزینه (توکن و صورتحساب)
-مصرف LLM و OCR جداگانه، نمودار مصرف، تفکیک بر اساس مدل و پروژه، و تاریخچهٔ جابه‌جایی ارائه‌دهنده.
+### 📊 مصرف و هزینه
 ![تراریوم، تب مصرف و هزینه با توکن و نمودار](docs/ui/13-usage.png)
 
 ### 🔁 جابه‌جایی هوشمند ارائه‌دهنده
-زنجیرهٔ `provider:model`، تعداد تلاش مجدد، سقف هزینهٔ ماهانه و Smart Routing در نوار کنار.
 ![تراریوم، تنظیمات جابه‌جایی هوشمند](docs/ui/14-failover.png)
 
-### 📚 کتابخانه و پلی‌لیست (2.19)
-کتاب‌ها با جلد، فرمت، دسته و وضعیت در کتابخانهٔ دائمی؛ جست‌وجو، مرتب‌سازی و پلی‌لیست.
+### 📚 کتابخانه و پلی‌لیست
 ![تراریوم، کتابخانه و پلی‌لیست](docs/ui/15-library.png)
 
 ### 📖 صفحهٔ اختصاصی هر کتاب
-تنظیمات هر کتاب جداگانه ذخیره می‌شود: زبان، ارائه‌دهنده، مدل، قالب پروژه، فرمت خروجی و پرامپت.
-ترجمه فقط با دکمهٔ «شروع ترجمه» آغاز می‌شود.
 ![تراریوم، صفحهٔ اختصاصی کتاب و تنظیمات آن](docs/ui/16-book-page.png)
 
 ### 🩺 تعمیر خودکار کتاب
-تشخیص صفحهٔ تکراری، سفید و کم‌کیفیت با امتیاز کیفیت و تأیید کاربر؛ نسخهٔ اصلاح‌شده در فایل جدید ساخته می‌شود.
 ![تراریوم، تعمیر خودکار کتاب](docs/ui/17-repair.png)
 
-### 🔁 تبدیل فرمت
-تبدیل DOCX/PDF/EPUB/HTML/TXT با حفظ عنوان‌ها و جدول‌ها و راست‌چین‌ماندن متن فارسی، همراه با گزارش تبدیل.
+### 🔄 تبدیل فرمت
 ![تراریوم، تبدیل فرمت](docs/ui/18-convert.png)
 
 ### 📈 آمار پروژه‌ها
-کتاب‌های کامل‌شده، صفحات پردازش‌شده، توکن، هزینه، سرعت متوسط، خطاهای OCR و مصرف هر ارائه‌دهنده و مدل.
 ![تراریوم، آمار پروژه‌ها](docs/ui/19-analytics.png)
 
-### ⏯️ ادامهٔ هوشمند (Smart Resume)
-وضعیت مرحله‌های خواندن، تعمیر، OCR، ترجمه و خروجی برای هر پروژه؛ بعد از ری‌استارت از آخرین مرحلهٔ موفق ادامه می‌دهد.
+### ⏯️ ادامهٔ هوشمند
 ![تراریوم، ادامهٔ هوشمند](docs/ui/20-smart-resume.png)
+
+---
+
+مجوز: MIT — جزئیات در [LICENSE](LICENSE). نسخه‌ها: [CHANGELOG](CHANGELOG.md).

@@ -1,4 +1,4 @@
-"""Full feature run of Trarium main (v2.19) in GitHub Actions.
+"""Full feature run of Trarium 1.1 in GitHub Actions.
 Keys come only from env and are never printed. Outputs are Trarium's own files, untouched."""
 from __future__ import annotations
 import json, os, re, shutil, subprocess, sys, time, zipfile

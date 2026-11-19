@@ -12,7 +12,7 @@ env:
   TRARIUM_OCR_SPACE_KEY: ${{ secrets.OCR_SPACE_KEY }}
 jobs:
   main-suite:
-    name: Trarium main v2.19 — every feature
+    name: Trarium 1.1 — every feature
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:

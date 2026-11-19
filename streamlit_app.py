@@ -1,7 +1,8 @@
-"""🌿 Trarium 2.19 — clean Streamlit UI for book and web-novel translation."""
+"""🌿 Trarium 1.1 — clean Streamlit UI for book and web-novel translation."""
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
 import os
 import tempfile
@@ -31,6 +32,18 @@ from trarium.usage import UsageTrackingTranslator
 from trarium import ui_panels
 
 st.set_page_config(page_title="Trarium", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
+
+# روی سرور عمومی (Railway و...) با TRARIUM_APP_PASSWORD جلوی استفادهٔ غریبه‌ها از کلیدهای سرور گرفته می‌شود.
+_APP_PASSWORD = os.environ.get("TRARIUM_APP_PASSWORD", "")
+if _APP_PASSWORD and not st.session_state.get("_trarium_unlocked"):
+    st.markdown("## 🌿 Trarium")
+    _typed = st.text_input("رمز ورود", type="password", key="_trarium_password")
+    if _typed and hmac.compare_digest(_typed.encode(), _APP_PASSWORD.encode()):
+        st.session_state["_trarium_unlocked"] = True
+        st.rerun()
+    elif _typed:
+        st.error("رمز اشتباه است.")
+    st.stop()
 
 st.markdown("""
 <style>
@@ -150,7 +163,12 @@ def _translator_settings():
         else:
             provider = "openai_compatible"
             api_key = _secret_input(f"API Key{suffix}", "TRARIUM_API_KEY", key=f"oa_key{suffix}")
-            custom_base = st.text_input(f"Base URL{suffix}", value=os.environ.get("TRARIUM_BASE_URL", ""), placeholder="https://example.com/v1", key=f"oa_base{suffix}")
+            server_base = os.environ.get("TRARIUM_BASE_URL", "")
+            custom_base = st.text_input(f"Base URL{suffix}", value=server_base, placeholder="https://example.com/v1", key=f"oa_base{suffix}")
+            typed_key = (st.session_state.get(f"oa_key{suffix}") or "").strip()
+            if not typed_key and custom_base.strip().rstrip("/") != server_base.strip().rstrip("/"):
+                # کلید سرور فقط به Base URL خود سرور فرستاده می‌شود، نه به نشانی‌ای که بازدیدکننده می‌نویسد.
+                api_key = ""
             model = st.text_input(f"Model ID{suffix}", value=os.environ.get("TRARIUM_MODEL", ""), placeholder="model-id", key=f"oa_model{suffix}")
         return provider, api_key, model, custom_base
 

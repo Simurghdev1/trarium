@@ -16,13 +16,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urldefrag
 
+from trarium import __version__
+
 import requests
 from bs4 import BeautifulSoup, NavigableString
 
 from trarium.cache import TranslationCache, normalize_cache_text
 from trarium.netguard import BlockedURLError, assert_public_url, safe_get
 
-USER_AGENT = "Trarium/2.19.0 (local translation app)"
+USER_AGENT = f"Trarium/{__version__} (local translation app)"
 BLOCK_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "figcaption",
               "td", "th", "dt", "dd", "summary", "caption")
 SKIP_TAGS = {"script", "style", "noscript", "code", "pre", "svg", "math", "template",

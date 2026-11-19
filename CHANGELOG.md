@@ -1,84 +1,22 @@
-## 2.19.0 — Library, repair and analytics
+# Changelog
 
-- Automatic book repair: duplicate, blank, unreadable, low-quality and out-of-order PDF pages are detected
-  with a quality score; the repaired copy is always a new file and the original is left byte-identical.
-- Cross-format conversion between PDF, EPUB, DOCX, HTML and TXT through one block model that keeps headings,
-  paragraphs and tables, keeps Persian text RTL (`dir="rtl"`, `w:bidi`/`w:rtl`) and reports what was not kept.
-- Smart Resume: a durable per-project stage ledger (`~/.trarium/resume.sqlite3`) records ingest, repair, OCR,
-  translation and output; completed stages and units are never recomputed after a restart or crash.
-- Seven built-in project templates (Manga, Manhwa, Manhua, Web Novel, Light Novel, Academic, Technical) plus
-  custom templates stored in settings; a template only touches its own keys.
-- Translation analytics from real job and usage records: completed books, pages, tokens, cost, average speed,
-  OCR errors, project history and per-provider/per-model usage.
-- Permanent library and playlists on the existing local storage (`~/.trarium/library`), with covers, search,
-  sorting, statuses (Ready/Queued/Processing/Paused/Completed/Failed), per-book settings and a dedicated book
-  page. Adding a book never starts a translation or spends API tokens; deleting from the library keeps the file.
-- New tests in `tests/test_expansion_218.py`; suite now 130 passing.
+## 1.1.0
 
-## 2.18.1 — Output fidelity and format safety
+First public release of Trarium.
 
-- Subtitles keep their timing: SRT, WebVTT, SBV, LRC, ASS/SSA and MicroDVD are translated cue by cue
-  (with a batching fast path) and written back in the same format instead of a plain TXT.
-- DOCX/PPTX/XLSX are translated in place: the original package is copied and only the text runs change,
-  so styles, layout, slides and sheets stay intact.
-- JSON/JSONL values, CSV/TSV cells, notebook markdown cells and code comments are translated without
-  touching keys, code, headers or numbers; the output stays valid JSON/CSV/IPYNB/code.
-- One format catalog: every translatable extension (`.bash`, `.patch`, `.pyi`, `.diff`, `.rss`, `.odg`, …)
-  is now searchable in the UI; `.zip/.txtz/.htmlz` are text containers, not "archive, no text".
-- The format counter shows translatable extensions first and explains how many are images/audio/video/binary.
-- Empty text files raise `UnsupportedFormatError` with a Persian message instead of a bare `ValueError`.
-- DOCX text boxes no longer glue their text to the surrounding paragraph ("Outer beforeInside box").
-- EPUB watermarks (OceanofPDF.com and similar) are removed before translation.
-- Removed the duplicate `.vcf` entry and all pyflakes warnings in the app package.
+**Translation**
+- Text, PDF, EPUB, DOCX/PPTX/XLSX, HTML, subtitles (SRT/WebVTT/SBV/LRC/ASS/MicroDVD), JSON/CSV, notebooks and code comments, each delivered in its own format.
+- Layout-preserving PDF: the translation is written over the source text with a paper-coloured cover, real-font fitting and Persian shaping; scanned pages are read with OCR.space or a vision model.
+- Manga/scan titles: overlapping OCR lines are merged, artwork lettering is left alone, and the Persian title is centred on the original at its own size.
+- Web novels (follows real "Next chapter" links), whole websites (HTML structure kept, robots.txt respected) and YouTube subtitles (yt-dlp, auto-caption clean-up, original-language fallback).
+- Translation memory, checkpoints, token-aware batching, placeholders for URLs/code, a character/term registry and provider failover (OpenRouter, Gemini, Groq, 9Router, any OpenAI-compatible API).
 
-## 2.18.0 — Persistent Jobs & Provider Control
+**Workflow**
+- Persistent background jobs and a queue (pause / resume / cancel / delete), live monitor with tokens, cost and ETA, smart resume after a crash.
+- Library and playlists, project templates (Manga, Manhwa, Manhua, Web Novel, Light Novel, Academic, Technical), automatic book repair, cross-format conversion, usage and analytics.
+- Manga image enhancement (denoise, deblur, upscale, optional Real-ESRGAN / SwinIR).
 
-- Persistent job manager with SQLite state: Pause, Resume, Cancel, Delete and crash recovery.
-- Translation queue with priorities, reordering, concurrency limit and per-project errors.
-- Web-novel chapter ranges with an independent status for every chapter.
-- Live monitor ("Show Details"): real token counts, requests, cost, stage, page/unit, ETA from actual speed.
-- Smart provider failover: provider fallback, model fallback and smart routing, with local quota and cost caps.
-- Permanent errors are not retried; uncertain network requests are not blindly resent.
-- Usage & billing tab for LLM and OCR, with daily/monthly charts, per-model and per-project breakdown,
-  local limits, warnings and a failover history. API keys stay masked.
-- Optional manga enhancement: Auto/1x/2x/4x, denoise, deblur, color, contrast, deskew, Pillow/OpenCV,
-  optional Real-ESRGAN/SwinIR. Originals are never modified; a failed step falls back to the original page.
-- Website translation: structure-preserving HTML, multi-page crawl, robots.txt, deduplication,
-  resumable per-page cache and HTML/TXT/EPUB output.
-- OCR pages and requests are now metered separately from LLM tokens.
-- New `numpy` dependency; OpenCV remains optional (`.[image-opencv]`).
-
-## 2.17.0 — Safe Translation Engine
-
-- Hybrid PDF extraction: native text first; OCR only on pages without text.
-- Safe optimization: conservative whitespace normalization and no aggressive literary rewriting.
-- Translation Memory + normalized cache and in-book de-duplication.
-- Persistent SQLite checkpoints for interrupted jobs and resume.
-- Token-aware batching with adaptive batch sizing and natural block boundaries.
-- Placeholder protection for URLs, emails, HTML/XML tags and inline code.
-- Persistent character/term registry with per-chunk terminology injection.
-- Dynamic provider failover instead of fixed round-robin.
-- Pre-flight token estimation/connectivity probe helpers.
-- PDF layout translation now reports cache/checkpoint/API/token metrics.
-- Attribution page remains: «ترجمه شده توسط تراریوم».
-
-# Trarium Changelog
-
-## 2.16.4
-- OpenRouter auto transport now prefers curl when available, with requests fallback.
-- Removed localhost attribution headers from default OpenRouter requests; attribution is opt-in.
-- Added real OpenRouter diagnostics: GET /models + tiny authenticated POST.
-- Added direct Google Gemini REST provider with current Gemini 3.8/3.7/3.6/3.5 Flash model IDs.
-- Added direct Groq provider with current GPT-OSS and Qwen 3.8 models.
-- Added generic OpenAI-compatible provider for additional services.
-- Streamlit provider selector updated accordingly.
-
-
-## 2.16.3
-- Added robust OpenRouter HTTP transport with WAF/security-policy classification.
-- Automatic curl fallback on WAF-style 403 when available; no repeated retries for deterministic security blocks.
-- OpenRouter errors now distinguish network/WAF blocks from API/guardrail/account 403s.
-- Added OpenRouter connection diagnostic in the Streamlit UI.
-- Refreshed current free OpenRouter model slugs (including Gemma 4 31B and Nemotron 3 Nano Omni).
-- Removed stale free slug for Nemotron 3.5 Lightning, which is currently a paid model.
-- OpenRouter OCR Vision now uses the same robust transport.
+**Security and deployment**
+- SSRF guard on every website/novel fetch; server API keys are never sent to the browser and are only sent to the server's own base URL.
+- Optional `TRARIUM_APP_PASSWORD` gate for public deployments.
+- Dockerfile + `railway.json` ready for Railway.

@@ -32,6 +32,8 @@ than translating a cover by mistake.
 """
 from __future__ import annotations
 
+from trarium import __version__
+
 import base64
 import json
 import re
@@ -600,7 +602,7 @@ def gemini_vision_classify(page, api_key: str, model: str | None = None,
             response = requests.post(
                 VISION_API.format(model=name),
                 headers={"Content-Type": "application/json", "x-goog-api-key": api_key,
-                         "User-Agent": "Trarium/2.18.0"},
+                         "User-Agent": f"Trarium/{__version__}"},
                 json=payload,
                 timeout=timeout,
             )

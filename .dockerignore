@@ -11,3 +11,11 @@ qa/_tmp
 .env
 .env.*
 *.sqlite3
+.github
+ci_run
+qa
+docs
+tests
+.venv*
+*.sqlite3
+.env

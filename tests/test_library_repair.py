@@ -1,4 +1,4 @@
-"""Tests for the 2.19 library, repair, conversion, resume, templates and analytics."""
+"""Tests for the library, repair, conversion, resume, templates and analytics."""
 from __future__ import annotations
 
 import hashlib

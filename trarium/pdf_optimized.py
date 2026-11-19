@@ -1993,7 +1993,7 @@ def translate_pdf_optimized(
         doc.close()
 
 # ---------------------------------------------------------------------------
-# Trarium 2.17 safe optimization layer (defined last to preserve compatibility
+# Trarium safe optimization layer (defined last to preserve compatibility
 # with older integrations that import the legacy helper names).
 # ---------------------------------------------------------------------------
 from trarium.cache import TranslationCache
