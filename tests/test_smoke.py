@@ -227,7 +227,12 @@ class ProviderAndDiagnosticTests(unittest.TestCase):
 
     def test_gemini_current_model(self):
         from trarium.translators.gemini import GEMINI_MODELS
-        self.assertEqual(GEMINI_MODELS["Gemini 3.8 Flash (جدید)"], "gemini-3.8-flash")
+        # The old list named gemini-3.8/2.5 models that the API answers with 404
+        # for new keys; every entry here must be a model the API still serves.
+        values = set(GEMINI_MODELS.values())
+        self.assertIn("gemini-3.5-flash-lite", values)
+        self.assertNotIn("gemini-2.5-flash", values)
+        self.assertNotIn("gemini-3.8-flash", values)
 
     def test_openrouter_uses_minimal_headers(self):
         from trarium.translators.openrouter import OpenRouterTranslator

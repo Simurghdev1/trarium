@@ -90,7 +90,7 @@ def main(file_path, to, provider, api_key, model, base_url, ocr, ocr_method, out
             console.print("  https://aistudio.google.com/apikey")
             sys.exit(1)
         if not model:
-            model = "gemini-3.8-flash"
+            model = "gemini-3.5-flash-lite"
     elif provider == "groq":
         api_key = api_key or os.environ.get("GROQ_API_KEY")
         model = model or "openai/gpt-oss-120b"

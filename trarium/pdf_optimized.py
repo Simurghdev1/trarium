@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
@@ -51,6 +52,8 @@ OCR_MAX_SIDE = 1700
 
 _PADDLE_ENGINES: dict[str, object] = {}
 _SURYA_ENGINE = None
+
+GEMINI_OCR_MODEL = os.environ.get("TRARIUM_GEMINI_OCR_MODEL", "gemini-3.5-flash-lite")
 
 OPENROUTER_VISION_MODELS = {
     "Auto (رایگان)": "openrouter/free",
@@ -477,6 +480,91 @@ def _openrouter_vision_request(api_key: str, model_name: str, image_data_urls: l
     raise RuntimeError(f"مدل Vision متن برنگرداند ({last_reason}).")
 
 
+def _gemini_vision_request(api_key: str, model_name: str, image_data_urls: list[str],
+                           prompt: str, num_pages: int = 1) -> str:
+    """Vision OCR straight through the Gemini API (no OpenRouter hop)."""
+    payload = {
+        "contents": [{"parts": [{"text": prompt}] + [
+            {"inline_data": {"mime_type": url.split(";", 1)[0].split(":", 1)[1],
+                             "data": url.split(",", 1)[1]}} for url in image_data_urls
+        ]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": min(32000, 8192 * max(1, num_pages))},
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    last = "پاسخ خالی"
+    for attempt in range(2):
+        response = requests.post(url, headers={"Content-Type": "application/json",
+                                                "x-goog-api-key": api_key},
+                                 json=payload, timeout=240)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Gemini Vision HTTP {response.status_code}: {response.text[:400]}")
+        data = response.json()
+        candidates = data.get("candidates") or []
+        if candidates:
+            last = str(candidates[0].get("finishReason") or "")
+            parts = (candidates[0].get("content") or {}).get("parts") or []
+            text = "".join(str(part.get("text") or "") for part in parts).strip()
+            if text:
+                return text
+        if attempt == 0:
+            payload["generationConfig"]["maxOutputTokens"] = min(48000, 16384 * max(1, num_pages))
+    raise RuntimeError(f"مدل Vision متن برنگرداند ({last}).")
+
+
+def extract_ocr_blocks_gemini(page, api_key: str | None = None, model_name: str | None = None) -> list[dict]:
+    api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("کلید Gemini برای OCR تصویری تنظیم نشده است.")
+    model_name = model_name or GEMINI_OCR_MODEL
+    response = _gemini_vision_request(api_key, model_name, [_vision_image_data_url(page)], _vision_prompt())
+    img_w, img_h = _vision_image_size(page)
+    return _bbox_to_blocks(_parse_vision_json(response), page.rect.width, page.rect.height, img_w, img_h)
+
+
+def extract_ocr_blocks_batch_gemini(pages: list[tuple[int, object]], api_key: str | None = None,
+                                    model_name: str | None = None, batch_size: int = 3) -> dict[int, list[dict]]:
+    api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("کلید Gemini برای OCR تصویری تنظیم نشده است.")
+    model_name = model_name or GEMINI_OCR_MODEL
+    batch_size = max(1, min(int(batch_size), 4))
+    result: dict[int, list[dict]] = {}
+    for start in range(0, len(pages), batch_size):
+        batch = pages[start:start + batch_size]
+        nums = [n for n, _ in batch]
+        images = [_vision_image_data_url(page) for _, page in batch]
+        try:
+            response = _gemini_vision_request(api_key, model_name, images,
+                                               _vision_prompt(len(batch) > 1, nums), len(batch))
+            parsed = _parse_vision_json(response)
+            if len(batch) == 1:
+                img_w, img_h = _vision_image_size(batch[0][1])
+                result[nums[0]] = _bbox_to_blocks(parsed, batch[0][1].rect.width,
+                                                  batch[0][1].rect.height, img_w, img_h)
+            else:
+                for i, num in enumerate(nums):
+                    items = parsed.get(str(num), []) if isinstance(parsed, dict) else []
+                    if not items and isinstance(parsed, dict):
+                        items = parsed.get(str(i + 1), [])
+                    img_w, img_h = _vision_image_size(batch[i][1])
+                    result[num] = _bbox_to_blocks(items, batch[i][1].rect.width,
+                                                  batch[i][1].rect.height, img_w, img_h)
+        except Exception as exc:
+            console.print(f"  ⚠️ Gemini Vision batch {nums}: {exc}")
+            for num in nums:
+                result[num] = []
+    # A page can come back empty when it shares a request with pages that
+    # dominate the answer (or the model refuses the batch). Retry those alone.
+    for num, page in [(num, page) for num, page in pages if not result.get(num)]:
+        try:
+            blocks = extract_ocr_blocks_gemini(page, api_key, model_name)
+            if blocks:
+                result[num] = blocks
+        except Exception as exc:
+            console.print(f"  ⚠️ Gemini Vision صفحه {num + 1}: {exc}")
+    return result
+
+
 def _parse_vision_json(text: str):
     cleaned = (text or "").strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
@@ -895,6 +983,18 @@ def translate_pdf_optimized(
             if precomputed_ocr:
                 for page_num, _ in scanned_pages:
                     all_blocks[page_num] = _normalise_layout_blocks(list(precomputed_ocr.get(page_num, [])), doc[page_num].rect)
+            elif ocr_method == "gemini":
+                ocr_map = extract_ocr_blocks_batch_gemini(scanned_pages,
+                                                          os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"),
+                                                          vision_model, batch_size)
+                for page_num, _ in scanned_pages:
+                    all_blocks[page_num] = _normalise_layout_blocks(ocr_map.get(page_num, []), doc[page_num].rect)
+                try:
+                    from trarium.usage import record_ocr
+                    record_ocr(pages=len(ocr_map), requests=max(1, (len(scanned_pages) + batch_size - 1) // batch_size),
+                               provider="gemini", model=str(vision_model or GEMINI_OCR_MODEL))
+                except Exception:
+                    pass
             elif ocr_method == "openrouter":
                 ocr_map = extract_ocr_blocks_batch_openrouter(scanned_pages, api_key, vision_model, batch_size)
                 for page_num, _ in scanned_pages:

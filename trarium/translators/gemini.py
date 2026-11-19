@@ -4,17 +4,19 @@ import math, time, requests
 from trarium.translators.base import BaseTranslator
 from trarium.utils import clean_translation as _clean_translation
 
+# فقط مدل‌هایی که با همین کلید واقعاً پاسخ می‌دهند. مدل‌های ۲.۵ و ۳.۸ برای
+# کاربران تازه ۴۰۴ می‌دهند، پس لیست قبلی باعث می‌شد هر ترجمهٔ Gemini شکست بخورد.
 GEMINI_MODELS = {
-    "Gemini 3.8 Flash (جدید)": "gemini-3.8-flash",
-    "Gemini 3.7 Flash": "gemini-3.7-flash",
-    "Gemini 3.6 Flash": "gemini-3.6-flash",
-    "Gemini 3.5 Flash": "gemini-3.5-flash",
+    "Gemini 3.5 Flash Lite (پیشنهادی، سریع و ارزان)": "gemini-3.5-flash-lite",
+    "Gemini 3.1 Flash Lite": "gemini-3.1-flash-lite",
+    "Gemini Flash Lite (آخرین نسخه)": "gemini-flash-lite-latest",
+    "Gemini 3.5 Flash (کیفیت بالاتر، ممکن است شلوغ باشد)": "gemini-3.5-flash",
 }
 LANG_NAMES = {"fa":"فارسی","en":"English","ar":"العربية","tr":"Türkçe","zh":"中文","ja":"日本語","ko":"한국어","ru":"Русский"}
 
 class GeminiTranslator(BaseTranslator):
     API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    def __init__(self, api_key=None, model_name="gemini-3.8-flash"):
+    def __init__(self, api_key=None, model_name="gemini-3.5-flash-lite"):
         if not api_key: raise RuntimeError("Google API Key وارد نشده است.")
         self.api_key = api_key
         self.model_name = model_name

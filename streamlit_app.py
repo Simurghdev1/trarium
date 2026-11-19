@@ -511,10 +511,12 @@ with layout_tab:
                 from trarium.pdf_optimized import _has_paddleocr, _has_surya, _has_easyocr, _is_tesseract_installed
                 options = ["auto"]
                 labels = {"auto": "خودکار (PaddleOCR → Surya → EasyOCR → Vision)"}
+                gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
                 if _has_paddleocr(): options.append("paddleocr"); labels["paddleocr"] = "PaddleOCR"
                 if _has_surya(): options.append("surya"); labels["surya"] = "Surya"
                 if _has_easyocr(): options.append("easyocr"); labels["easyocr"] = "EasyOCR"
                 if api_key: options.append("openrouter"); labels["openrouter"] = "OpenRouter Vision"
+                if gemini_key: options.append("gemini"); labels["gemini"] = "Gemini Vision"
                 if _is_tesseract_installed(): options.append("tesseract"); labels["tesseract"] = "Tesseract"
                 method = st.selectbox("موتور OCR", options, format_func=lambda x: labels[x])
                 ocr_lang = st.selectbox("زبان صفحه", ["eng", "fas+eng", "jpn", "ara+eng"], index=0)
@@ -553,12 +555,17 @@ with layout_tab:
 
                 if run_ocr:
                     import pymupdf
-                    from trarium.pdf_optimized import extract_ocr_blocks, extract_ocr_blocks_batch_openrouter
+                    from trarium.pdf_optimized import (extract_ocr_blocks, extract_ocr_blocks_batch_gemini,
+                                                       extract_ocr_blocks_batch_openrouter)
                     path = _tmp_from_session(".pdf")
                     result_map = {}
                     try:
                         doc = pymupdf.open(path)
-                        if method == "openrouter":
+                        if method == "gemini":
+                            result_map = extract_ocr_blocks_batch_gemini(
+                                [(p - 1, doc[p - 1]) for p in analysis["scanned"]],
+                                api_key=gemini_key, batch_size=3)
+                        elif method == "openrouter":
                             result_map = extract_ocr_blocks_batch_openrouter([(p - 1, doc[p - 1]) for p in analysis["scanned"]], api_key=api_key, model_name=OPENROUTER_VISION_MODELS["Auto (رایگان)"], batch_size=3)
                         else:
                             bar = st.progress(0.0)

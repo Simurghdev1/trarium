@@ -130,7 +130,11 @@ class Library:
             try:
                 from trarium.extractors import get_extractor
                 book = get_extractor(str(stored), use_ocr=False).extract(str(stored))
-                meta_title = (book.title or meta_title).strip()[:200]
+                extracted = (book.title or "").strip()
+                # PDF بدون متادیتا عنوانش را از نام فایلِ کپی‌شده (شناسهٔ هگز)
+                # برمی‌گرداند؛ در این حالت نام فایل اصلی درست است.
+                if extracted and extracted not in {stored.stem, book_id}:
+                    meta_title = extracted[:200]
                 meta_author = author or (book.author or "")
             except Exception:
                 pass
