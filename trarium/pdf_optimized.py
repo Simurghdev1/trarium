@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from rich.console import Console
 
+from trarium import ocr_layout
 from trarium.utils import clean_translation as _clean_translation
 
 console = Console()
@@ -38,6 +39,10 @@ class PDFTranslationStats:
     input_tokens: int = 0
     output_tokens: int = 0
     protected_spans: int = 0
+    covered_blocks: int = 0          # raster-backed boxes painted before writing
+    expanded_blocks: int = 0         # boxes that had to grow into free space
+    refined_pages: int = 0           # pages re-OCRed at higher resolution
+    uncertain_pages: int = 0         # pages whose OCR boxes failed validation
 _FONT_DIR = Path(__file__).parent / "fonts"
 if not _FONT_DIR.exists():
     _FONT_DIR = Path(__file__).parent.parent / "trarium" / "fonts"
@@ -49,6 +54,17 @@ _FONT_PATH = _FONT_DIR / "Sahel.ttf"
 OCR_DPI = 180
 OCR_JPEG_QUALITY = 82
 OCR_MAX_SIDE = 1700
+# Second pass for pages whose first OCR result failed validation.  Only flagged
+# pages are re-sent, at a resolution where small glyphs stop disappearing.
+OCR_REFINE_DPI = 300
+OCR_REFINE_MAX_SIDE = 2400
+OCR_REFINE_MAX_PAGES = 8
+
+# OCR.space is the hosted engine users can enable with a key: it returns word
+# level boxes, which is exactly what the layout writer needs.  The free plan
+# rejects uploads over 1 MB, so the page JPEG is shrunk until it fits.
+OCRSPACE_ENDPOINT = "https://api.ocr.space/parse/image"
+OCRSPACE_MAX_BYTES = 1_000_000
 
 _PADDLE_ENGINES: dict[str, object] = {}
 _SURYA_ENGINE = None
@@ -396,46 +412,62 @@ def extract_ocr_blocks_surya(page, lang: str = "eng") -> list[dict]:
     return blocks
 
 
+_VISION_RULES = (
+    "Rules: (1) one item per visual text block - never merge two separate speech "
+    "bubbles, two columns, or a title with the paragraph under it; (2) copy the "
+    "complete text of each block, including short labels, page numbers, captions "
+    "and handwriting that is readable; (3) never invent or translate text; "
+    "(4) bbox is normalized left,top,right,bottom from 0 to 1 measured on the image "
+    "you were given; (5) list items in natural reading order; (6) language must be "
+    "kept exactly as printed."
+)
+
+
 def _vision_prompt(multi: bool = False, page_nums: list[int] | None = None) -> str:
     if not multi:
         return (
-            "Extract all readable text from this scanned book page. Return ONLY a JSON array. "
-            'Each item must be {"text":"...","bbox":[x0,y0,x1,y1]}. '
-            "bbox is normalized left,top,right,bottom from 0 to 1. Group text by paragraph/line, preserve reading order, and keep original language."
+            "Extract every readable piece of text from this scanned page. Return ONLY a JSON array. "
+            'Each item must be {"text":"...","bbox":[x0,y0,x1,y1]}. ' + _VISION_RULES
         )
     return (
-        f"Extract all readable text from these {len(page_nums or [])} scanned book pages. Return ONLY a JSON object. "
-        f"Use these exact page keys: {page_nums}. Each value is a JSON array of items with "
-        '{"text":"...","bbox":[x0,y0,x1,y1]}. '
-        "bbox is normalized left,top,right,bottom from 0 to 1. Preserve reading order and original language."
+        f"Extract every readable piece of text from these {len(page_nums or [])} scanned pages. "
+        "Return ONLY a JSON object. "
+        f"Use these exact page keys: {page_nums}. Each value is a JSON array of "
+        '{"text":"...","bbox":[x0,y0,x1,y1]} items. ' + _VISION_RULES
     )
 
 
-def _vision_image_data_url(page, dpi: int = OCR_DPI) -> str:
-    """Render one page for vision OCR as a compact JPEG data URL."""
+def _render_page_jpeg(page, dpi: int = OCR_DPI, max_side: int = OCR_MAX_SIDE,
+                      max_bytes: int | None = None) -> tuple[bytes, int, int]:
+    """Render a page as JPEG for the hosted OCR APIs; returns (bytes, width, height)."""
     import pymupdf
 
     pix = page.get_pixmap(dpi=dpi, alpha=False)
     longest = max(pix.width, pix.height)
-    if longest > OCR_MAX_SIDE:
-        zoom = (OCR_MAX_SIDE / longest) * (dpi / 72.0)
+    if longest > max_side:
+        zoom = (max_side / longest) * (dpi / 72.0)
         pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-    try:
-        blob = pix.tobytes("jpeg", jpg_quality=OCR_JPEG_QUALITY)
-        mime = "image/jpeg"
-    except Exception:
-        blob = pix.tobytes("png")
-        mime = "image/png"
-    return f"data:{mime};base64,{base64.b64encode(blob).decode()}"
+    quality = OCR_JPEG_QUALITY
+    blob = pix.tobytes("jpeg", jpg_quality=quality)
+    while max_bytes and len(blob) > max_bytes and quality > 40:
+        quality -= 12
+        blob = pix.tobytes("jpeg", jpg_quality=quality)
+    return blob, pix.width, pix.height
 
 
-def _vision_image_size(page, dpi: int = OCR_DPI) -> tuple[int, int]:
+def _vision_image_data_url(page, dpi: int = OCR_DPI, max_side: int = OCR_MAX_SIDE) -> str:
+    """Render one page for vision OCR as a compact JPEG data URL."""
+    blob, _width, _height = _render_page_jpeg(page, dpi, max_side)
+    return f"data:image/jpeg;base64,{base64.b64encode(blob).decode()}"
+
+
+def _vision_image_size(page, dpi: int = OCR_DPI, max_side: int = OCR_MAX_SIDE) -> tuple[int, int]:
     """Pixel size of the image actually sent for OCR (mirrors _vision_image_data_url)."""
     width = page.rect.width / 72.0 * dpi
     height = page.rect.height / 72.0 * dpi
     longest = max(width, height)
-    if longest > OCR_MAX_SIDE:
-        scale = OCR_MAX_SIDE / longest
+    if longest > max_side:
+        scale = max_side / longest
         width, height = width * scale, height * scale
     return max(1, int(round(width))), max(1, int(round(height)))
 
@@ -511,13 +543,15 @@ def _gemini_vision_request(api_key: str, model_name: str, image_data_urls: list[
     raise RuntimeError(f"مدل Vision متن برنگرداند ({last}).")
 
 
-def extract_ocr_blocks_gemini(page, api_key: str | None = None, model_name: str | None = None) -> list[dict]:
+def extract_ocr_blocks_gemini(page, api_key: str | None = None, model_name: str | None = None,
+                             dpi: int = OCR_DPI, max_side: int = OCR_MAX_SIDE) -> list[dict]:
     api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("کلید Gemini برای OCR تصویری تنظیم نشده است.")
     model_name = model_name or GEMINI_OCR_MODEL
-    response = _gemini_vision_request(api_key, model_name, [_vision_image_data_url(page)], _vision_prompt())
-    img_w, img_h = _vision_image_size(page)
+    response = _gemini_vision_request(api_key, model_name,
+                                      [_vision_image_data_url(page, dpi, max_side)], _vision_prompt())
+    img_w, img_h = _vision_image_size(page, dpi, max_side)
     return _bbox_to_blocks(_parse_vision_json(response), page.rect.width, page.rect.height, img_w, img_h)
 
 
@@ -609,13 +643,18 @@ def _bbox_to_blocks(items, pw: float, ph: float, img_w: float | None = None, img
         y0, y1 = sorted((y0, y1))
         if x1 <= x0 or y1 <= y0:
             continue
+        bbox = (x0 * pw, y0 * ph, x1 * pw, y1 * ph)
         blocks.append({
-            "bbox": (x0 * pw, y0 * ph, x1 * pw, y1 * ph),
+            "bbox": bbox,
             "text": text,
-            "font_size": max((y1 - y0) * ph * 0.25, 8),
+            # A paragraph box is not one line tall; estimating the line count
+            # first stops 30pt type being written into a six-line paragraph.
+            "font_size": ocr_layout.estimate_font_size(bbox, text),
+            "line_count": ocr_layout.guess_line_count(bbox, text),
+            "source": "vision",
         })
-    blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
-    return blocks
+    blocks = ocr_layout.dedupe_blocks(blocks)
+    return ocr_layout.reading_order(blocks, pw)
 
 
 def extract_ocr_blocks_openrouter(page, api_key: str | None = None, model_name: str | None = None) -> list[dict]:
@@ -661,10 +700,111 @@ def extract_ocr_blocks_batch_openrouter(pages: list[tuple[int, object]], api_key
     return result
 
 
+def _ocrspace_language(lang: str) -> tuple[str, str]:
+    """Map our language names to OCR.space codes; returns (code, engine).
+
+    Persian and Arabic are only supported by Engine 3 (which also accepts
+    ``auto``), while Latin text is more reliable on Engine 2.
+    """
+    first = re.split(r"[+,]", (lang or "eng"))[0].strip().lower()
+    codes = {
+        "fas": "fas", "fa": "fas", "persian": "fas",
+        "ara": "ara", "ar": "ara", "arabic": "ara",
+        "eng": "eng", "en": "eng", "english": "eng",
+        "jpn": "jpn", "japanese": "jpn", "ja": "jpn",
+        "chi_sim": "chs", "ch": "chs", "chs": "chs",
+        "rus": "rus", "ru": "rus", "kor": "kor", "ko": "kor",
+        "fra": "fre", "deu": "ger", "spa": "spa", "tur": "tur",
+    }
+    code = codes.get(first, first if len(first) == 3 else "auto")
+    return code, "3" if code in {"fas", "ara", "auto"} else "2"
+
+
+def extract_ocr_blocks_ocrspace(page, api_key: str | None = None, lang: str = "eng",
+                                dpi: int = OCR_DPI, max_side: int = OCR_MAX_SIDE,
+                                engine: str | None = None) -> list[dict]:
+    """OCR one page through the hosted OCR.space API (word boxes included).
+
+    ``isOverlayRequired=true`` is what makes this usable for layout-preserving
+    translation: the response carries the pixel box of every word, which is
+    converted back to PDF points with the exact rendered image size.
+    """
+    api_key = api_key or os.environ.get("OCR_SPACE_API_KEY") or os.environ.get("OCRSPACE_API_KEY")
+    if not api_key:
+        raise RuntimeError("کلید OCR.space تنظیم نشده است (OCR_SPACE_API_KEY).")
+
+    blob, image_width, image_height = _render_page_jpeg(page, dpi, max_side, OCRSPACE_MAX_BYTES)
+    language, default_engine = _ocrspace_language(lang)
+    payload = {
+        "apikey": api_key,
+        "language": language,
+        "isOverlayRequired": "true",
+        "OCREngine": str(engine or default_engine),
+        "scale": "true",
+        "detectOrientation": "true",
+        "filetype": "JPG",
+    }
+    response = requests.post(OCRSPACE_ENDPOINT, data=payload,
+                             files={"file": ("page.jpg", blob, "image/jpeg")}, timeout=180)
+    if response.status_code >= 400:
+        raise RuntimeError(f"OCR.space HTTP {response.status_code}: {response.text[:300]}")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"OCR.space پاسخ JSON نداد: {response.text[:200]}") from exc
+    if data.get("IsErroredOnProcessing"):
+        message = data.get("ErrorMessage") or data.get("ErrorDetails") or "خطای نامشخص"
+        raise RuntimeError(f"OCR.space: {message}")
+
+    scale_x = page.rect.width / max(1, image_width)
+    scale_y = page.rect.height / max(1, image_height)
+    blocks: list[dict] = []
+    for parsed in data.get("ParsedResults") or []:
+        overlay = parsed.get("TextOverlay") or {}
+        for line in overlay.get("Lines") or []:
+            words = line.get("Words") or []
+            text = " ".join(str(word.get("WordText") or "") for word in words).strip()
+            boxes = []
+            for word in words:
+                try:
+                    left = float(word.get("Left") or 0)
+                    top = float(word.get("Top") or 0)
+                    boxes.append((left, top, left + float(word.get("Width") or 0),
+                                  top + float(word.get("Height") or 0)))
+                except (TypeError, ValueError):
+                    continue
+            if len(text) < ocr_layout.MIN_TEXT_CHARS or not boxes:
+                continue
+            bbox = (min(b[0] for b in boxes) * scale_x, min(b[1] for b in boxes) * scale_y,
+                    max(b[2] for b in boxes) * scale_x, max(b[3] for b in boxes) * scale_y)
+            blocks.append({
+                "bbox": bbox,
+                "text": text,
+                "font_size": max(6.5, min(16.0, (bbox[3] - bbox[1]) * 0.75)),
+                "line_count": 1,
+                "source": "ocrspace",
+            })
+    if not blocks:
+        raise RuntimeError("OCR.space هیچ کادر متنی برنگرداند (پاسخ overlay خالی بود).")
+    return ocr_layout.reading_order(ocr_layout.dedupe_blocks(blocks), page.rect.width)
+
+
+def _auto_ocr_methods() -> list[str]:
+    """Local engines first, then whichever hosted engine has a key."""
+    chain = ["paddleocr", "surya", "easyocr", "tesseract"]
+    if os.environ.get("OCR_SPACE_API_KEY") or os.environ.get("OCRSPACE_API_KEY"):
+        chain.append("ocrspace")
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        chain.append("gemini")
+    chain.append("openrouter")
+    return chain
+
+
 def extract_ocr_blocks(page, lang: str = "eng", api_key: str | None = None,
-                       vision_model: str | None = None, ocr_method: str = "auto") -> list[dict]:
+                       vision_model: str | None = None, ocr_method: str = "auto",
+                       ocrspace_key: str | None = None) -> list[dict]:
     """OCR one page with an explicit engine or sensible auto fallback."""
-    methods = [ocr_method] if ocr_method != "auto" else ["paddleocr", "surya", "easyocr", "openrouter"]
+    methods = [ocr_method] if ocr_method != "auto" else _auto_ocr_methods()
     for method in methods:
         try:
             if method == "paddleocr" and _has_paddleocr():
@@ -674,6 +814,10 @@ def extract_ocr_blocks(page, lang: str = "eng", api_key: str | None = None,
             elif method == "easyocr" and _has_easyocr():
                 easy_langs = ["en"] if "fas" not in lang and "fa" not in lang else ["fa", "en"]
                 blocks = extract_ocr_blocks_easyocr(page, easy_langs)
+            elif method == "ocrspace":
+                blocks = extract_ocr_blocks_ocrspace(page, ocrspace_key, lang=lang)
+            elif method == "gemini":
+                blocks = extract_ocr_blocks_gemini(page)
             elif method == "openrouter" and api_key:
                 blocks = extract_ocr_blocks_openrouter(page, api_key, vision_model)
             elif method == "tesseract" and _is_tesseract_installed():
@@ -708,51 +852,33 @@ def _box_tuple(value) -> tuple[float, float, float, float]:
 
 
 def _normalise_layout_blocks(blocks: list[dict], page_rect=None) -> list[dict]:
-    """Normalize OCR/native blocks and merge adjacent OCR lines into paragraph-sized blocks."""
-    normal = []
+    """Validate OCR/native boxes, merge lines into paragraphs, fix reading order.
+
+    The geometry rules live in :mod:`trarium.ocr_layout` so they are shared by
+    every engine (native text, PaddleOCR, Tesseract, EasyOCR, Surya and the
+    vision models) and can be unit-tested without a PDF.
+    """
+    cleaned: list[dict] = []
     for b in blocks or []:
         text = str(b.get("text", "") or "").strip()
-        if not text:
+        if len(text) < ocr_layout.MIN_TEXT_CHARS:
             continue
-        box = _box_tuple(b.get("bbox", (0, 0, 0, 0)))
-        x0, y0, x1, y1 = box
-        if x1 <= x0 or y1 <= y0:
+        bbox = ocr_layout.box(b)
+        if ocr_layout.width(bbox) < 1.0 or ocr_layout.height(bbox) < 1.0:
             continue
+        if page_rect is not None:
+            page_area = max(1.0, page_rect.width * page_rect.height)
+            if ocr_layout.area(bbox) / page_area > ocr_layout.MAX_BLOCK_AREA_RATIO:
+                # A box that swallows the page cannot be trusted for redaction.
+                continue
         item = dict(b)
-        item["bbox"] = box
+        item["bbox"] = bbox
         item["text"] = text
-        item["font_size"] = float(b.get("font_size") or max(8.0, (y1-y0)*0.75))
-        normal.append(item)
-    if not normal:
+        cleaned.append(item)
+    if not cleaned:
         return []
-
-    # Merge line-level OCR boxes into paragraphs. Native PDF blocks are usually already paragraphs,
-    # but the same helper is safe for both cases and dramatically reduces API calls for OCR PDFs.
-    heights = sorted(max(1.0, b["bbox"][3]-b["bbox"][1]) for b in normal)
-    median_h = heights[len(heights)//2] if heights else 12.0
-    max_gap = max(5.0, median_h * 1.65)
-    normal.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
-
-    merged=[]
-    for item in normal:
-        x0,y0,x1,y1=item["bbox"]
-        if not merged:
-            merged.append(item); continue
-        prev=merged[-1]
-        px0,py0,px1,py1=prev["bbox"]
-        gap=y0-py1
-        overlap=max(0.0, min(x1,px1)-max(x0,px0))
-        min_width=max(1.0,min(x1-x0,px1-px0))
-        horizontal_overlap=overlap/min_width
-        same_column = horizontal_overlap >= 0.20 or abs(x0-px0) <= max(18.0, median_h*2.5)
-        # Avoid swallowing titles / footers separated by a large vertical gap.
-        if 0 <= gap <= max_gap and same_column:
-            prev["text"] = (prev["text"] + " " + item["text"]).strip()
-            prev["bbox"] = (min(px0,x0), min(py0,y0), max(px1,x1), max(py1,y1))
-            prev["font_size"] = (prev.get("font_size", 11.0) + item.get("font_size", 11.0))/2
-        else:
-            merged.append(item)
-    return merged
+    page_width = getattr(page_rect, "width", None)
+    return ocr_layout.merge_lines(ocr_layout.dedupe_blocks(cleaned), page_width)
 
 
 def _word_blocks_fallback(page) -> list[dict]:
@@ -809,9 +935,9 @@ def extract_text_blocks(page, strict: bool = False) -> list[dict]:
             "font_size": sum(sizes)/len(sizes) if sizes else 12,
         })
     if blocks:
-        # Native blocks are generally paragraph-level; do not aggressively merge named blocks.
-        blocks.sort(key=lambda b:(b["bbox"][1],b["bbox"][0]))
-        return blocks
+        # Native blocks are generally paragraph-level, so they are not merged;
+        # they are ordered column by column instead of page-wide by y.
+        return ocr_layout.reading_order(blocks, page.rect.width)
     return _word_blocks_fallback(page)
 
 def _reshape(text: str) -> str:
@@ -827,15 +953,246 @@ def _reshape(text: str) -> str:
             return text
 
 
-def _expand_rect(rect, page_rect, text: str, original_size: float) -> object:
+def _page_background_image(page, dpi: int = 110):
+    """Render the page once so cover fills can be sampled from real pixels."""
+    import numpy as np
+
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+    if array.shape[2] > 3:
+        array = array[:, :, :3]
+    scale = (pix.w / max(1e-6, page.rect.width), pix.h / max(1e-6, page.rect.height))
+    return array, scale
+
+
+def _sample_fill(array, scale, page_rect, rect, include_vertical: bool = True) -> tuple[float, float, float]:
+    """Background colour around a text box (never assumed to be white).
+
+    A cream book page and a white manga bubble need different fills; painting
+    pure white on either is exactly the bright rectangle users see today.
+    """
+    import numpy as np
+
+    sx, sy = scale
+    height, width = array.shape[:2]
+    x0 = int(max(0, min(width - 1, (rect[0] - page_rect.x0) * sx)))
+    x1 = int(max(x0 + 1, min(width, (rect[2] - page_rect.x0) * sx)))
+    y0 = int(max(0, min(height - 1, (rect[1] - page_rect.y0) * sy)))
+    y1 = int(max(y0 + 1, min(height, (rect[3] - page_rect.y0) * sy)))
+    pad = max(2, int(round(3 * sx)))
+    rings = [
+        array[y0:y1, max(0, x0 - pad):x0],
+        array[y0:y1, x1:min(width, x1 + pad)],
+    ]
+    if include_vertical:
+        rings.extend([
+            array[max(0, y0 - pad):y0, x0:x1],
+            array[y1:min(height, y1 + pad), x0:x1],
+        ])
+    pixels = [ring.reshape(-1, 3) for ring in rings if ring.size]
+    if not pixels:
+        return (1.0, 1.0, 1.0)
+    values = np.concatenate(pixels).astype(np.float32)
+    luminance = values.mean(axis=1)
+    bright = values[luminance >= np.percentile(luminance, 55)]
+    if not len(bright):
+        bright = values
+    median = np.median(bright, axis=0) / 255.0
+    return tuple(round(float(v), 4) for v in median)
+
+
+def _cover_bands(array, scale, page_rect, rect, font_size: float = 11.0):
+    """Split a cover into small cells that follow the page's own shading.
+
+    A cream scanned page is brighter in the middle than at the margins, so one
+    flat rectangle per box still reads as a pale patch.  Each cell takes its
+    colour from the *paper pixels inside that cell* (the bright end of the
+    histogram; glyphs are the dark minority), which reproduces the real
+    gradient and makes the cover invisible on the page.
+    """
+    import numpy as np
+
+    sx, sy = scale
+    height, width = array.shape[:2]
+    step = max(6.0, min(18.0, float(font_size or 11.0) * 1.25))
+    rows = max(1, min(8, int(round((rect[3] - rect[1]) / step)) or 1))
+    cols = max(1, min(3, int(round((rect[2] - rect[0]) / 110.0)) or 1))
+    fallback = _sample_fill(array, scale, page_rect, rect)
+    cells = []
+    for row in range(rows):
+        y0 = rect[1] + (rect[3] - rect[1]) * row / rows
+        y1 = rect[1] + (rect[3] - rect[1]) * (row + 1) / rows
+        py0 = int(max(0, min(height - 1, (y0 - page_rect.y0) * sy)))
+        py1 = int(max(py0 + 1, min(height, (y1 - page_rect.y0) * sy)))
+        for col in range(cols):
+            x0 = rect[0] + (rect[2] - rect[0]) * col / cols
+            x1 = rect[0] + (rect[2] - rect[0]) * (col + 1) / cols
+            px0 = int(max(0, min(width - 1, (x0 - page_rect.x0) * sx)))
+            px1 = int(max(px0 + 1, min(width, (x1 - page_rect.x0) * sx)))
+            patch = array[py0:py1, px0:px1].reshape(-1, 3).astype(np.float32)
+            colour = fallback
+            if patch.size:
+                luminance = patch.mean(axis=1)
+                bright = patch[luminance >= np.percentile(luminance, 65)]
+                if len(bright) and float(np.median(bright.mean(axis=1))) >= 150.0:
+                    median = np.median(bright, axis=0) / 255.0
+                    colour = tuple(round(float(v), 4) for v in median)
+            cells.append(((x0, y0, x1, y1), colour))
+    return cells
+
+
+def _raster_has_glyphs(array, scale, page_rect, rect, min_ink: float = 0.004) -> bool:
+    """Do the page pixels under this box contain printed-looking glyphs?
+
+    Only then must the box be painted before the translation is drawn.  A photo
+    behind a caption has ink but no bright paper background, so it is preserved.
+    """
+    import numpy as np
+
+    sx, sy = scale
+    height, width = array.shape[:2]
+    x0 = int(max(0, min(width - 1, (rect[0] - page_rect.x0) * sx)))
+    x1 = int(max(x0 + 1, min(width, (rect[2] - page_rect.x0) * sx)))
+    y0 = int(max(0, min(height - 1, (rect[1] - page_rect.y0) * sy)))
+    y1 = int(max(y0 + 1, min(height, (rect[3] - page_rect.y0) * sy)))
+    crop = array[y0:y1, x0:x1]
+    if crop.size == 0:
+        return False
+    gray = crop.astype(np.float32).mean(axis=2)
+    ink = float((gray < 128).mean())
+    background = float(np.median(gray))
+    return background >= 120.0 and min_ink < ink < 0.45
+
+
+def _clipped_cover(band, fill, page_rect):
     import pymupdf
-    r=pymupdf.Rect(rect)
-    # OCR often reports the height of a single source line; translated Persian can need 2-4 lines.
-    extra_h=max(6.0, min(page_rect.height*0.08, len(text.split())*0.22 + r.height*0.55))
-    xpad=min(8.0, max(2.0, r.width*0.025))
-    candidate=pymupdf.Rect(max(page_rect.x0+2,r.x0-xpad), max(page_rect.y0+1,r.y0-extra_h*0.12),
-                           min(page_rect.x1-2,r.x1+xpad), min(page_rect.y1-1,r.y1+extra_h))
-    return candidate
+    return (pymupdf.Rect(band) & page_rect), fill
+
+
+def _font_ladder(size: float) -> list[float]:
+    size = max(6.5, min(18.0, float(size or 11.0)))
+    ladder: list[float] = []
+    for factor in (1.0, 0.9, 0.8, 0.7, 0.62):
+        value = round(max(6.5, size * factor), 2)
+        if value not in ladder:
+            ladder.append(value)
+    if 6.5 not in ladder:
+        ladder.append(6.5)
+    return ladder
+
+
+def _render_page(page, blocks: list[dict], replacements: dict[int, str], target_lang: str,
+                 stats: "PDFTranslationStats", force_raster: bool | None = None) -> int:
+    """Replace the source text of one page with its translations.
+
+    All source glyphs on the page are removed in one redaction pass *before* any
+    translation is drawn.  The previous per-block loop redacted and wrote in the
+    same pass, so a later block's expanded box could erase a translation that
+    had just been written - one of the causes of missing sentences.
+    """
+    import html as html_mod
+    import pymupdf
+
+    if not replacements:
+        return 0
+    if not _FONT_PATH.exists():
+        raise RuntimeError(f"فونت Sahel پیدا نشد: {_FONT_PATH}")
+    page_rect = page.rect
+    all_boxes = [pymupdf.Rect(b["bbox"]) for b in blocks if b.get("bbox")]
+    try:
+        image_boxes = [pymupdf.Rect(info["bbox"]) for info in page.get_image_info()]
+    except Exception:
+        image_boxes = []
+    background, scale = _page_background_image(page)
+
+    plans: list[tuple[int, object, tuple | None, object, float, str]] = []
+    for idx, out in replacements.items():
+        if not 0 <= idx < len(blocks):
+            continue
+        block = blocks[idx]
+        source = str(block.get("text") or "")
+        raw = pymupdf.Rect(block["bbox"]) & page_rect
+        if raw.is_empty or raw.width < 2 or raw.height < 2:
+            stats.write_failures += 1
+            continue
+        raw_tuple = (raw.x0, raw.y0, raw.x1, raw.y1)
+        original_size = float(block.get("font_size") or 0) or ocr_layout.estimate_font_size(raw_tuple, source)
+        raster = (force_raster if force_raster is not None else False) or (
+            ocr_layout.raster_share(raw_tuple, [tuple(b) for b in image_boxes]) >= ocr_layout.RASTER_COVER_THRESHOLD
+            and _raster_has_glyphs(background, scale, page_rect, raw_tuple)
+        )
+        obstacles = [tuple(b) for b in all_boxes
+                     if not (abs(b.x0 - raw.x0) < 0.8 and abs(b.y0 - raw.y0) < 0.8
+                             and abs(b.x1 - raw.x1) < 0.8 and abs(b.y1 - raw.y1) < 0.8)]
+
+        chosen = None
+        for rect_tuple in ocr_layout.candidate_rects(raw_tuple, tuple(page_rect), obstacles, source):
+            rect = pymupdf.Rect(rect_tuple)
+            for size in _font_ladder(original_size):
+                fits, _scale = _preflight_htmlbox(rect, out, size, target_lang, page_rect)
+                if fits:
+                    chosen = (rect, size)
+                    break
+            if chosen:
+                break
+        if not chosen:
+            stats.write_failures += 1
+            if not stats.first_write_error:
+                stats.first_write_error = f"صفحه {page.number + 1}, بلاک {idx + 1}: متن ترجمه در فضای آزاد جا نشد"
+            continue
+        text_rect, size = chosen
+        padded = ocr_layout.cover_rect(raw_tuple, 1.2 if raster else 0.3)
+        if raster:
+            covers = [_clipped_cover(band, fill, page_rect)
+                      for band, fill in _cover_bands(background, scale, page_rect, padded, size)]
+            stats.covered_blocks += 1
+        else:
+            covers = [(pymupdf.Rect(padded) & page_rect, None)]
+        if abs(text_rect.width - raw.width) > 1.0 or abs(text_rect.height - raw.height) > 1.0:
+            stats.expanded_blocks += 1
+        plans.append((idx, covers, text_rect, size, out))
+
+    if not plans:
+        return 0
+
+    for _idx, covers, _rect, _size, _out in plans:
+        for cover, fill in covers:
+            page.add_redact_annot(cover, fill=fill)
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                          graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
+
+    written = 0
+    for idx, _covers, text_rect, size, out in plans:
+        try:
+            archive = pymupdf.Archive(str(_FONT_DIR))
+            html = f"<body>{html_mod.escape(out).replace(chr(10), '<br>')}</body>"
+            # The dry run and the real insertion must allow the same minimum
+            # scale, otherwise a block that preflight accepted at 0.30 still
+            # fails here and its sentence disappears from the page.
+            spare, _scale = page.insert_htmlbox(text_rect, html, css=_htmlbox_css(size, target_lang),
+                                                archive=archive, scale_low=0.2)
+            if spare >= 0:
+                written += 1
+            else:
+                stats.write_failures += 1
+                if not stats.first_write_error:
+                    stats.first_write_error = f"صفحه {page.number + 1}, بلاک {idx + 1}: درج متن پس از پاک‌سازی شکست خورد"
+        except Exception as exc:
+            stats.write_failures += 1
+            if not stats.first_write_error:
+                stats.first_write_error = f"صفحه {page.number + 1}, بلاک {idx + 1}: {exc}"
+    return written
+
+
+def _write_text(page, rect, text, original_size: float, target_lang: str,
+                scanned: bool | None = None) -> tuple[bool, str]:
+    """Write one translated block (kept for callers that need a single block)."""
+    stats = PDFTranslationStats()
+    block = {"bbox": tuple(rect), "text": "", "font_size": original_size}
+    written = _render_page(page, [block], {0: text}, target_lang, stats, force_raster=scanned)
+    if written:
+        return True, ""
+    return False, stats.first_write_error or "متن ترجمه داخل محدوده صفحه جا نشد"
 
 
 def _htmlbox_css(font_size: float, target_lang: str) -> str:
@@ -866,42 +1223,35 @@ def _preflight_htmlbox(rect, text: str, fontsize: float, target_lang: str, page_
         tmp.close()
 
 
-def _write_text(page, rect, text, original_size: float, target_lang: str, scanned: bool | None = None) -> tuple[bool,str]:
-    import pymupdf, html as html_mod
-    if not text or not text.strip():
-        return False,"متن ترجمه خالی است"
-    if not _FONT_PATH.exists():
-        return False,f"فونت Sahel پیدا نشد: {_FONT_PATH}"
-    page_rect=page.rect
-    inset=_expand_rect(rect,page_rect,text,float(original_size or 11))
-    # A scanned page has no text layer: redaction cannot remove glyphs that live
-    # inside the page image, so the original (Chinese) text would stay visible
-    # under the translation. Paint the block area first in that case.
-    if scanned is None:
-        scanned = not page.get_text().strip()
-    cover_fill=(1,1,1) if scanned else None
-    base_size=max(7.0,min(float(original_size or 11),18.0))
-    fits,_=_preflight_htmlbox(inset,text,base_size,target_lang,page_rect)
-    if not fits:
-        return False,"متن ترجمه داخل محدوده صفحه جا نشد"
+def _refine_ocr_pages(scanned_pages: list[tuple[int, object]], ocr_map: dict[int, list[dict]],
+                      ocr_method: str, api_key: str | None, vision_model: str | None,
+                      max_pages: int = OCR_REFINE_MAX_PAGES) -> tuple[dict[int, list[dict]], int]:
+    """Re-OCR only the pages whose boxes failed validation, then merge both passes.
 
-    # Redact only after the dry-run succeeded. This prevents the old bug where a failed write erased source text.
-    try:
-        # fill=None keeps the underlying page/illustration visible, and the flags
-        # stop PyMuPDF from rasterising or deleting images that intersect the box.
-        page.add_redact_annot(inset, fill=cover_fill)
-        page.apply_redactions(
-            images=pymupdf.PDF_REDACT_IMAGE_NONE,
-            graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
-        )
-        arch=pymupdf.Archive(str(_FONT_DIR))
-        html=f"<body>{html_mod.escape(text).replace(chr(10),'<br>')}</body>"
-        spare,scale=page.insert_htmlbox(inset,html,css=_htmlbox_css(base_size,target_lang),archive=arch,scale_low=0.20)
-        if spare < 0:
-            return False,"درج متن بعد از پاک‌سازی شکست خورد"
-        return True,""
-    except Exception as exc:
-        return False,str(exc)
+    Vision models miss small text and sometimes answer with page-sized boxes.
+    A second look at 300 dpi recovers that text; the merge keeps everything the
+    first pass found correctly and never duplicates a line.
+    """
+    if ocr_method not in {"gemini", "openrouter"}:
+        return ocr_map, 0
+    flagged = [(num, page) for num, page in scanned_pages
+               if ocr_layout.needs_second_pass(ocr_map.get(num) or [], tuple(page.rect))]
+    refined = 0
+    for num, page in flagged[:max_pages]:
+        try:
+            if ocr_method == "gemini":
+                extra = extract_ocr_blocks_gemini(page, api_key, vision_model,
+                                                 dpi=OCR_REFINE_DPI, max_side=OCR_REFINE_MAX_SIDE)
+            else:
+                extra = extract_ocr_blocks_openrouter(page, api_key, vision_model)
+            merged = ocr_layout.merge_passes(ocr_map.get(num) or [], extra, tuple(page.rect))
+            if merged:
+                ocr_map[num] = merged
+                refined += 1
+        except Exception as exc:
+            console.print(f"  ⚠️ بازبینی OCR صفحه {num + 1}: {exc}")
+    return ocr_map, refined
+
 
 def _append_pdf_attribution_page(doc, target_lang: str = "fa") -> None:
     import pymupdf
@@ -933,6 +1283,7 @@ def translate_pdf_optimized(
     ocr_lang: str = "eng",
     api_key: str | None = None,
     vision_model: str | None = None,
+    ocrspace_key: str | None = None,
     skip_pages: set[int] | None = None,
     precomputed_ocr: dict[int, list[dict]] | None = None,
     progress_callback: Callable | None = None,
@@ -964,6 +1315,7 @@ def translate_pdf_optimized(
     doc = pymupdf.open(input_path)
     try:
         total_pages = len(doc)
+        stats = PDFTranslationStats()
         all_blocks: list[list[dict]] = [[] for _ in range(total_pages)]
         scanned_pages: list[tuple[int, object]] = []
 
@@ -1008,7 +1360,7 @@ def translate_pdf_optimized(
             else:
                 for i, (page_num, page) in enumerate(scanned_pages, 1):
                     try:
-                        all_blocks[page_num] = _normalise_layout_blocks(extract_ocr_blocks(page, lang=ocr_lang, api_key=api_key, vision_model=vision_model, ocr_method=ocr_method), page.rect)
+                        all_blocks[page_num] = _normalise_layout_blocks(extract_ocr_blocks(page, lang=ocr_lang, api_key=api_key, vision_model=vision_model, ocr_method=ocr_method, ocrspace_key=ocrspace_key), page.rect)
                     except Exception as exc:
                         console.print(f"  ⚠️ OCR صفحه {page_num + 1}: {exc}")
                     if progress_callback:
@@ -1019,6 +1371,22 @@ def translate_pdf_optimized(
                                provider="local", model=str(ocr_method))
                 except Exception:
                     pass
+
+            # Pages whose boxes are empty, duplicated, page-sized or overlapping
+            # get one more look before anything is redacted or written.
+            stats.uncertain_pages = sum(
+                1 for num, _page in scanned_pages
+                if ocr_layout.needs_second_pass(all_blocks[num], doc[num].rect)
+            )
+            if ocr_method in {"gemini", "openrouter"}:
+                primary = {num: all_blocks[num] for num, _page in scanned_pages}
+                refined_map, refined = _refine_ocr_pages(scanned_pages, primary, ocr_method,
+                                                        api_key, vision_model)
+                if refined:
+                    for num, _page in scanned_pages:
+                        if refined_map.get(num):
+                            all_blocks[num] = _normalise_layout_blocks(refined_map[num], doc[num].rect)
+                    stats.refined_pages = refined
 
         entries = []
         for page_num, blocks in enumerate(all_blocks):
@@ -1034,10 +1402,8 @@ def translate_pdf_optimized(
         if not entries:
             raise ValueError("هیچ متن قابل ترجمه‌ای پیدا نشد. OCR را فعال کنید یا PDF را با یک OCR خارجی پردازش کنید.")
 
-        stats = PDFTranslationStats(
-            total_blocks=len(entries),
-            pages_with_text=sum(bool(blocks) for blocks in all_blocks),
-        )
+        stats.total_blocks = len(entries)
+        stats.pages_with_text = sum(bool(blocks) for blocks in all_blocks)
 
         # 2) Translate in multi-page batches. Never abort the whole document for empty blocks.
         translated, failures, first_translation_error, _tm_stats = _translate_blocks_resilient(
@@ -1073,28 +1439,23 @@ def translate_pdf_optimized(
             if page_num in skip_pages or not blocks:
                 continue
             page = doc[page_num]
-            to_replace = []
+            replacements: dict[int, str] = {}
             for idx, block in enumerate(blocks):
                 key = (page_num, idx)
                 out = translated.get(key)
-                if not out or key in failed_keys or out.strip() == str(block.get("text", "")).strip():
+                if not out or key in failed_keys:
                     continue
-                to_replace.append((idx, block, out))
+                if out.strip() == str(block.get("text", "")).strip():
+                    continue
+                replacements[idx] = out
 
-            if not to_replace:
+            if not replacements:
                 continue
 
-            # Decide once per page: inserting text changes get_text() of the page.
-            scanned_page = not page.get_text().strip()
-            for idx, block, out in to_replace:
-                ok, err = _write_text(page, block["bbox"], out, block.get("font_size", 11), target_lang, scanned_page)
-                if ok:
-                    written += 1
-                    pages_written.add(page_num)
-                else:
-                    stats.write_failures += 1
-                    if not stats.first_write_error:
-                        stats.first_write_error = f"صفحه {page_num + 1}, بلاک {idx + 1}: {err}"
+            page_written = _render_page(page, blocks, replacements, target_lang, stats)
+            if page_written:
+                written += page_written
+                pages_written.add(page_num)
 
             if progress_callback:
                 progress_callback(0.80 + 0.20 * (page_num + 1) / max(total_pages, 1), f"ساخت صفحه {page_num + 1}/{total_pages}...")
@@ -1108,7 +1469,9 @@ def translate_pdf_optimized(
         _append_pdf_attribution_page(doc, target_lang)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path, garbage=4, deflate=True, clean=True)
-        console.print(f"  ✍️ {written}/{len(entries)} بلاک نوشته شد؛ {len(failures)} بلاک ترجمه‌نشده؛ {stats.write_failures} خطای درج.")
+        console.print(f"  ✍️ {written}/{len(entries)} بلاک نوشته شد؛ {len(failures)} بلاک ترجمه‌نشده؛ "
+                      f"{stats.write_failures} خطای درج؛ {stats.covered_blocks} پوشش تصویری؛ "
+                      f"{stats.expanded_blocks} بلاک گسترده‌شده؛ {stats.refined_pages} صفحه بازبینی OCR.")
         return (output_path, stats) if return_stats else output_path
     finally:
         doc.close()

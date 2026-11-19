@@ -21,6 +21,9 @@ class ExtractedBook:
     chapters: list[dict] = field(default_factory=list)
     full_text: str = ""
     total_chars: int = 0
+    # جلد خود کتاب (اگر فایل جلد داشته باشد) تا در خروجی EPUB حفظ شود.
+    cover: bytes = b""
+    cover_mime: str = ""
 
 
 class BaseExtractor(ABC):

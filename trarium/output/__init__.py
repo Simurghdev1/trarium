@@ -33,13 +33,7 @@ def save_as_html(result, output_path: str | None = None) -> str:
     path = Path(output_path or f"{_safe_name(result.title)}_translated.html")
     path.parent.mkdir(parents=True, exist_ok=True)
     body = []
-    for section in re.split(r"\n---\s*", result.translated_text):
-        section = section.strip()
-        if not section:
-            continue
-        lines = section.split("\n", 1)
-        title = lines[0].strip().strip("-")
-        content = lines[1] if len(lines) > 1 else ""
+    for title, content in _split_sections(result.translated_text):
         paras = "".join(f"<p>{html.escape(p.strip())}</p>" for p in re.split(r"\n{2,}", content) if p.strip())
         body.append(f"<section><h2>{html.escape(title)}</h2>{paras}</section>")
     document = f'''<!doctype html>
@@ -174,6 +168,50 @@ def _reshape_for_pdf(text: str) -> str:
         return text
 
 
+def _split_sections(text: str) -> list[tuple[str, str]]:
+    """Split ``--- title ---`` sections, including the very first one.
+
+    The old pattern only matched a separator preceded by a newline, so any
+    document that *starts* with one (every web-novel and website export does)
+    collapsed into a single section and the EPUB lost its chapters.
+    """
+    normalized = "\n" + (text or "")
+    sections: list[tuple[str, str]] = []
+    for part in re.split(r"\n-{3,}\s*", normalized):
+        part = part.strip()
+        if not part:
+            continue
+        lines = part.split("\n", 1)
+        title = lines[0].strip().strip("-").strip()
+        content = lines[1] if len(lines) > 1 else ""
+        sections.append((title, content))
+    return sections
+
+
+def _cover_asset(result) -> tuple[bytes, str, str]:
+    """(data, extension, media-type) of the source cover, or empty values."""
+    data = getattr(result, "cover", b"") or b""
+    if not data:
+        return b"", "", ""
+    # Trust the bytes over the declared mime type: an EPUB may name a PNG
+    # "cover.jpg", and a wrong media-type makes readers drop the cover.
+    mime = str(getattr(result, "cover_mime", "") or "")
+    extension = ""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        extension, mime = "png", "image/png"
+    elif data[:3] == b"\xff\xd8\xff":
+        extension, mime = "jpg", "image/jpeg"
+    elif data[:4] == b"GIF8":
+        extension, mime = "gif", "image/gif"
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        extension, mime = "webp", "image/webp"
+    if not extension:
+        extension = {"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif",
+                     "image/webp": "webp", "image/svg+xml": "svg"}.get(mime, "jpg")
+        mime = mime or "image/jpeg"
+    return data, extension, mime
+
+
 def save_as_epub(result, output_path: str | None = None) -> str:
     path = Path(output_path or f"{_safe_name(result.title)}_translated.epub")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,23 +219,24 @@ def save_as_epub(result, output_path: str | None = None) -> str:
     modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     title = xml_escape(result.title or "Trarium")
 
-    sections = [s.strip() for s in re.split(r"\n---\s*", result.translated_text) if s.strip()]
-    chapters = []
-    for i, section in enumerate(sections, 1):
-        lines = section.split("\n", 1)
-        ch_title = lines[0].strip().strip("-") or f"فصل {i}"
-        content = lines[1] if len(lines) > 1 else ""
-        chapters.append((i, ch_title, content))
+    chapters = [(i, ch_title or f"فصل {i}", content)
+                for i, (ch_title, content) in enumerate(_split_sections(result.translated_text), 1)]
     chapters.append((len(chapters) + 1, ATTRIBUTION_TEXT, ""))
+    # جلد کتاب اصلی حفظ می‌شود: کتاب‌خوان بدون آن صفحهٔ اول (متن) را جلد نشان می‌دهد.
+    cover, cover_ext, cover_mime = _cover_asset(result)
+    cover_meta = '<meta name="cover" content="cover-image"/>' if cover else ""
 
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         zf.writestr("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
         manifest = ['<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>', '<item id="css" href="style.css" media-type="text/css"/>']
+        if cover:
+            manifest.append(f'<item id="cover-image" href="images/cover.{cover_ext}" media-type="{cover_mime}" properties="cover-image"/>')
+            manifest.append('<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>')
         if _FONT_PATH.exists():
             # The font file was bundled but never declared, so readers ignored @font-face.
             manifest.append('<item id="font" href="fonts/Sahel.ttf" media-type="font/ttf"/>')
-        spine = []
+        spine = ['<itemref idref="coverpage"/>'] if cover else []
         nav = []
         for i, ch_title, _ in chapters:
             href = f"chapter_{i}.xhtml"
@@ -205,12 +244,19 @@ def save_as_epub(result, output_path: str | None = None) -> str:
             spine.append(f'<itemref idref="c{i}"/>')
             nav.append(f'<li><a href="{href}">{xml_escape(ch_title)}</a></li>')
         opf = f'''<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="bookid">urn:uuid:{book_id}</dc:identifier><dc:title>{title}</dc:title><dc:language>{xml_escape(result.target_lang or 'fa')}</dc:language><meta property="dcterms:modified">{modified}</meta></metadata><manifest>{''.join(manifest)}</manifest><spine>{''.join(spine)}</spine></package>'''
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="bookid">urn:uuid:{book_id}</dc:identifier><dc:title>{title}</dc:title><dc:language>{xml_escape(result.target_lang or 'fa')}</dc:language><meta property="dcterms:modified">{modified}</meta>{cover_meta}</metadata><manifest>{''.join(manifest)}</manifest><spine>{''.join(spine)}</spine></package>'''
         zf.writestr("OEBPS/content.opf", opf)
         zf.writestr("OEBPS/style.css", "@font-face{font-family:Sahel;src:url(fonts/Sahel.ttf)}body{font-family:Sahel,Tahoma,sans-serif;direction:rtl;text-align:right;line-height:1.9;margin:1.5em}h1{text-align:center}p{margin:.6em 0}")
         zf.writestr("OEBPS/nav.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" dir="rtl"><head><title>{title}</title></head><body><nav epub:type="toc"><ol>{"".join(nav)}</ol></nav></body></html>')
         if _FONT_PATH.exists():
             zf.write(_FONT_PATH, "OEBPS/fonts/Sahel.ttf")
+        if cover:
+            zf.writestr(f"OEBPS/images/cover.{cover_ext}", cover)
+            zf.writestr("OEBPS/cover.xhtml",
+                       '<html xmlns="http://www.w3.org/1999/xhtml" dir="rtl"><head><title>'
+                       + title + '</title><link rel="stylesheet" href="style.css"/></head>'
+                       + f'<body><div style="text-align:center;margin:0;padding:0">'
+                       + f'<img src="images/cover.{cover_ext}" alt="{title}" style="max-width:100%;height:auto"/></div></body></html>')
         for i, ch_title, content in chapters:
             paras = "".join(f"<p>{xml_escape(p.strip())}</p>" for p in re.split(r"\n{2,}", content) if p.strip())
             zf.writestr(f"OEBPS/chapter_{i}.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" dir="rtl"><head><title>{xml_escape(ch_title)}</title><link rel="stylesheet" href="style.css"/></head><body><h1>{xml_escape(ch_title)}</h1>{paras}</body></html>')

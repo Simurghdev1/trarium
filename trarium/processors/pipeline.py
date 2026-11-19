@@ -45,6 +45,9 @@ class TranslationResult:
     estimated_input_tokens: int = 0
     estimated_output_tokens: int = 0
     protected_spans: int = 0
+    # جلد کتاب اصلی، تا خروجی EPUB مثل نسخهٔ قبل جلد داشته باشد.
+    cover: bytes = b""
+    cover_mime: str = ""
 
 class TranslationPipeline:
     def __init__(self, translator, target_lang="fa", chunk_size=14000, delay_between_requests=0.0,
@@ -241,4 +244,5 @@ class TranslationPipeline:
             total_chars=book.total_chars, translated_chars=len(translated_text), elapsed_seconds=time.monotonic()-started,
             failed_chunks=len(failed), cache_hits=self.stats["cache_hits"], checkpoint_hits=self.stats["checkpoint_hits"],
             api_requests=self.stats["api_requests"], estimated_input_tokens=self.stats["in_tokens"],
-            estimated_output_tokens=self.stats["out_tokens"], protected_spans=self.stats["protected_spans"])
+            estimated_output_tokens=self.stats["out_tokens"], protected_spans=self.stats["protected_spans"],
+            cover=getattr(book, "cover", b"") or b"", cover_mime=getattr(book, "cover_mime", "") or "")

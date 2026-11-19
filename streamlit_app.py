@@ -333,10 +333,10 @@ st.markdown(f'<div class="hero"><h1>🌿 Trarium</h1><p>ترجمه‌ی کتاب
 from trarium import expansion_ui
 
 (book_tab, layout_tab, web_tab, library_tab, queue_tab, site_tab, manga_tab,
- repair_tab, usage_tab) = st.tabs([
+ subtitle_tab, repair_tab, usage_tab) = st.tabs([
     "📄 ترجمه متنی", "🎨 حفظ قالب PDF", "🌐 وب‌ناول", "📚 کتابخانه",
     "🗂️ صف و تسک‌ها", "🌐 ترجمه وب‌سایت", "🖼️ افزایش کیفیت مانگا",
-    "🩺 تعمیر و تبدیل", "📊 مصرف و هزینه"])
+    "🎬 زیرنویس یوتیوب", "🩺 تعمیر و تبدیل", "📊 مصرف و هزینه"])
 
 
 
@@ -512,9 +512,14 @@ with layout_tab:
                 options = ["auto"]
                 labels = {"auto": "خودکار (PaddleOCR → Surya → EasyOCR → Vision)"}
                 gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+                ocrspace_key = os.environ.get("OCR_SPACE_API_KEY") or os.environ.get("OCRSPACE_API_KEY") or ""
+                ocrspace_key = st.text_input(
+                    "OCR.space API Key (اختیاری)", value=ocrspace_key, type="password", key="ocrspace_key",
+                    help="کلید رایگان OCR.space. با این کلید، متن و مختصات کلمه‌به‌کلمه برای جای‌گذاری دقیق برگردانده می‌شود.")
                 if _has_paddleocr(): options.append("paddleocr"); labels["paddleocr"] = "PaddleOCR"
                 if _has_surya(): options.append("surya"); labels["surya"] = "Surya"
                 if _has_easyocr(): options.append("easyocr"); labels["easyocr"] = "EasyOCR"
+                if ocrspace_key: options.append("ocrspace"); labels["ocrspace"] = "OCR.space (ابری)"
                 if api_key: options.append("openrouter"); labels["openrouter"] = "OpenRouter Vision"
                 if gemini_key: options.append("gemini"); labels["gemini"] = "Gemini Vision"
                 if _is_tesseract_installed(): options.append("tesseract"); labels["tesseract"] = "Tesseract"
@@ -570,7 +575,7 @@ with layout_tab:
                         else:
                             bar = st.progress(0.0)
                             for j, p in enumerate(analysis["scanned"], 1):
-                                result_map[p - 1] = extract_ocr_blocks(doc[p - 1], lang=ocr_lang, api_key=api_key, vision_model=OPENROUTER_VISION_MODELS["Auto (رایگان)"], ocr_method=method)
+                                result_map[p - 1] = extract_ocr_blocks(doc[p - 1], lang=ocr_lang, api_key=api_key, vision_model=OPENROUTER_VISION_MODELS["Auto (رایگان)"], ocr_method=method, ocrspace_key=ocrspace_key)
                                 bar.progress(j / len(analysis["scanned"]), text=f"OCR صفحه {p}/{analysis['total']}...")
                             bar.empty()
                         doc.close()
@@ -617,6 +622,7 @@ with layout_tab:
                     def cb(p, msg): bar.progress(min(max(p, 0), 1), text=msg)
                     _, stats = translate_pdf_optimized(path, translator, target_lang, str(out),
                                            skip_pages={p - 1 for p in skip},
+                                           ocrspace_key=st.session_state.get("ocrspace_key"),
                                            precomputed_ocr=ocr_results,
                                            enable_ocr=False,
                                            translation_workers=workers,
@@ -757,6 +763,95 @@ with repair_tab:
 with usage_tab:
     ui_panels.render_usage_tab(ui_ctx)
     expansion_ui.render_analytics_section()
+
+with subtitle_tab:
+    st.markdown("### 🎬 ترجمه زیرنویس یوتیوب")
+    st.caption("لینک ویدیو را بدهید؛ زیرنویس با کتابخانهٔ yt-dlp دانلود می‌شود و ترجمه با همان زمان‌بندی هر جمله ذخیره می‌شود. اگر فایل زیرنویس را خودتان دارید، از بخش «فایل آماده» استفاده کنید.")
+    from trarium.subtitles import read_subtitles
+    from trarium.yt_subtitles import (YouTubeSubtitleError, download_subtitle,
+                                      list_subtitle_tracks, translate_subtitle_document)
+
+    yt_url = st.text_input("لینک ویدیوی یوتیوب", placeholder="https://www.youtube.com/watch?v=...", key="yt_url")
+    yt_c1, yt_c2 = st.columns(2)
+    with yt_c1:
+        yt_lang = st.text_input("کد زبان زیرنویس (خالی = خودکار)", value="", key="yt_lang",
+                                placeholder="en یا fa")
+    with yt_c2:
+        yt_browser = st.selectbox("کوکی از مرورگر (اگر یوتیوب ورود خواست)",
+                                  ["", "chrome", "firefox", "edge", "brave"], key="yt_browser")
+    yt_cookies = st.file_uploader("یا فایل cookies.txt (اختیاری)", type=["txt"], key="yt_cookies")
+    yt_ready = st.file_uploader("یا فایل زیرنویس آماده (SRT/VTT/ASS)",
+                                type=["srt", "vtt", "ass", "ssa", "sbv", "lrc", "sub"], key="yt_ready")
+
+    cookies_path = ""
+    if yt_cookies is not None:
+        cookies_path = str(Path(tempfile.gettempdir()) / f"trarium_yt_cookies_{hashlib.sha1(yt_cookies.getvalue()).hexdigest()[:8]}.txt")
+        Path(cookies_path).write_bytes(yt_cookies.getvalue())
+
+    def _yt_translate_callable():
+        translator = _resolve_translator(project="youtube-subtitles")
+        if use_cache and not isinstance(translator, (FallbackTranslator,)):
+            translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
+        pipeline = TranslationPipeline(translator, target_lang, chunk_size, delay, workers=1,
+                                       safe_optimization=safe_opt, protect_nontranslatable=protect_spans,
+                                       use_checkpoint=use_checkpoint, translation_memory=use_cache,
+                                       adaptive_batch=adaptive_batch, short_prompt=short_prompt)
+        return pipeline.translate_block
+
+    yt_b1, yt_b2 = st.columns(2)
+    with yt_b1:
+        if st.button("🔎 دیدن زیرنویس‌های موجود", key="yt_list") and yt_url.strip():
+            try:
+                with st.spinner("در حال بررسی ویدیو..."):
+                    tracks, video_id, video_title = list_subtitle_tracks(
+                        yt_url.strip(), cookies_file=cookies_path or None,
+                        browser=yt_browser or None)
+                st.success(f"{video_title or video_id} — {len(tracks)} زیرنویس پیدا شد.")
+                st.dataframe(tracks, use_container_width=True, hide_index=True)
+            except YouTubeSubtitleError as exc:
+                st.error(f"❌ {exc}")
+            except Exception as exc:
+                st.error(f"❌ {exc}")
+    with yt_b2:
+        start_yt = st.button("⬇️ دانلود و ترجمه زیرنویس", type="primary", key="yt_run")
+    if start_yt and (yt_url.strip() or yt_ready is not None):
+        if not api_key:
+            st.error("API Key لازم است.")
+        else:
+            try:
+                with st.spinner("در حال دانلود و ترجمه زیرنویس..."):
+                    if yt_ready is not None:
+                        suffix = Path(yt_ready.name).suffix.lower() or ".srt"
+                        local = Path(tempfile.gettempdir()) / f"trarium_yt_upload_{hashlib.sha1(yt_ready.getvalue()).hexdigest()[:8]}{suffix}"
+                        local.write_bytes(yt_ready.getvalue())
+                        track_title = Path(yt_ready.name).stem
+                        track_kind = " uploaded"
+                    else:
+                        track = download_subtitle(yt_url.strip(), language=yt_lang.strip(),
+                                                  cookies_file=cookies_path or None,
+                                                  browser=yt_browser or None)
+                        local, track_title, track_kind = track.path, track.title or track.video_id, track.kind
+                    document = read_subtitles(local)
+                    if document is None:
+                        raise YouTubeSubtitleError("ساختار فایل زیرنویس خوانا نبود.")
+                    bar = st.progress(0.0)
+                    texts = translate_subtitle_document(
+                        document, _yt_translate_callable(),
+                        progress=lambda done, total: bar.progress(min(1.0, done / max(total, 1)),
+                                                                  text=f"بخش {done}/{total}"))
+                    bar.empty()
+                    payload = document.render(texts).encode("utf-8")
+                    st.session_state["yt_result"] = (payload, f"{_safe_name(track_title)[:60]}_{target_lang}{local.suffix.lower() or '.srt'}")
+                st.success(f"✅ زیرنویس ترجمه شد ({track_kind}).")
+                st.caption("زمان‌بندی هر جمله دست‌نخورده ماند؛ فقط متن عوض شد.")
+            except YouTubeSubtitleError as exc:
+                st.error(f"❌ {exc}")
+            except Exception as exc:
+                st.error(f"❌ {exc}")
+    if st.session_state.get("yt_result"):
+        payload, filename = st.session_state["yt_result"]
+        st.download_button("⬇️ دانلود زیرنویس ترجمه‌شده", payload, filename,
+                           "text/plain; charset=utf-8", type="primary", key="yt_download")
 
 st.divider()
 st.caption("Trarium — OCR اختیاری • ترجمه مقاوم • حفظ قالب PDF • تسک پس‌زمینه • فونت Sahel")
