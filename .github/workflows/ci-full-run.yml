@@ -64,7 +64,7 @@ jobs:
           mkdir -p ../out
           set +e
           python qa/run_undine_test.py --input "../ci/ci_run/inputs/Undine_Trarium_Test_6_Pages.pdf" --outdir ../out/undine_6p --style plain --qc-repair 2>&1 | tee ../out/undine_6p.log
-          python qa/run_undine_test.py --input "../ci/ci_run/inputs/Josep Moore - Mangas ENG.pdf" --outdir ../out/manga --ocr-pages 1-16 --style plain --qc-repair 2>&1 | tee ../out/manga.log
+          python qa/run_undine_test.py --input "../ci/ci_run/inputs/Josep Moore - Mangas ENG.pdf" --outdir ../out/manga --ocr-pages 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 --style plain --qc-repair 2>&1 | tee ../out/manga.log
           true
       - uses: actions/upload-artifact@v4
         if: always()
