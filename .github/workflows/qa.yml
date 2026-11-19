@@ -71,6 +71,42 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  real-translation:
+    name: Real translation (OpenRouter secret)
+    runs-on: ubuntu-latest
+    # Only on demand: this job spends API credits, so a normal push must not trigger it.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest requests tiktoken
+      - name: Translate the fixture PDF
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TRARIUM_MODEL: google/gemini-2.5-flash-lite
+          TRARIUM_HOME: ${{ runner.temp }}/trarium-home
+        run: |
+          set -o pipefail
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "No OPENROUTER_API_KEY secret is configured; skipping the real translation." | tee real-translation.log
+            exit 0
+          fi
+          python qa/real_translation.py qa/fixtures/en_source.pdf real-out/en_source_fa.pdf fa 2>&1 | tee real-translation.log
+      - name: Upload the translated PDF
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trarium-real-translation
+          path: |
+            real-out/**
+            real-translation.log
+          if-no-files-found: warn
+          retention-days: 30
+
   qa-suite:
     name: End-to-end QA (mock provider, no API key)
     runs-on: ubuntu-latest
