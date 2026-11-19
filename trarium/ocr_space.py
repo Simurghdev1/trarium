@@ -235,12 +235,21 @@ def merge_lines(blocks: list[dict], gap_factor: float = 1.35, max_lines: int = 4
             prev = merged[-1]
             px0, py0, px1, py1 = prev["bbox"]
             x0, y0, x1, y1 = entry["bbox"]
+            last = prev["lines"][-1]["bbox"]
+            last_h = max(1.0, last[3] - last[1])
+            this_h = max(1.0, y1 - y0)
             height = max(1.0, py1 - py0)
             overlap = min(px1, x1) - max(px0, x0)
             width = max(1.0, min(px1 - px0, x1 - x0))
             same_column = overlap > 0.5 * width
-            close = -0.2 * height <= (y0 - py1) <= gap_factor * height
-            if same_column and close and len(prev["lines"]) < max_lines:
+            # OCR.space pads a line box downwards, so two lines of one title often
+            # overlap by a third of a line; that is still the next line, not a
+            # different block. Rejecting it split a three-line manga title.
+            close = -0.6 * min(last_h, this_h) <= (y0 - last[3]) <= gap_factor * height
+            # A line two times taller is a different text (the artwork lettering
+            # under a printed title); merging them glued the title to the artwork.
+            same_size = max(last_h, this_h) / min(last_h, this_h) <= 1.8
+            if same_column and close and same_size and len(prev["lines"]) < max_lines:
                 prev["bbox"] = (min(px0, x0), min(py0, y0), max(px1, x1), max(py1, y1))
                 joiner = "" if _is_cjk(prev["lines"][-1]["text"][-1:]) else " "
                 prev["text"] = prev["text"] + joiner + entry["text"]

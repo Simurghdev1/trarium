@@ -1024,7 +1024,15 @@ def _fill_paper(page, rect, band: float = 6.0) -> None:
     import pymupdf
 
     box = pymupdf.Rect(rect)
+    # Neighbouring bands of the same colour are drawn as one rectangle: on a
+    # white page thirteen touching strips showed their seams as grey lines.
+    runs: list[list] = []
     for y0, y1, _, _, colour in _paper_bands(page, rect, band):
+        if runs and max(abs(a - b) for a, b in zip(runs[-1][2], colour)) <= 3:
+            runs[-1][1] = y1
+        else:
+            runs.append([y0, y1, colour])
+    for y0, y1, colour in runs:
         color = tuple(v / 255.0 for v in colour)
         page.draw_rect(pymupdf.Rect(box.x0, y0, box.x1, y1 + 0.4), color=None, fill=color, width=0, overlay=True)
 
@@ -1287,6 +1295,25 @@ def _grow_light_box(page, rect, vertical_limit: float = 2.2, horizontal_limit: f
     return grown if not grown.is_empty else rect
 
 
+def _centred_growth(cover, grown):
+    """Keep a grown writing box centred on the source text.
+
+    The translation is written from the top of its box. A title with blank
+    paper above it grew mostly upwards, so the Persian landed at the very top
+    of the page, far above the erased English (Josep Moore p12). The box may
+    still grow, but no further up than it grew down (a quarter line at least).
+    """
+    import pymupdf
+
+    cover = pymupdf.Rect(cover)
+    grown = pymupdf.Rect(grown)
+    down = max(0.0, grown.y1 - cover.y1)
+    up_allowed = max(down, cover.height * 0.25)
+    top = max(grown.y0, cover.y0 - up_allowed)
+    out = pymupdf.Rect(grown.x0, min(top, cover.y0), grown.x1, grown.y1)
+    return out if not out.is_empty else cover
+
+
 def _base_size(original_size: float, size_cap: float | None) -> float:
     """The size a block is set at before anything is measured.
 
@@ -1382,7 +1409,7 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
         if planned is not None and not planned.is_empty:
             inset = planned
         else:
-            inset = _grow_light_box(page, cover_box)
+            inset = _centred_growth(cover_box, _grow_light_box(page, cover_box))
     else:
         inset = planned if (planned is not None and not planned.is_empty) else _expand_rect(rect, page_rect, text, float(original_size or 11))
     # On a scan the letters are printed inside the page image, so the box has to
