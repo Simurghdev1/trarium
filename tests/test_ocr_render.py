@@ -114,6 +114,38 @@ def _beige_scan(path: Path) -> list[tuple[float, float, float, float]]:
     return boxes
 
 
+def _faint_heading_scan(path: Path) -> list[tuple[float, float, float, float]]:
+    """Light-grey, letter-spaced heading like "T E L L E T H OF A WEDDING"."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=560)
+    image = Image.new("RGB", (800, 1120), (246, 239, 219))
+    draw = ImageDraw.Draw(image)
+    boxes = []
+    for row, width in ((60, 250),):
+        for step in range(0, width, 14):
+            draw.rectangle([row * 2 + step * 2, 140, row * 2 + step * 2 + 7, 152],
+                           fill=(215, 208, 196))
+        boxes.append((row, 68, row + width, 78))
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    page.insert_image(page.rect, stream=buffer.getvalue())
+    # No text layer on purpose: the engine redacts the source text before it
+    # repairs pixels, so this box shows only what the scan itself contains.
+    doc.save(path)
+    doc.close()
+    return boxes
+
+
+def _faint_ratio(array: np.ndarray, box, page, dpi: int, cutoff: float = 228.0) -> float:
+    scale = array.shape[1] / page.rect.width
+    x0, y0 = int(box[0] * scale), int(box[1] * scale)
+    x1, y1 = int(box[2] * scale), int(box[3] * scale)
+    region = array[max(0, y0):y1, max(0, x0):x1]
+    if region.size == 0:
+        return 0.0
+    return float((region.mean(axis=2) < cutoff).mean())
+
+
 def _dark_photo(path: Path) -> None:
     """A dark photograph with a vector caption on top: art must survive."""
     doc = pymupdf.open()
@@ -214,6 +246,22 @@ class LayoutWriterTests(unittest.TestCase):
             finally:
                 source_doc.close()
                 output_doc.close()
+
+    def test_faint_grey_heading_is_still_erased(self):
+        """A light letter-spaced heading used to stay visible under the Persian."""
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "faint.pdf"
+            boxes = _faint_heading_scan(src)
+            doc = pymupdf.open(str(src))
+            try:
+                before, after = _patched(doc, boxes)
+                ratio_before = sum(_faint_ratio(before, box, doc[0], 100) for box in boxes)
+                ratio_after = sum(_faint_ratio(after, box, doc[0], 100) for box in boxes)
+            finally:
+                doc.close()
+            self.assertGreater(ratio_before, 0.02, "fixture has no visible heading")
+            self.assertLess(ratio_after, ratio_before * 0.25,
+                            "the faint English heading is still visible after the repair")
 
     def test_caption_on_a_dark_photo_is_replaced_without_damaging_the_photo(self):
         with tempfile.TemporaryDirectory() as td:

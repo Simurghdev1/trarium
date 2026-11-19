@@ -908,23 +908,74 @@ def _word_blocks_fallback(page) -> list[dict]:
     return _normalise_layout_blocks(lines, page.rect)
 
 
+def _repair_letter_spacing(text: str, chars: list[dict], size: float) -> str:
+    """Rebuild letter-spaced headings from the real character positions.
+
+    Old books set headings as ``T E L L E T H  OF  A  WEDDING``.  The text
+    layer then contains those spaces literally, so a translator sees single
+    letters instead of words and returns them untouched - the heading stayed
+    English under the Persian, or came back as garbage.  Character boxes still
+    say which gaps are letterspacing (small, or a narrow space glyph) and which
+    are word breaks (wide), so the words can be restored exactly.
+    """
+    tokens = text.split()
+    if len(tokens) < 3 or not chars:
+        return text
+    singles = sum(1 for token in tokens if len(token) == 1 and token.isalpha())
+    if singles < max(2, len(tokens) // 3):
+        return text
+    if any(ord(ch) > 0x058F or ord(ch) < 0x20 for ch in text):
+        return text  # non-Latin scripts use their own shaping and space rules
+    size = max(4.0, float(size or 12.0))
+    # In a letter-spaced heading the space glyphs are all the same width, so
+    # their width says nothing; the distance between the end of one glyph and
+    # the start of the next does (about 2pt inside a word, 8-12pt between
+    # words).  Only such headings reach this branch, so a wide threshold is safe.
+    word_gap = 0.45 * size
+    out: list[str] = []
+    previous_x1 = None
+    for char in chars:
+        value = str(char.get("c", ""))
+        if not value or value.isspace():
+            continue  # spacing is measured from the glyph boxes below
+        bbox = char.get("bbox") or (0, 0, 0, 0)
+        x0, x1 = float(bbox[0]), float(bbox[2])
+        if previous_x1 is not None and (x0 - previous_x1) > word_gap:
+            out.append(" ")
+        out.append(value)
+        previous_x1 = x1
+    repaired = re.sub(r"\s+", " ", "".join(out)).strip()
+    return repaired or text
+
+
 def extract_text_blocks(page, strict: bool = False) -> list[dict]:
     """Extract native/OCR text-layer blocks. Falls back to words for OCR-generated PDFs."""
     import pymupdf
     data = page.get_text("dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
+    try:
+        detailed = page.get_text("rawdict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE)
+    except Exception:
+        detailed = {}
     blocks=[]
-    for block in data.get("blocks", []):
+    for block_index, block in enumerate(data.get("blocks", [])):
         if block.get("type", 0) != 0:
             continue
+        rich_block = (detailed.get("blocks") or [{}])[block_index] if detailed else {}
         text_parts=[]; sizes=[]
-        for line in block.get("lines", []):
+        for line_index, line in enumerate(block.get("lines", [])):
+            rich_lines = rich_block.get("lines") or []
+            rich_line = rich_lines[line_index] if line_index < len(rich_lines) else {}
             parts=[]
-            for span in line.get("spans", []):
+            for span_index, span in enumerate(line.get("spans", [])):
                 value=str(span.get("text", "") or "")
+                try: span_size = float(span.get("size", 12))
+                except Exception: span_size = 12.0
+                rich_spans = rich_line.get("spans") or []
+                if value and span_index < len(rich_spans):
+                    value = _repair_letter_spacing(value, rich_spans[span_index].get("chars") or [], span_size)
                 if value:
                     parts.append(value)
-                try: sizes.append(float(span.get("size",12)))
-                except Exception: pass
+                sizes.append(span_size)
             line_text="".join(parts).strip()
             if line_text: text_parts.append(line_text)
         text=" ".join(text_parts).strip()
@@ -1042,6 +1093,39 @@ def _cover_bands(array, scale, page_rect, rect, font_size: float = 11.0):
     return cells
 
 
+def _glyph_mask(luminance, min_ink: float = 0.004):
+    """Pixels of printed text inside a box, robust to faint, light-grey print.
+
+    The strict cutoff (``min(paper*0.6, paper-40)``) handles normal body text
+    but misses two real cases: letter-spaced headings drawn in light grey, and
+    faded scans whose ink never gets 40 levels below the paper.  There the
+    strict mask is almost empty and the English stayed visible under the
+    Persian.  When that happens, half-way between the paper and the darkest
+    pixel of the box still separates glyph from paper, and a line of text only
+    covers a few percent of its box - so the faint mask is accepted only while
+    it stays text-like.
+    """
+    import numpy as np
+
+    paper = float(np.percentile(luminance, 85))
+    if paper < 60.0:
+        return None, paper  # no bright paper here: illustration, not text
+    cutoff = min(paper * 0.60, paper - 40.0)
+    glyphs = luminance < cutoff
+    if float(glyphs.mean()) >= min_ink:
+        return glyphs, paper
+    darkest = float(np.percentile(luminance, 2))
+    if paper - darkest >= 10.0:
+        # Start just below the paper, not half-way to the darkest pixel: the
+        # soft halo around faint print is only a few levels deep, and leaving
+        # it behind left a smudge where the English used to be.
+        faint = luminance < (paper - 9.0)
+        share = float(faint.mean())
+        if min_ink <= share <= 0.35:
+            return faint, paper
+    return glyphs, paper
+
+
 def _raster_has_glyphs(array, scale, page_rect, rect, min_ink: float = 0.004) -> bool:
     """Do the page pixels under this box contain printed-looking glyphs?
 
@@ -1063,9 +1147,10 @@ def _raster_has_glyphs(array, scale, page_rect, rect, min_ink: float = 0.004) ->
     # A fixed 128 threshold fails on mid-tone artwork: a blue cover is itself
     # below it and the whole box looked like ink.  Compare against the brightest
     # part of the box instead, the same way the pixel repair classifies glyphs.
-    bright = float(np.percentile(gray, 85))
-    cutoff = min(bright * 0.60, bright - 40.0)
-    ink = float((gray < cutoff).mean())
+    glyphs, bright = _glyph_mask(gray, min_ink)
+    if glyphs is None:
+        return False
+    ink = float(glyphs.mean())
     # Erase only when some pixels really are much darker than the rest of the
     # box; a uniformly dark photograph has no such contrast and is left alone.
     # A caption printed on a photo *is* erased: replacing it with the
@@ -1112,14 +1197,12 @@ def _patch_raster_glyphs(page, boxes, dpi: int = 150, max_side: int = 2200) -> b
         if region.size == 0:
             continue
         luminance = region.astype(np.float32).mean(axis=2)
-        paper = float(np.percentile(luminance, 85))
-        if paper < 60.0:
+        glyphs, _paper = _glyph_mask(luminance)
+        if glyphs is None:
             continue  # no bright paper here: probably an illustration, not text
         scanned_box = True
         # A fixed ratio fails on artwork: a mid-tone background can sit just
         # under the threshold and the whole box would be treated as glyph.
-        cutoff = min(paper * 0.60, paper - 40.0)
-        glyphs = luminance < cutoff
         if glyphs.mean() > 0.70:
             continue  # almost everything is dark: not a text line
         mask[y0:y1, x0:x1] |= glyphs
@@ -1129,13 +1212,14 @@ def _patch_raster_glyphs(page, boxes, dpi: int = 150, max_side: int = 2200) -> b
         # would paint a rectangle where there is nothing to clean.
         return scanned_box
 
-    # Grow the mask by one pixel so antialiased edges disappear with the glyph.
-    grown = mask.copy()
-    grown[1:, :] |= mask[:-1, :]
-    grown[:-1, :] |= mask[1:, :]
-    grown[:, 1:] |= mask[:, :-1]
-    grown[:, :-1] |= mask[:, 1:]
-    mask = grown
+    # Grow the mask by two pixels: the soft halo around faint print fades out
+    # slowly, and one pixel of growth left a visible smudge behind.
+    for _ in range(2):
+        previous = mask.copy()
+        mask[1:, :] |= previous[:-1, :]
+        mask[:-1, :] |= previous[1:, :]
+        mask[:, 1:] |= previous[:, :-1]
+        mask[:, :-1] |= previous[:, 1:]
 
     # Diffusion fill: every pass paints the masked pixels that already have a
     # known neighbour and marks them known, so the paper colour spreads into the
