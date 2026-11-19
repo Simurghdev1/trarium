@@ -14,6 +14,11 @@ import os
 import sys
 from pathlib import Path
 
+# Run from the repository root even though this file lives in qa/.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 def main() -> int:
     if len(sys.argv) < 3:
