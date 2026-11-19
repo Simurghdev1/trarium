@@ -1295,6 +1295,26 @@ def _grow_light_box(page, rect, vertical_limit: float = 2.2, horizontal_limit: f
     return grown if not grown.is_empty else rect
 
 
+def _centre_on(box, cover, text: str, size: float):
+    """Shrink ``box`` to the measured text height, centred on ``cover``."""
+    import pymupdf
+    from trarium.pdf_layout import load_font, measure
+
+    box = pymupdf.Rect(box)
+    font = load_font(str(_FONT_PATH))
+    if font is None:
+        return box
+    try:
+        need = measure(str(text or ""), font, size, max(4.0, box.width - 1.5)).height + 3.0
+    except Exception:
+        return box
+    if need >= box.height:
+        return box
+    centre = (cover.y0 + cover.y1) / 2.0
+    top = min(max(box.y0, centre - need / 2.0), box.y1 - need)
+    return pymupdf.Rect(box.x0, top, box.x1, top + need)
+
+
 def _centred_growth(cover, grown):
     """Keep a grown writing box centred on the source text.
 
@@ -1418,9 +1438,17 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
     cover_fill = None
     base_size = float(planned_size) if planned_size else _base_size(original_size, size_cap)
     if scanned and not planned_size:
+        if lines and len(lines) >= 2:
+            # A printed title on a scan: start from the height of its own lines,
+            # not the body-text cap, or a 25pt heading comes out at 11pt.
+            heights = sorted(max(1.0, l["bbox"][3] - l["bbox"][1]) for l in lines)
+            base_size = max(base_size, min(heights[len(heights) // 2] * 0.8, 30.0))
         # Measured before the dry run, so a tight scanned box is not rejected by
         # the preflight only because the source size was too large.
         base_size = _fit_text_size(text, inset, base_size, min_size=6.5)
+        # The writer fills its box from the top; a box that grew around the
+        # source put the Persian above the erased English. Centre it on it.
+        inset = _centre_on(inset, cover_box, text, base_size)
     fits,_=_preflight_htmlbox(inset,text,base_size,target_lang,page_rect)
     if not fits:
         return False,"متن ترجمه داخل محدوده صفحه جا نشد"
