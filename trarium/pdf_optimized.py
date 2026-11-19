@@ -904,24 +904,25 @@ def _sample_background(page, rect) -> tuple[float, float, float]:
         return (1.0, 1.0, 1.0)
 
 
-def _fill_paper(page, rect, band: float = 6.0) -> None:
-    """Cover a text box with the paper it sits on, band by band.
+def _paper_bands(page, rect, band: float = 6.0) -> list[tuple]:
+    """Paper colour just left and right of a text box, one sample per thin band.
 
-    One flat rectangle shows its own edge on a gradient page, so each thin band
-    takes the colour of the paper just outside the text at that height.
+    Returns (y0, y1, spread, paper, colour) per band: ``spread`` is how far the
+    left and right paper samples disagree (0-255), ``paper`` the colour without
+    ink pixels, ``colour`` the fill used for the cover.
     """
     import pymupdf
 
     box = pymupdf.Rect(rect)
     if box.is_empty:
-        return
+        return []
     clip = pymupdf.Rect(max(page.rect.x0, box.x0 - 14), max(page.rect.y0, box.y0 - 4),
                         min(page.rect.x1, box.x1 + 14), min(page.rect.y1, box.y1 + 4))
     dpi = 36
     try:
         pix = page.get_pixmap(clip=clip, dpi=dpi)
     except Exception:
-        return
+        return []
     scale = dpi / 72.0
     width, height, n = pix.width, pix.height, pix.n
     margin = max(2, int(round(6 * scale)))
@@ -929,6 +930,10 @@ def _fill_paper(page, rect, band: float = 6.0) -> None:
     right_x1 = width - margin
     right_x0 = max(left_x1 + 1, right_x1 - max(2, int(round(8 * scale))))
 
+    def _median(row):
+        return tuple(sorted(channel)[len(row) // 2] for channel in zip(*row))
+
+    bands = []
     steps = max(1, int(round(box.height / band)))
     for step in range(steps):
         y0 = box.y0 + step * band
@@ -938,16 +943,89 @@ def _fill_paper(page, rect, band: float = 6.0) -> None:
         py = int(round((y0 - clip.y0) * scale)) + 1
         if py < 1 or py >= height - 1:
             continue
-        row = []
-        for x in range(left_x0, left_x1):
+        left, right = [], []
+        for x in range(left_x0, min(left_x1, width)):
             offset = (py * width + x) * n
-            row.append((pix.samples[offset], pix.samples[offset + 1], pix.samples[offset + 2]))
-        for x in range(right_x0, right_x1):
+            left.append((pix.samples[offset], pix.samples[offset + 1], pix.samples[offset + 2]))
+        for x in range(max(0, right_x0), right_x1):
             offset = (py * width + x) * n
-            row.append((pix.samples[offset], pix.samples[offset + 1], pix.samples[offset + 2]))
+            right.append((pix.samples[offset], pix.samples[offset + 1], pix.samples[offset + 2]))
+        row = left + right
         if not row:
             continue
-        color = tuple(sorted(channel)[len(row) // 2] / 255.0 for channel in zip(*row))
+        # Ink (black letters, outlines) is ignored when judging the paper: a
+        # neighbouring line of bold text must not make plain paper look busy.
+        left_p = [px for px in left if max(px) > 90]
+        right_p = [px for px in right if max(px) > 90]
+        spread = 0
+        if left_p and right_p:
+            ml, mr = _median(left_p), _median(right_p)
+            spread = max(abs(ml[i] - mr[i]) for i in range(3))
+        paper = left_p + right_p
+        bands.append((y0, y1, spread, _median(paper) if paper else None, _median(row)))
+    return bands
+
+
+def _light_share(page, rect) -> float:
+    """Share of near-white, colourless pixels inside a box (paper or bubble)."""
+    import pymupdf
+
+    try:
+        pix = page.get_pixmap(clip=pymupdf.Rect(rect) & page.rect, dpi=72)
+    except Exception:
+        return 1.0
+    n, samples = pix.n, pix.samples
+    total = light = 0
+    for k in range(0, len(samples) - 2, n):
+        r, g, b = samples[k], samples[k + 1], samples[k + 2]
+        total += 1
+        if min(r, g, b) >= 200 and max(r, g, b) - min(r, g, b) < 40:
+            light += 1
+    return light / total if total else 1.0
+
+
+def _is_plain_paper(page, rect, tolerance: int = 60) -> bool:
+    """True when a box sits on plain paper or inside a bubble, not on artwork.
+
+    Covering a box band by band only works on paper: on an illustration every
+    band takes a different colour and the cover turns into coloured stripes
+    across the drawing (Josep Moore, pages 10-12). Such a box is left exactly
+    as it was. A box whose surroundings look busy but whose inside is mostly
+    white (a bubble drawn next to a picture) is still plain.
+    """
+    bands = _paper_bands(page, rect)
+    if not bands:
+        return True
+    busy = False
+    # One band hitting an anti-aliased letter edge is noise; artwork disagrees
+    # on many bands at once.
+    bad = sum(1 for b in bands if b[2] > tolerance)
+    if bad >= max(2, 0.34 * len(bands)):
+        busy = True
+    colours = [b[3] for b in bands if b[3] is not None]
+    if not busy and len(colours) >= 3:
+        lo_i, hi_i = int(len(colours) * 0.15), int(len(colours) * 0.85)
+        for c in range(3):
+            values = sorted(col[c] for col in colours)
+            if values[min(hi_i, len(values) - 1)] - values[lo_i] > tolerance:
+                busy = True
+                break
+    if not busy:
+        return True
+    return _light_share(page, rect) >= 0.55
+
+
+def _fill_paper(page, rect, band: float = 6.0) -> None:
+    """Cover a text box with the paper it sits on, band by band.
+
+    One flat rectangle shows its own edge on a gradient page, so each thin band
+    takes the colour of the paper just outside the text at that height.
+    """
+    import pymupdf
+
+    box = pymupdf.Rect(rect)
+    for y0, y1, _, _, colour in _paper_bands(page, rect, band):
+        color = tuple(v / 255.0 for v in colour)
         page.draw_rect(pymupdf.Rect(box.x0, y0, box.x1, y1 + 0.4), color=None, fill=color, width=0, overlay=True)
 
 
@@ -1658,6 +1736,11 @@ def translate_pdf_optimized(
                 if artwork and _block_on_artwork(page, block["bbox"], artwork):
                     # Text printed on top of an illustration: translating it would
                     # cover the drawing while the original letters stay in the image.
+                    stats.skipped_artwork += 1
+                    continue
+                if scanned_page and skip_text_on_image and not _is_plain_paper(page, block["bbox"]):
+                    # The scan's own picture is under this box: a paper-colour
+                    # cover would paint stripes across the drawing.
                     stats.skipped_artwork += 1
                     continue
                 keep.append((idx, block, out))
