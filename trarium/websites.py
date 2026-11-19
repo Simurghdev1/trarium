@@ -20,6 +20,7 @@ import requests
 from bs4 import BeautifulSoup, NavigableString
 
 from trarium.cache import TranslationCache, normalize_cache_text
+from trarium.netguard import BlockedURLError, assert_public_url, safe_get
 
 USER_AGENT = "Trarium/2.19.0 (local translation app)"
 BLOCK_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "figcaption",
@@ -157,6 +158,13 @@ def normalize_url(url: str) -> str:
     return urldefrag(value)[0]
 
 
+def _guard(url: str) -> None:
+    try:
+        assert_public_url(url)
+    except BlockedURLError as exc:
+        raise WebsiteError(str(exc)) from exc
+
+
 def html_to_text(html: str) -> str:
     soup = BeautifulSoup(html or "", "lxml")
     for tag in soup.find_all(["script", "style", "noscript"]):
@@ -176,13 +184,13 @@ def robots_allowed(url: str, *, timeout: float = 8.0) -> tuple[bool, str]:
         parser = urllib.robotparser.RobotFileParser()
         parser.set_url(base + "/robots.txt")
         try:
-            response = requests.get(base + "/robots.txt", timeout=timeout,
-                                    headers={"User-Agent": USER_AGENT})
+            response = safe_get(base + "/robots.txt", timeout=timeout, same_host=True,
+                                headers={"User-Agent": USER_AGENT})
             if response.status_code >= 400:
                 parser = None
             else:
                 parser.parse(response.text.splitlines())
-        except requests.RequestException:
+        except (requests.RequestException, BlockedURLError):
             parser = None
         _robots_cache[base] = parser
     parser = _robots_cache[base]
@@ -193,6 +201,7 @@ def robots_allowed(url: str, *, timeout: float = 8.0) -> tuple[bool, str]:
 
 
 def fetch_html(url: str, *, allow_browser: bool = False, timeout: float = 25.0) -> str:
+    _guard(url)
     if allow_browser:
         try:
             from trarium.novel.scraper import fetch_page
@@ -200,9 +209,11 @@ def fetch_html(url: str, *, allow_browser: bool = False, timeout: float = 25.0) 
         except Exception as exc:
             raise WebsiteError(f"دریافت با مرورگر ناموفق بود: {exc}") from exc
     try:
-        response = requests.get(url, timeout=timeout, allow_redirects=True,
-                                headers={"User-Agent": USER_AGENT,
-                                         "Accept": "text/html,application/xhtml+xml"})
+        response = safe_get(url, timeout=timeout, same_host=True,
+                            headers={"User-Agent": USER_AGENT,
+                                     "Accept": "text/html,application/xhtml+xml"})
+    except BlockedURLError as exc:
+        raise WebsiteError(str(exc)) from exc
     except requests.RequestException as exc:
         raise WebsiteError(f"اتصال برقرار نشد: {exc}") from exc
     if response.status_code in (401, 403):
@@ -394,6 +405,7 @@ def translate_site(start_url: str, translator, target_lang: str = "fa", *, max_p
                    job_id: str = "", max_chars: int = 3000,
                    page_cache_dir: str | Path | None = None) -> WebsiteResult:
     start = normalize_url(start_url)
+    _guard(start)
     root = urlparse(start)
     allowed, reason = robots_allowed(start)
     if not allowed:

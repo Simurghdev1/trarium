@@ -1029,6 +1029,66 @@ def _fill_paper(page, rect, band: float = 6.0) -> None:
         page.draw_rect(pymupdf.Rect(box.x0, y0, box.x1, y1 + 0.4), color=None, fill=color, width=0, overlay=True)
 
 
+def _close_cut_ink(page, rect, max_ratio: float = 0.9, dpi: int = 96):
+    """Grow a cover box over a text line it cuts in half.
+
+    Vision-OCR boxes are guesses: on Josep Moore p12 the title box ended in the
+    middle of the next English line, so the top half of that line was covered
+    and the bottom half stayed visible as a broken stripe. When the row right at
+    the box edge has ink and a clean (ink-free) row is reached within
+    ``max_ratio`` x box height, the box is extended to that clean row. If no clean
+    row comes (artwork) or the strip is not paper, the box is left unchanged.
+    """
+    import pymupdf
+
+    box = pymupdf.Rect(rect) & page.rect
+    if box.is_empty or box.height <= 0:
+        return box
+    ext = box.height * max_ratio
+    clip = pymupdf.Rect(box.x0, max(page.rect.y0, box.y0 - ext), box.x1,
+                        min(page.rect.y1, box.y1 + ext))
+    try:
+        pix = page.get_pixmap(clip=clip, dpi=dpi)
+    except Exception:
+        return box
+    w, h, n, sm = pix.width, pix.height, pix.n, pix.samples
+    if not w or not h:
+        return box
+    scale = h / clip.height
+
+    def row_ink(r: int) -> bool:
+        base = r * pix.stride
+        dark = 0
+        for k in range(base, base + w * n - 2, n):
+            if min(sm[k], sm[k + 1], sm[k + 2]) < 110:
+                dark += 1
+                if dark >= 2:
+                    return True
+        return False
+
+    def to_row(y: float) -> int:
+        return max(0, min(h - 1, int((y - clip.y0) * scale)))
+
+    new = pymupdf.Rect(box)
+    r = to_row(box.y1 + 2)
+    if row_ink(r):
+        while r < h - 1 and row_ink(r):
+            r += 1
+        if r < h - 1:
+            strip = pymupdf.Rect(box.x0, box.y1, box.x1, clip.y0 + r / scale + 1)
+            if _is_plain_paper(page, strip):
+                new.y1 = strip.y1
+    r = to_row(box.y0 - 1.5)
+    if row_ink(r):
+        while r > 0 and row_ink(r):
+            r -= 1
+        if r > 0:
+            strip = pymupdf.Rect(box.x0, clip.y0 + r / scale - 1, box.x1, box.y0)
+            if _is_plain_paper(page, strip):
+                new.y0 = strip.y0
+    return new & page.rect
+
+
 def _artwork_rects(page, min_cover: float = 0.7) -> list:
     """Image boxes that are artwork, not the page's own background scan."""
     import pymupdf
@@ -1353,6 +1413,7 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
                 # an uncovered sliver of the original line looks like a broken rule.
                 pad = pymupdf.Rect(cover_box.x0 - 1, cover_box.y0 - 1.5, cover_box.x1 + 1, cover_box.y1 + 2)
                 pad &= page.rect
+                pad = _close_cut_ink(page, pad)
                 _fill_paper(page, pad)
         arch=pymupdf.Archive(str(_FONT_DIR))
         html=f"<body>{html_mod.escape(text).replace(chr(10),'<br>')}</body>"
@@ -1812,6 +1873,7 @@ def translate_pdf_optimized(
                     for _, _, _, item in ready:
                         pad = pymupdf.Rect(item.cover) & page.rect
                         pad = pymupdf.Rect(pad.x0 - 1, pad.y0 - 1.5, pad.x1 + 1, pad.y1 + 2) & page.rect
+                        pad = _close_cut_ink(page, pad)
                         _fill_paper(page, pad)
                 items = ready
             else:

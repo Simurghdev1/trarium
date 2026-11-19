@@ -112,22 +112,35 @@ def _show_direct_provider_test(provider: str, api_key: str, model: str, base_url
         st.error(f"درخواست ناموفق بود: {exc}")
 
 
+
+def _secret_input(label: str, env_name: str, key: str) -> str:
+    """Password field that never sends the server's key to the browser.
+
+    If the server has the key in its environment, the field stays empty and the
+    key is used on the server side only; a key typed by the visitor wins.
+    """
+    has_server_key = bool(os.environ.get(env_name, "").strip())
+    typed = st.text_input(label, value="", type="password", key=key,
+                          placeholder="کلید سرور فعال است (نمایش داده نمی‌شود)" if has_server_key else "")
+    return typed.strip() or os.environ.get(env_name, "")
+
+
 def _translator_settings():
     def provider_config(label: str, suffix: str = ""):
         custom_base = ""
         if label == "OpenRouter":
             provider = "openrouter"
-            api_key = st.text_input(f"OpenRouter API Key{suffix}", value=os.environ.get("OPENROUTER_API_KEY", ""), type="password", key=f"or_key{suffix}")
+            api_key = _secret_input(f"OpenRouter API Key{suffix}", "OPENROUTER_API_KEY", key=f"or_key{suffix}")
             model_label = st.selectbox(f"مدل OpenRouter{suffix}", list(FREE_MODELS.keys()), key=f"or_model{suffix}")
             model = FREE_MODELS[model_label]
         elif label == "Google Gemini":
             provider = "gemini"
-            api_key = st.text_input(f"Google API Key{suffix}", value=os.environ.get("GOOGLE_API_KEY", ""), type="password", key=f"ge_key{suffix}")
+            api_key = _secret_input(f"Google API Key{suffix}", "GOOGLE_API_KEY", key=f"ge_key{suffix}")
             model_label = st.selectbox(f"مدل Gemini{suffix}", list(GEMINI_MODELS.keys()), key=f"ge_model{suffix}")
             model = GEMINI_MODELS[model_label]
         elif label == "Groq":
             provider = "groq"
-            api_key = st.text_input(f"Groq API Key{suffix}", value=os.environ.get("GROQ_API_KEY", ""), type="password", key=f"gr_key{suffix}")
+            api_key = _secret_input(f"Groq API Key{suffix}", "GROQ_API_KEY", key=f"gr_key{suffix}")
             model_label = st.selectbox(f"مدل Groq{suffix}", list(GROQ_MODELS.keys()), key=f"gr_model{suffix}")
             model = GROQ_MODELS[model_label]
         elif label == "9Router":
@@ -136,7 +149,7 @@ def _translator_settings():
             model = MODELS_9ROUTER[model_label]
         else:
             provider = "openai_compatible"
-            api_key = st.text_input(f"API Key{suffix}", value=os.environ.get("TRARIUM_API_KEY", ""), type="password", key=f"oa_key{suffix}")
+            api_key = _secret_input(f"API Key{suffix}", "TRARIUM_API_KEY", key=f"oa_key{suffix}")
             custom_base = st.text_input(f"Base URL{suffix}", value=os.environ.get("TRARIUM_BASE_URL", ""), placeholder="https://example.com/v1", key=f"oa_base{suffix}")
             model = st.text_input(f"Model ID{suffix}", value=os.environ.get("TRARIUM_MODEL", ""), placeholder="model-id", key=f"oa_model{suffix}")
         return provider, api_key, model, custom_base

@@ -65,6 +65,7 @@ class TranslationPipeline:
         self.chunker = TextChunker(max_chars=max(2000, int(chunk_size)), overlap=0)
         self.delay = max(0.0, float(delay_between_requests))
         self.max_workers = max_workers
+        self.retry_pause = 5.0
         self.safe_optimization = safe_optimization
         self.protect_nontranslatable = protect_nontranslatable
         self.use_checkpoint = use_checkpoint
@@ -195,6 +196,40 @@ class TranslationPipeline:
                     time.sleep(0.8 * (2 ** attempt))
         raise RuntimeError(str(last or "ترجمه انجام نشد"))
 
+    def _retry_failed_unit(self, chunk: dict, job_id: str) -> dict | None:
+        source = str(chunk.get("content", "") or "")
+        title = chunk.get("title", "متن")
+        pieces = [source]
+        if len(source) > 4000:
+            paras = re.split(r"(\n\s*\n)", source)
+            half, acc, first = len(source) // 2, 0, []
+            while paras and acc < half:
+                part = paras.pop(0); first.append(part); acc += len(part)
+            second = "".join(paras)
+            if "".join(first).strip() and second.strip():
+                pieces = ["".join(first), second]
+        outputs = []
+        for piece in pieces:
+            prepared, mapping = self._prepare(piece)
+            registry_prompt = self.registry.prompt(piece, self.target_lang) if self.registry else ""
+            instructions = self._instructions(prepared, registry_prompt)
+            unit_hash = hashlib.sha256((job_id + "|retry|" + prepared).encode("utf-8")).hexdigest()
+            out = None
+            for attempt in range(2):
+                try:
+                    candidate, _ = self._translated(prepared, unit_hash, instructions)
+                    candidate = restore(candidate, mapping)
+                    if candidate.strip():
+                        out = candidate
+                        break
+                except Exception:
+                    pass
+                time.sleep(2.0 * (attempt + 1))
+            if out is None:
+                return None
+            outputs.append(out)
+        return {"title": title, "content": "\n\n".join(outputs), "failed": False, "error": ""}
+
     def run(self, book: ExtractedBook) -> TranslationResult:
         started = time.monotonic()
         chunks = self.chunker.chunk_by_chapters(book.chapters)
@@ -244,6 +279,21 @@ class TranslationPipeline:
                     self.on_unit_done(idx, result)
                 if self.control:
                     self.control()
+
+        # Second pass: units that failed while workers ran in parallel (usually a
+        # 429/timeout burst, or an over-long chunk the model cut short) get one
+        # calm sequential retry; a long chunk is split in two at a paragraph break.
+        retry_idx = [i for i, p in enumerate(translated_parts) if p and p.get("failed")]
+        if retry_idx:
+            time.sleep(float(getattr(self, "retry_pause", 5.0)))
+        for idx in retry_idx:
+            if self.control:
+                self.control()
+            fixed = self._retry_failed_unit(chunks[idx], job_id)
+            if fixed is not None:
+                translated_parts[idx] = fixed
+                if self.on_unit_done:
+                    self.on_unit_done(idx, fixed)
 
         failed = [p for p in translated_parts if p and p.get("failed")]
         # Only print a chapter heading when it carries information; otherwise the
