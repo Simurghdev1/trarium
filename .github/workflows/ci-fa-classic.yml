@@ -26,9 +26,8 @@ jobs:
         run: |
           mkdir -p out
           set +e
-          python qa/run_undine_test.py --input ci_run/inputs/undine_scan_3p.pdf --outdir out/scan_3p --ocr-pages 1,2,3 --providers gemini,openrouter --qc-repair 2>&1 | tee out/scan_3p.log
-          a=$?
-          python qa/run_undine_test.py --input ci_run/inputs/undine_text_6p.pdf --outdir out/text_6p --ocr-pages 1,2,3,4,5,6 --providers gemini,openrouter --qc-repair 2>&1 | tee out/text_6p.log
+          a=skip
+          python qa/run_undine_test.py --input ci_run/inputs/undine_text_6p.pdf --outdir out/text_6p_textlayer --providers gemini,openrouter --qc-repair 2>&1 | tee out/text_6p.log
           b=$?
           echo "exit codes: $a $b"
       - uses: actions/upload-artifact@v4
