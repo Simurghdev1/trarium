@@ -247,6 +247,21 @@ def _handle_subtitle(ctx, source: Path, suffix: str) -> bool:
     return True
 
 
+# ------------------------------------------------------------------------ youtube
+def handle_youtube(ctx) -> None:
+    """زیرنویس اصلی یوتیوب را می‌گیرد و با مسیر ترجمهٔ زیرنویس ترجمه می‌کند."""
+    from trarium.youtube import fetch_subtitles
+
+    cfg = ctx.config
+    ctx.set_stage("دریافت زیرنویس یوتیوب")
+    source, meta = fetch_subtitles(str(cfg.get("url") or ""), ctx.directory / "youtube",
+                                   cfg.get("languages") or None)
+    ctx.log(f"زیرنویس با {meta.get('method')} دریافت شد: {meta.get('file')}")
+    ctx.update(source_path=str(source))
+    if not _handle_subtitle(ctx, source, source.suffix.lower()):
+        raise RuntimeError("زیرنویس دریافت‌شده متنی برای ترجمه نداشت.")
+
+
 # --------------------------------------------------------------------------- book
 def handle_book(ctx) -> None:
     cfg = ctx.config

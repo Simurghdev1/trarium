@@ -111,15 +111,10 @@ NOVEL_CANDIDATES = [
     "https://www.royalroad.com/fiction/25137/worth-the-candle/chapter/366248/taking-the-fall",
 ]
 YT = OUT / "youtube"; YT.mkdir(exist_ok=True)
-@step("03_youtube_fetch")
-def _():
-    how = fetch_youtube_srt("https://www.youtube.com/watch?v=5XLEjBlSaAY", YT / "5XLEjBlSaAY_en.srt")
-    return {"method": how, "cues": (YT / "5XLEjBlSaAY_en.srt").read_text(encoding="utf-8").count(" --> ")}
 
 @step("04_submit_jobs")
 def _():
-    if (YT / "5XLEjBlSaAY_en.srt").exists():
-        submit("book", "youtube_5XLEjBlSaAY", {"output_format": "srt"}, YT / "5XLEjBlSaAY_en.srt")
+    submit("youtube", "youtube_5XLEjBlSaAY", {"url": "https://www.youtube.com/watch?v=5XLEjBlSaAY"})
     if not ONLY:
       submit("pdf", "Undine_Trarium_Test_6_Pages", {}, INP / "Undine_Trarium_Test_6_Pages.pdf")
       submit("pdf", "Josep_Moore_Mangas", {"enable_ocr": True, "ocr_method": "openrouter",
