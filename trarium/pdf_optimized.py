@@ -43,6 +43,7 @@ class PDFTranslationStats:
     expanded_blocks: int = 0         # boxes that had to grow into free space
     refined_pages: int = 0           # pages re-OCRed at higher resolution
     uncertain_pages: int = 0         # pages whose OCR boxes failed validation
+    patched_pages: int = 0           # scanned pages whose glyph pixels were erased
 _FONT_DIR = Path(__file__).parent / "fonts"
 if not _FONT_DIR.exists():
     _FONT_DIR = Path(__file__).parent.parent / "trarium" / "fonts"
@@ -1059,14 +1060,119 @@ def _raster_has_glyphs(array, scale, page_rect, rect, min_ink: float = 0.004) ->
     if crop.size == 0:
         return False
     gray = crop.astype(np.float32).mean(axis=2)
-    ink = float((gray < 128).mean())
-    background = float(np.median(gray))
-    return background >= 120.0 and min_ink < ink < 0.45
+    # A fixed 128 threshold fails on mid-tone artwork: a blue cover is itself
+    # below it and the whole box looked like ink.  Compare against the brightest
+    # part of the box instead, the same way the pixel repair classifies glyphs.
+    bright = float(np.percentile(gray, 85))
+    cutoff = min(bright * 0.60, bright - 40.0)
+    ink = float((gray < cutoff).mean())
+    # Erase only when some pixels really are much darker than the rest of the
+    # box; a uniformly dark photograph has no such contrast and is left alone.
+    # A caption printed on a photo *is* erased: replacing it with the
+    # translation is better than leaving English under the Persian.
+    return bright >= 55.0 and min_ink < ink < 0.6
 
 
 def _clipped_cover(band, fill, page_rect):
     import pymupdf
     return (pymupdf.Rect(band) & page_rect), fill
+
+
+def _patch_raster_glyphs(page, boxes, dpi: int = 150, max_side: int = 2200) -> bool:
+    """Erase the printed glyphs from the scan itself, keeping the artwork.
+
+    Covering a box with a flat colour works on plain paper but destroys an
+    illustration that the text was printed over (manga covers, posters).  Here
+    only the dark glyph pixels are replaced by their surroundings, so the
+    artwork, gradient and texture survive and no rectangle is drawn.
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+    import pymupdf
+
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    if max(pix.width, pix.height) > max_side:
+        zoom = max_side / max(pix.width, pix.height) * dpi / 72.0
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+    array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)[:, :, :3].copy()
+    scale_x = pix.width / max(1e-6, page.rect.width)
+    scale_y = pix.height / max(1e-6, page.rect.height)
+
+    mask = np.zeros(array.shape[:2], dtype=bool)
+    scanned_box = False
+    margin = max(2, int(round(2.0 * scale_x)))
+    for box in boxes:
+        x0 = int(max(0, min(pix.w - 1, box[0] * scale_x) - margin))
+        x1 = int(max(x0 + 1, min(pix.w, box[2] * scale_x) + margin))
+        y0 = int(max(0, min(pix.h - 1, box[1] * scale_y) - margin))
+        y1 = int(max(y0 + 1, min(pix.h, box[3] * scale_y) + margin))
+        region = array[y0:y1, x0:x1]
+        if region.size == 0:
+            continue
+        luminance = region.astype(np.float32).mean(axis=2)
+        paper = float(np.percentile(luminance, 85))
+        if paper < 60.0:
+            continue  # no bright paper here: probably an illustration, not text
+        scanned_box = True
+        # A fixed ratio fails on artwork: a mid-tone background can sit just
+        # under the threshold and the whole box would be treated as glyph.
+        cutoff = min(paper * 0.60, paper - 40.0)
+        glyphs = luminance < cutoff
+        if glyphs.mean() > 0.70:
+            continue  # almost everything is dark: not a text line
+        mask[y0:y1, x0:x1] |= glyphs
+    if not mask.any():
+        # Nothing left to erase: the redaction already removed the source text
+        # (a caption printed as vector text on a photo).  Calling this a failure
+        # would paint a rectangle where there is nothing to clean.
+        return scanned_box
+
+    # Grow the mask by one pixel so antialiased edges disappear with the glyph.
+    grown = mask.copy()
+    grown[1:, :] |= mask[:-1, :]
+    grown[:-1, :] |= mask[1:, :]
+    grown[:, 1:] |= mask[:, :-1]
+    grown[:, :-1] |= mask[:, 1:]
+    mask = grown
+
+    # Diffusion fill: every pass paints the masked pixels that already have a
+    # known neighbour and marks them known, so the paper colour spreads into the
+    # glyph area from all sides.  Without the second step the inside of a thick
+    # stroke stayed black (0 / 1e-6), which kept thick printed letters visible.
+    values = array.astype(np.float32)
+    known = ~mask
+    remaining = mask.copy()
+    for _ in range(10):
+        if not remaining.any():
+            break
+        padded = np.pad(np.where(known[:, :, None], values, 0.0), ((1, 1), (1, 1), (0, 0)), mode="edge")
+        padded_known = np.pad(known.astype(np.float32), ((1, 1), (1, 1)), mode="edge")
+        total = np.zeros_like(values)
+        weight = np.zeros(known.shape, dtype=np.float32)
+        for dy in range(3):
+            for dx in range(3):
+                total += padded[dy:dy + values.shape[0], dx:dx + values.shape[1]]
+                weight += padded_known[dy:dy + values.shape[0], dx:dx + values.shape[1]]
+        fillable = remaining & (weight > 0)
+        if not fillable.any():
+            break
+        values[fillable] = (total / np.maximum(weight, 1e-6)[:, :, None])[fillable]
+        known |= fillable
+        remaining &= ~fillable
+    if remaining.any():
+        # Anything still enclosed by a very thick stroke takes the page's own
+        # paper colour rather than a hole.
+        bright = array[array.mean(axis=2) > 150]
+        paper_colour = np.median(bright, axis=0) if bright.size else np.array([255, 255, 255], np.float32)
+        values[remaining] = paper_colour
+    patched = np.clip(values, 0, 255).astype(np.uint8)
+
+    buffer = io.BytesIO()
+    Image.fromarray(patched).save(buffer, "JPEG", quality=90, optimize=True)
+    page.insert_image(page.rect, stream=buffer.getvalue(), overlay=True)
+    return True
 
 
 def _font_ladder(size: float) -> list[float]:
@@ -1150,19 +1256,47 @@ def _render_page(page, blocks: list[dict], replacements: dict[int, str], target_
             covers = [(pymupdf.Rect(padded) & page_rect, None)]
         if abs(text_rect.width - raw.width) > 1.0 or abs(text_rect.height - raw.height) > 1.0:
             stats.expanded_blocks += 1
-        plans.append((idx, covers, text_rect, size, out))
+        # The pixel repair looks only just outside the glyph box: a 1.2 padding
+        # would also eat the speech-bubble outline or a panel border around the text.
+        plans.append({"idx": idx, "padded": padded, "mask": ocr_layout.cover_rect(raw_tuple, 0.2),
+                      "covers": covers, "raster": raster,
+                      "text_rect": text_rect, "size": size, "out": out})
 
     if not plans:
         return 0
 
-    for _idx, covers, _rect, _size, _out in plans:
-        for cover, fill in covers:
-            page.add_redact_annot(cover, fill=fill)
+    # 1) Remove the source text layer first, without any fill.  This must happen
+    #    before the page is re-rendered for pixel patching, otherwise the vector
+    #    glyphs would be baked into the patched image and never disappear.
+    for plan in plans:
+        page.add_redact_annot(pymupdf.Rect(plan["padded"]) & page_rect, fill=None)
     page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
                           graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
 
+    # 2) For pages whose glyphs live in the scan, erase the glyph pixels from the
+    #    image instead of painting rectangles over the artwork.
+    patched = False
+    if any(plan["raster"] for plan in plans):
+        try:
+            patched = _patch_raster_glyphs(page, [tuple(plan["mask"]) for plan in plans
+                                                  if plan["raster"]])
+        except Exception as exc:
+            console.print(f"  ⚠️ پاک‌سازی پیکسلی صفحه {page.number + 1}: {exc}")
+        if patched:
+            stats.patched_pages += 1
+    if not patched:
+        # Fallback: paint the sampled page colour only when inpainting was not
+        # possible, so a scanned page never keeps its source text under ours.
+        for plan in plans:
+            if not plan["raster"]:
+                continue
+            for cover, fill in plan["covers"]:
+                if fill is not None:
+                    page.draw_rect(cover, color=None, fill=fill, overlay=True)
+
     written = 0
-    for idx, _covers, text_rect, size, out in plans:
+    for plan in plans:
+        idx, text_rect, size, out = plan["idx"], plan["text_rect"], plan["size"], plan["out"]
         try:
             archive = pymupdf.Archive(str(_FONT_DIR))
             html = f"<body>{html_mod.escape(out).replace(chr(10), '<br>')}</body>"
