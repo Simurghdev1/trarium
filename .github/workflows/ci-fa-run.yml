@@ -1,0 +1,34 @@
+name: Trarium FA PDF run
+on:
+  push:
+    branches: ["ci/fa-pdf-run"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt requests
+      - name: Translate both PDFs to Persian
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OCR_SPACE_KEY: ${{ secrets.OCR_SPACE_KEY }}
+          TRARIUM_HOME: ${{ runner.temp }}/trarium-home
+        run: |
+          set -o pipefail
+          mkdir -p ci_run/out
+          python ci_run/run.py 2>&1 | tee ci_run/out/run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trarium-fa-output
+          path: ci_run/out/**
+          if-no-files-found: warn
