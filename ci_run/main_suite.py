@@ -114,14 +114,17 @@ YT = OUT / "youtube"; YT.mkdir(exist_ok=True)
 
 @step("04_submit_jobs")
 def _():
-    submit("youtube", "youtube_5XLEjBlSaAY", {"url": "https://www.youtube.com/watch?v=5XLEjBlSaAY"})
-    if not ONLY:
+    if ONLY != "pdf":
+      submit("youtube", "youtube_5XLEjBlSaAY", {"url": "https://www.youtube.com/watch?v=5XLEjBlSaAY"})
+    if ONLY in ("", "pdf"):
       submit("pdf", "Undine_Trarium_Test_6_Pages", {}, INP / "Undine_Trarium_Test_6_Pages.pdf")
       submit("pdf", "Josep_Moore_Mangas", {"enable_ocr": True, "ocr_method": "openrouter",
            "ocr_api_key": os.environ.get("OPENROUTER_API_KEY", ""), "ocr_vision_model": "google/gemini-2.5-flash-lite"},
            INP / "Josep Moore - Mangas ENG.pdf")
       submit("book", "Omniscient_Readers_Viewpoint_2", {"output_format": "epub", "chunk_size": 12000, "workers": 4},
            INP / "_OceanofPDF.com_Omniscient_readers_viewpoint_novel_2_-_singNsong.epub")
+    if ONLY == "pdf":
+        return {"jobs": jobs}
     from trarium.novel.scraper import NovelScraper
     novel_url, tried = "", []
     for cand in NOVEL_CANDIDATES:
