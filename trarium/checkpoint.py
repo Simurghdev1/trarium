@@ -14,7 +14,8 @@ def stable_job_id(source_fingerprint: str, target_lang: str, provider: str = "",
 
 class CheckpointStore:
     def __init__(self, path: str | None = None):
-        self.path = Path(path or (Path.home() / ".trarium" / "checkpoints.sqlite3"))
+        from trarium.local_state import trarium_home
+        self.path = Path(path) if path else trarium_home() / "checkpoints.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         with sqlite3.connect(self.path) as db:

@@ -8,6 +8,8 @@ not a bypass of an access policy.
 """
 from __future__ import annotations
 
+from trarium import __version__
+
 import json
 import os
 import shutil
@@ -88,7 +90,7 @@ def _safe_headers(headers: dict[str, str]) -> dict[str, str]:
         out.pop("HTTP-Referer", None)
         out.pop("X-OpenRouter-Title", None)
         out.pop("X-Title", None)
-    out.setdefault("User-Agent", "Trarium/2.18.0")
+    out.setdefault("User-Agent", f"Trarium/{__version__}")
     return out
 
 
@@ -193,7 +195,7 @@ def diagnose_openrouter(api_key: str, *, timeout: int = 30, model: str = "openro
     """Run a public GET and a tiny authenticated POST using available transports."""
     result: dict[str, Any] = {"models": {}, "chat": {}}
     base = "https://openrouter.ai/api/v1"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": "Trarium/2.18.0"}
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": f"Trarium/{__version__}"}
     # Public catalog check: no key required, useful for separating WAF from auth.
     for name, fn in (("curl", _curl_available()), ("requests", "requests")):
         if name == "curl" and not fn:

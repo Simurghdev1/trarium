@@ -48,12 +48,12 @@ def _iter_blocks(xml: str, open_re: str, close_re: str):
             depth += 1
 
 
-def rewrite_part(xml: str, suffix: str, translate) -> str:
-    """متن هر بلوک را ترجمه و در همان بلوک (در اولین run) جایگزین می‌کند."""
+def _segment_blocks(xml: str, suffix: str):
+    """بلوک‌ها و متن هر بلوک را جدا می‌کند تا بتوان همهٔ اسناد را یک‌جا ترجمه کرد."""
     open_re, close_re, text_re = _RULES[suffix]
     blocks = list(_iter_blocks(xml, open_re, close_re))
     if not blocks:
-        return xml
+        return [], []
 
     infos: list[tuple[int, int, str, list[tuple[int, int, str]]]] = []
     segments: list[str] = []
@@ -68,12 +68,21 @@ def rewrite_part(xml: str, suffix: str, translate) -> str:
         if matches:
             # run‌ها تکه‌های یک پاراگراف‌اند و فاصله‌شان داخل خود متن است.
             segments.append("".join(item[2] for item in matches))
+    return infos, segments
+
+
+def rewrite_part(xml: str, suffix: str, translate) -> str:
+    """متن هر بلوک را ترجمه و در همان بلوک (در اولین run) جایگزین می‌کند."""
+    infos, segments = _segment_blocks(xml, suffix)
     if not segments:
         return xml
-
     translated = list(translate(segments))
+    return _apply_blocks(xml, infos, segments, translated)
+
+
+def _apply_blocks(xml: str, infos, segments, translated) -> str:
     if len(translated) < len(segments):
-        translated += segments[len(translated):]
+        translated = list(translated) + segments[len(translated):]
 
     output: list[str] = []
     cursor = 0
@@ -104,13 +113,32 @@ def translate_office(source: str | Path, suffix: str, pipeline) -> bytes:
 
     source = Path(source)
     target = _TARGET_PARTS[suffix]
+    with zipfile.ZipFile(source) as src:
+        items = [(item, src.read(item.filename)) for item in src.infolist()]
+
+    # Collect every text block of the document first: a 10-slide deck used to
+    # trigger 10 separate API calls, one per slide file.
+    pending: dict[str, tuple[str, list, list]] = {}
+    all_segments: list[str] = []
+    for item, data in items:
+        if not target.search(item.filename):
+            continue
+        xml = data.decode("utf-8", errors="replace")
+        infos, segments = _segment_blocks(xml, suffix)
+        if segments:
+            pending[item.filename] = (xml, infos, segments)
+            all_segments.extend(segments)
+
+    translated_all = translate_segments(pipeline, all_segments) if all_segments else []
+    rendered: dict[str, bytes] = {}
+    offset = 0
+    for name, (xml, infos, segments) in pending.items():
+        chunk = list(translated_all[offset:offset + len(segments)])
+        offset += len(segments)
+        rendered[name] = _apply_blocks(xml, infos, segments, chunk).encode("utf-8")
+
     buffer = io.BytesIO()
-    with zipfile.ZipFile(source) as src, zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as dst:
-        for item in src.infolist():
-            data = src.read(item.filename)
-            if target.search(item.filename):
-                xml = data.decode("utf-8", errors="replace")
-                xml = rewrite_part(xml, suffix, lambda parts: translate_segments(pipeline, parts))
-                data = xml.encode("utf-8")
-            dst.writestr(item, data)
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item, data in items:
+            dst.writestr(item, rendered.get(item.filename, data))
     return buffer.getvalue()

@@ -190,7 +190,11 @@ def _translator_settings():
         use_checkpoint = st.checkbox("Checkpoint برای ادامه بعد از توقف/خاموشی", value=True)
         adaptive_batch = st.checkbox("Adaptive Batch + Token-aware splitting", value=True)
         do_probe = st.checkbox("Pre-flight Probe + برآورد Token", value=False)
-        smart_routing = st.checkbox("Smart model routing (دیالوگ ساده → سریع، متن پیچیده → اصلی)", value=False, disabled=False)
+        smart_routing = st.checkbox("Smart model routing (دیالوگ ساده → سریع، متن پیچیده → اصلی)",
+                                    value=False, disabled=not fallback_cfg,
+                                    help="این گزینه به یک ارائه‌دهندهٔ پشتیبان نیاز دارد." if not fallback_cfg else None)
+        if not fallback_cfg:
+            smart_routing = False
 
         st.divider(); st.markdown("### 📚 فرهنگ واژه و شخصیت")
         registry_text = st.text_area("هر خط: English = فارسی", value="", height=110, placeholder="Subaru = سوبارو\nEmilia = امیلیا")
@@ -206,7 +210,9 @@ def _translator_settings():
 
         st.divider(); st.markdown("### ✍️ پرامپت کوتاه")
         st.caption("با یک کلیک انتخاب می‌شود و همان‌جا در پرامپت می‌نشیند؛ برای ساختنش هیچ درخواستی به هوش مصنوعی نمی‌رود و توکنی مصرف نمی‌شود.")
-        selected_chips = st.session_state.setdefault("short_prompt_selected", [])
+        from trarium.short_prompt import filter_conflicts
+        selected_chips = filter_conflicts(st.session_state.setdefault("short_prompt_selected", []))
+        st.session_state["short_prompt_selected"] = selected_chips
         chip_labels = list(SHORT_PROMPT_CHIPS)
         for row_start in range(0, len(chip_labels), 2):
             chip_cols = st.columns(2)
@@ -221,7 +227,7 @@ def _translator_settings():
                     if active:
                         selected_chips.remove(label)
                     else:
-                        selected_chips.append(label)
+                        selected_chips = filter_conflicts(selected_chips + [label])
                     st.session_state["short_prompt_selected"] = selected_chips
                     st.rerun()
         chip_extra = st.text_area("متن دلخواه (اختیاری)", key="short_prompt_extra", height=80,
@@ -448,7 +454,8 @@ with book_tab:
                 ui_panels.render_foreground_details(result, provider, model, target_lang)
             st.text_area("پیش‌نمایش", result.translated_text[:12000], height=300)
             if result.translated_chunks == 0 and result.failed_chunks > 0:
-                st.error("❌ هیچ بخش ترجمه نشد؛ خروجی قابل دانلود ساخته نمی‌شود.")
+                st.error("❌ هیچ بخش ترجمه نشد؛ خروجی قابل دانلود ساخته نمی‌شود.\n\nعلت: "
+                         + (result.error_message or "خطای نامشخص — کلید/مدل و سهمیه را بررسی کنید."))
             else:
                 fmt = st.radio("فرمت خروجی", ["TXT", "PDF", "EPUB", "HTML"], horizontal=True, key="text_format")
                 with tempfile.TemporaryDirectory() as td:
@@ -579,6 +586,12 @@ with layout_tab:
                         st.success(f"✅ OCR برای {sum(bool(v) for v in result_map.values())} صفحه نتیجه داد.")
                     except Exception as exc:
                         st.error(f"❌ OCR: {exc}")
+                        try:
+                            from trarium.usage import record_ocr
+                            record_ocr(requests=1, provider=method, project=uploaded.name,
+                                       error=str(exc))
+                        except Exception:
+                            pass
                     finally:
                         try: os.unlink(path)
                         except OSError: pass
@@ -590,8 +603,9 @@ with layout_tab:
             help="برای PDFهای دارای لایهٔ متن. OCR پیش‌محاسبه‌شده در حالت پس‌زمینه اعمال نمی‌شود.",
         )
         if layout_background and st.button("🕓 افزودن PDF به صف", type="primary", key="layout_queue"):
+            job_config = _job_config("pdf", extra={"pages": ",".join(str(p) for p in skip)})
             job_id = ui_panels.submit_upload_job(ui_ctx, uploaded, kind="pdf",
-                                                 config=_job_config("pdf"))
+                                                 config=job_config)
             st.success(f"تسک PDF در صف قرار گرفت: {job_id}")
             st.query_params["job"] = job_id
             st.session_state["layout_job_id"] = job_id
@@ -708,6 +722,12 @@ with web_tab:
                     if use_cache and not isinstance(translator, (FallbackTranslator,)):
                         translator = CachedTranslator(translator, provider, model, instructions=short_prompt)
                     result = TranslationPipeline(translator, target_lang, chunk_size, delay, workers,
+                                                 safe_optimization=safe_opt,
+                                                 protect_nontranslatable=protect_spans,
+                                                 use_checkpoint=use_checkpoint,
+                                                 translation_memory=use_cache,
+                                                 adaptive_batch=adaptive_batch,
+                                                 registry=registry,
                                                  short_prompt=short_prompt).run(book)
                     st.session_state["novel_translation"] = result
                 except Exception as exc:
@@ -720,7 +740,8 @@ with web_tab:
             a.metric("تعداد بخش‌ها", f"{result.translated_chunks}/{result.total_chunks}")
             b.metric("بخش ناموفق", result.failed_chunks)
             if result.translated_chunks == 0 and result.failed_chunks > 0:
-                st.error("❌ هیچ فصل/بخشی ترجمه نشد؛ خروجی قابل دانلود ساخته نمی‌شود.")
+                st.error("❌ هیچ فصل/بخشی ترجمه نشد؛ خروجی قابل دانلود ساخته نمی‌شود.\n\nعلت: "
+                         + (result.error_message or "خطای نامشخص — کلید/مدل و سهمیه را بررسی کنید."))
             else:
                 fmt = st.radio("فرمت خروجی وب‌ناول", ["TXT", "PDF", "EPUB", "HTML"], horizontal=True, key="novel_format")
                 with tempfile.TemporaryDirectory() as td:

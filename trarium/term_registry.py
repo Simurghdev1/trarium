@@ -7,7 +7,8 @@ from pathlib import Path
 
 class TermRegistry:
     def __init__(self, path: str | None = None):
-        self.path = Path(path or (Path.home() / ".trarium" / "terms.json"))
+        from trarium.local_state import trarium_home
+        self.path = Path(path) if path else trarium_home() / "terms.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.items: dict[str, str] = {}
         self.load()

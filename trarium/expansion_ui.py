@@ -287,7 +287,7 @@ def _render_book_page(ctx: dict, library: Library, book_id: str) -> None:
                 "short_prompt": prompt,
             })
             if settings.get("template"):
-                config = templates.apply_template(settings["template"], config)
+                config = templates.apply_template(settings["template"], config, only_missing=True)
             if not has_credentials(provider):
                 st.error(f"برای {LABELS.get(provider, provider)} کلید ذخیره نشده است؛ "
                          "ابتدا در نوار کنار صفحه ذخیره کنید.")

@@ -250,6 +250,9 @@ class JobManager:
         with self._lock:
             control = self._controls.get(job_id)
         if control and job["status"] in ACTIVE_STATUSES:
+            config = dict(job.get("config") or {})
+            config["paused_at"] = time.time()
+            self.store.update(job_id, config=config)
             control.pause = True
             self.store.update(job_id, status=STATUS_PAUSING, stage="در حال توقف امن...")
             self.store.add_event(job_id, "درخواست توقف امن ثبت شد؛ پس از واحد جاری متوقف می‌شود")
@@ -258,8 +261,13 @@ class JobManager:
         job = self.store.get(job_id)
         if not job or job["status"] not in {STATUS_PAUSED, STATUS_FAILED}:
             return
+        # Keep the paused time out of the speed statistic.
+        config = dict(job.get("config") or {})
+        paused_at = float(config.pop("paused_at", 0) or 0)
+        if paused_at:
+            config["paused_seconds"] = float(config.get("paused_seconds") or 0) + max(0.0, time.time() - paused_at)
         self.store.update(job_id, status=STATUS_QUEUED, error="", stage="آمادهٔ ادامه",
-                          finished_at=0)
+                          finished_at=0, config=config)
         self.store.add_event(job_id, "از آخرین واحد ذخیره‌شده ادامه می‌دهد")
         self.start()
 

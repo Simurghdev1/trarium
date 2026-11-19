@@ -1,12 +1,14 @@
 """ترجمه متن با OpenRouter."""
 from __future__ import annotations
 
+from trarium import __version__
+
 import math
 import threading
 import time
 from trarium.translators.base import BaseTranslator
 from trarium.translators.openrouter_http import OpenRouterSecurityBlockError, post_json
-from trarium.utils import clean_translation as _clean_translation
+from trarium.utils import clean_translation as _clean_translation, is_permanent_http_error
 
 LANG_NAMES = {
     "fa": "فارسی", "en": "English", "ar": "العربية", "fr": "Français",
@@ -61,18 +63,21 @@ class OpenRouterTranslator(BaseTranslator):
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "Trarium/2.18.0",
+            "User-Agent": f"Trarium/{__version__}",
         }
 
-    def translate(self, text, target_lang="fa"):
+    def translate(self, text, target_lang="fa", instructions=""):
         if not self.api_key:
             raise RuntimeError("OpenRouter API Key وارد نشده است.")
         text = str(text)
         lang = LANG_NAMES.get(target_lang, target_lang)
+        system = SYSTEM_PROMPT + (PERSIAN_RULES if target_lang == "fa" else "")
+        if instructions:
+            system += " " + str(instructions).strip()
         payload = {
             "model": self.model_name,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT + (PERSIAN_RULES if target_lang == "fa" else "")},
+                {"role": "system", "content": system},
                 {"role": "user", "content": TRANSLATE_PROMPT.format(lang=lang) + "\n\n" + text},
             ],
             "max_tokens": _max_output_tokens(text),
@@ -97,7 +102,7 @@ class OpenRouterTranslator(BaseTranslator):
                 content = choices[0].get("message", {}).get("content") if isinstance(choices[0], dict) else None
                 if not content:
                     raise RuntimeError("OpenRouter متن ترجمه را برنگرداند.")
-                return _clean_translation(str(content))
+                return _clean_translation(str(content), target_lang)
             except OpenRouterSecurityBlockError as exc:
                 self.last_error = str(exc)
                 self.last_error_kind = exc.source
@@ -108,6 +113,8 @@ class OpenRouterTranslator(BaseTranslator):
                 last_error = exc
                 self.last_error = str(exc)
                 self.last_error_kind = "request_error"
+                if is_permanent_http_error(exc):
+                    break
             if attempt < 2:
                 time.sleep(1.5 * (2 ** attempt))
         raise RuntimeError(str(last_error or "خطای نامشخص OpenRouter"))

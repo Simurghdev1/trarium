@@ -133,8 +133,15 @@ def read_html(path: Path) -> ConversionDocument:
     document = ConversionDocument(title=(soup.title.string.strip() if soup.title and soup.title.string
                                          else path.stem))
     document.images = len(soup.find_all("img"))
-    for element in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table", "pre"]):
+    for element in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "table", "pre",
+                                  "blockquote", "div"]):
         if element.find_parent("table") is not None and element.name != "table":
+            continue
+        # An element nested in another block is already covered by it; keeping both
+        # produced duplicated paragraphs (e.g. <li><p>text</p></li>).
+        if element.find_parent(["p", "li", "pre", "blockquote"]) is not None:
+            continue
+        if element.name == "div" and element.find(["p", "li", "table", "pre", "blockquote", "div"]) is not None:
             continue
         if element.name == "table":
             rows = []
@@ -241,6 +248,36 @@ def read_document(path: str | Path) -> ConversionDocument:
     return document
 
 
+def _epub_spine_order(archive, names: list[str]) -> list[str]:
+    """Chapter files in reading order (OPF spine) instead of alphabetical order."""
+    documents = [name for name in names if name.lower().endswith((".xhtml", ".html", ".htm"))]
+    try:
+        import xml.etree.ElementTree as ET
+        container = ET.fromstring(archive.read("META-INF/container.xml"))
+        rootfile = container.find(".//{*}rootfile")
+        opf_name = rootfile.get("full-path") if rootfile is not None else ""
+        if not opf_name:
+            return sorted(documents)
+        opf = ET.fromstring(archive.read(opf_name))
+        base = opf_name.rsplit("/", 1)[0] + "/" if "/" in opf_name else ""
+        manifest = {}
+        for item in opf.iter():
+            if _local(item.tag) == "item" and item.get("id") and item.get("href"):
+                manifest[item.get("id")] = base + item.get("href")
+        ordered: list[str] = []
+        for itemref in opf.iter():
+            if _local(itemref.tag) != "itemref":
+                continue
+            target = manifest.get(itemref.get("idref"))
+            if target and target in names:
+                ordered.append(target)
+        if ordered:
+            return ordered
+    except Exception:
+        pass
+    return sorted(documents)
+
+
 def _read_epub(path: Path) -> ConversionDocument:
     from bs4 import BeautifulSoup
 
@@ -248,7 +285,7 @@ def _read_epub(path: Path) -> ConversionDocument:
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
         document.images = sum(1 for name in names if name.lower().endswith(_IMAGE_EXTENSIONS))
-        pages = sorted(name for name in names if name.lower().endswith((".xhtml", ".html", ".htm")))
+        pages = _epub_spine_order(archive, names)
         for name in pages:
             soup = BeautifulSoup(archive.read(name), "lxml")
             for tag in soup.find_all(["h1", "h2", "h3", "h4", "p", "table"]):
@@ -398,13 +435,13 @@ def _write_minimal_docx(document: ConversionDocument, path: Path, rtl: bool) -> 
             for row in block.get("rows") or []:
                 cells = "".join(
                     f"<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>"
-                    f"<w:p>{_run(str(cell), rtl)}</w:p></w:tc>" for cell in row)
+                    f"<w:p>{_run(_xml_safe(str(cell)), rtl)}</w:p></w:tc>" for cell in row)
                 rows_xml.append(f"<w:tr>{cells}</w:tr>")
             paragraphs.append(
                 "<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/></w:tblPr>"
                 + "".join(rows_xml) + "</w:tbl><w:p/>")
             continue
-        text = str(block.get("text") or "")
+        text = _xml_safe(str(block.get("text") or ""))
         if block.get("type") == "heading":
             level = max(1, min(6, int(block.get("level") or 1)))
             paragraphs.append(f'<w:p><w:pPr><w:pStyle w:val="Heading{level}"/></w:pPr>{_run(text, rtl)}</w:p>')
@@ -457,6 +494,12 @@ def _write_minimal_docx(document: ConversionDocument, path: Path, rtl: bool) -> 
         archive.writestr("word/_rels/document.xml.rels", document_rels)
         archive.writestr("word/styles.xml", styles_xml)
         archive.writestr("docProps/core.xml", core)
+
+
+def _xml_safe(text: str) -> str:
+    """Drop control characters (form feed, vertical tab, NUL) that make DOCX invalid."""
+    import re as _re
+    return _re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", str(text or ""))
 
 
 def _bidi(rtl: bool) -> str:

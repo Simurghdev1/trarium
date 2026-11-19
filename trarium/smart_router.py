@@ -33,17 +33,27 @@ class SmartRoutingTranslator:
     def get_token_limit(self):
         return max(self.strong.get_token_limit(), self.fast.get_token_limit())
 
-    def translate(self, text, target_lang="fa"):
+    def translate(self, text, target_lang="fa", instructions=""):
         kind = classify_text(text)
         preferred = self.fast if kind == "simple_dialogue" else self.strong
         alternate = self.strong if preferred is self.fast else self.fast
         try:
-            out = preferred.translate(text, target_lang)
+            try:
+                out = preferred.translate(text, target_lang, instructions)
+            except TypeError as exc:
+                if "instructions" not in str(exc) and "positional argument" not in str(exc):
+                    raise
+                out = preferred.translate(text, target_lang)
             self.last_provider = "fast" if preferred is self.fast else "strong"
             self.last_usage = getattr(preferred, "last_usage", {}) or {}
             return out
         except Exception:
-            out = alternate.translate(text, target_lang)
+            try:
+                out = alternate.translate(text, target_lang, instructions)
+            except TypeError as exc:
+                if "instructions" not in str(exc) and "positional argument" not in str(exc):
+                    raise
+                out = alternate.translate(text, target_lang)
             self.last_provider = "strong" if alternate is self.strong else "fast"
             self.last_usage = getattr(alternate, "last_usage", {}) or {}
             return out

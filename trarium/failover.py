@@ -12,6 +12,7 @@ because the request may already have been billed and served.
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 
@@ -28,15 +29,19 @@ NETWORK = "network"
 def classify_error(exc: Exception | str) -> str:
     text = str(exc or "").lower()
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-    if status == 429 or any(word in text for word in ("429", "rate limit", "too many requests", "rate_limit")):
+    # Only real HTTP status codes count; a message such as "after 4000 ms" must not
+    # be classified as a permanent 400.
+    codes = {int(m) for m in re.findall(r"\bhttp\s*(\d{3})\b", text)}
+    codes |= {int(m) for m in re.findall(r"\bstatus[^0-9]{0,3}(\d{3})\b", text)}
+    if status in (401, 403) or codes & {401, 403} or any(word in text for word in ("unauthorized", "invalid api key", "forbidden", "permission denied")):
+        return AUTH
+    if status == 429 or 429 in codes or any(word in text for word in ("rate limit", "too many requests", "rate_limit")):
         return RATE_LIMIT
     if any(word in text for word in ("quota", "insufficient", "credit", "billing", "exceeded your current")):
         return QUOTA
-    if status in (401, 403) or any(word in text for word in ("401", "403", "unauthorized", "invalid api key", "api key", "forbidden", "permission")):
-        return AUTH
-    if any(word in text for word in ("404", "model not found", "no such model", "does not exist", "unsupported model", "deactivated")):
+    if codes & {404} or any(word in text for word in ("model not found", "no such model", "does not exist", "unsupported model", "deactivated")):
         return PERMANENT
-    if any(word in text for word in ("400", "invalid request", "bad request", "validation", "context length", "payload")):
+    if codes & {400, 405, 413, 422} or any(word in text for word in ("invalid request", "bad request", "validation", "context length", "payload")):
         return PERMANENT
     if any(word in text for word in ("timeout", "timed out", "connection", "network", "unreachable", "reset by peer", "ssl", "proxy")):
         return NETWORK
@@ -134,8 +139,9 @@ class SmartFailoverTranslator:
 
     def _ordered(self) -> list[Endpoint]:
         now = time.monotonic()
+        # Endpoints in cooldown (rate limit) or disabled (auth/permanent) are skipped
+        # instead of being called again and again.
         available = [e for e in self.endpoints if e.cooldown_until <= now and not e.disabled_reason]
-        cooling = [e for e in self.endpoints if e.cooldown_until > now]
         if self.smart and available:
             def score(endpoint: Endpoint):
                 try:
@@ -146,7 +152,7 @@ class SmartFailoverTranslator:
                 # Prefer strong quality, then the provider with less local usage.
                 return (-endpoint.quality + min(used / 5_000_000, 4.0))
             available = sorted(available, key=score)
-        return available + cooling
+        return available
 
     def _cool(self, endpoint: Endpoint, kind: str) -> None:
         long_block = kind in {AUTH, PERMANENT}
@@ -171,7 +177,7 @@ class SmartFailoverTranslator:
                 pass
 
     # ------------------------------------------------------------------- public
-    def translate(self, text: str, target_lang: str = "fa") -> str:
+    def translate(self, text: str, target_lang: str = "fa", instructions: str = "") -> str:
         if self._cost_cap_reached():
             raise FailoverError(f"سقف هزینهٔ تعیین‌شده (${self.cost_cap_usd:.2f}) پر شده است؛ ترجمه متوقف شد.")
         last_error: Exception | None = None
@@ -190,7 +196,12 @@ class SmartFailoverTranslator:
             next_endpoint = next((e for e in ordered[position + 1:] if id(e) not in attempted), None)
             for attempt in range(self.retries + 1):
                 try:
-                    output = endpoint.translator.translate(text, target_lang)
+                    try:
+                        output = endpoint.translator.translate(text, target_lang, instructions)
+                    except TypeError as exc:
+                        if "instructions" not in str(exc) and "positional argument" not in str(exc):
+                            raise
+                        output = endpoint.translator.translate(text, target_lang)
                     if not str(output or "").strip():
                         raise RuntimeError("پاسخ خالی از ارائه‌دهنده")
                     self.last_provider = endpoint.provider
@@ -225,7 +236,7 @@ def build_chain(provider_chain: list[dict], *, retries: int = 2, cost_cap_usd: f
     A single endpoint is returned as a plain metered translator so existing
     behaviour (and cost) stays exactly the same when failover is off.
     """
-    from trarium.provider_registry import build_translator, label
+    from trarium.provider_registry import build_translator, has_credentials, label
     from trarium.usage import KIND_LLM, UsageTrackingTranslator
 
     endpoints: list[Endpoint] = []
@@ -233,6 +244,9 @@ def build_chain(provider_chain: list[dict], *, retries: int = 2, cost_cap_usd: f
     for item in provider_chain:
         provider = str(item.get("provider") or "").strip().lower()
         if not provider:
+            continue
+        if not has_credentials(provider):
+            # A provider without a key must not break the whole chain.
             continue
         model = str(item.get("model") or "").strip()
         key = (provider, model)

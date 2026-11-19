@@ -6,7 +6,7 @@ import threading
 import time
 import requests
 from trarium.translators.base import BaseTranslator
-from trarium.utils import clean_translation as _clean_translation
+from trarium.utils import clean_translation as _clean_translation, is_permanent_http_error
 
 LANG_NAMES = {"fa": "فارسی", "en": "English", "ar": "العربية", "tr": "Türkçe", "zh": "中文", "ja": "日本語", "ko": "한국어", "ru": "Русский"}
 MODELS_9ROUTER = {
@@ -40,12 +40,15 @@ class Router9Translator(BaseTranslator):
     def get_token_limit(self):
         return 128_000
 
-    def translate(self, text, target_lang="fa"):
+    def translate(self, text, target_lang="fa", instructions=""):
         lang = LANG_NAMES.get(target_lang, target_lang)
+        system = SYSTEM + (" For Persian, use correct نیم‌فاصله and «…». Avoid em dash/en dash." if target_lang == "fa" else "")
+        if instructions:
+            system += " " + str(instructions).strip()
         payload = {
             "model": self.model_name,
             "messages": [
-                {"role": "system", "content": SYSTEM + (" For Persian, use correct نیم‌فاصله and «…». Avoid em dash/en dash." if target_lang == "fa" else "")},
+                {"role": "system", "content": system},
                 {"role": "user", "content": f"Translate to {lang}.\n\n{text}"},
             ],
             "max_tokens": max(4096, min(30000, math.ceil(len(str(text)) * 1.15))),
@@ -65,9 +68,11 @@ class Router9Translator(BaseTranslator):
                 content = choices[0].get("message", {}).get("content")
                 if not content:
                     raise RuntimeError("9Router متن ترجمه را برنگرداند.")
-                return _clean_translation(str(content))
+                return _clean_translation(str(content), target_lang)
             except Exception as exc:
                 last = exc
+                if is_permanent_http_error(exc):
+                    break
                 if attempt < 2:
                     time.sleep(1.5 * (2 ** attempt))
         raise RuntimeError(f"خطا در ترجمه 9Router: {last}")

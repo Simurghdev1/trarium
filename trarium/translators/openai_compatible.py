@@ -3,7 +3,7 @@ from __future__ import annotations
 import math, time
 import requests
 from trarium.translators.base import BaseTranslator
-from trarium.utils import clean_translation as _clean_translation
+from trarium.utils import clean_translation as _clean_translation, is_permanent_http_error
 
 LANG_NAMES = {"fa":"فارسی","en":"English","ar":"العربية","fr":"Français","de":"Deutsch","es":"Español","tr":"Türkçe","ja":"日本語","ko":"한국어","zh":"中文","ru":"Русский"}
 SYSTEM_PROMPT = ("You are a professional literary translator. Translate completely and faithfully into the requested target language. "
@@ -24,14 +24,16 @@ class OpenAICompatibleTranslator(BaseTranslator):
 
     def get_token_limit(self): return 131072
 
-    def translate(self, text, target_lang="fa"):
+    def translate(self, text, target_lang="fa", instructions=""):
         lang = LANG_NAMES.get(target_lang, target_lang)
         system = SYSTEM_PROMPT + (" Use natural Persian, correct نیم‌فاصله and Persian quotation marks «…». Avoid em dash and en dash." if target_lang == "fa" else "")
+        if instructions:
+            system += " " + str(instructions).strip()
         payload = {"model": self.model_name, "messages":[{"role":"system","content":system},{"role":"user","content":f"Translate to {lang}.\n\n{str(text)}"}],"temperature":0.2,"max_tokens":max(4096,min(30000,math.ceil(len(str(text))*1.15)))}
         last = None
         for attempt in range(3):
             try:
-                r = requests.post(self.base_url + "/chat/completions", headers={"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json","User-Agent":"Trarium/2.18.0"}, json=payload, timeout=180)
+                r = requests.post(self.base_url + "/chat/completions", headers={"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json","User-Agent":"Trarium/2.19.0"}, json=payload, timeout=180)
                 if r.status_code >= 400: raise RuntimeError(f"{self.provider_name} HTTP {r.status_code}: {r.text[:600]}")
                 data = r.json()
                 usage = data.get("usage") or {}
@@ -39,9 +41,10 @@ class OpenAICompatibleTranslator(BaseTranslator):
                 choices = data.get("choices") or []
                 content = choices[0].get("message",{}).get("content") if choices else None
                 if not content: raise RuntimeError(f"{self.provider_name} پاسخ متنی خالی برگرداند.")
-                return _clean_translation(str(content))
+                return _clean_translation(str(content), target_lang)
             except Exception as exc:
                 last = exc
+                if is_permanent_http_error(exc): break
                 if attempt < 2: time.sleep(1.5*(2**attempt))
         raise RuntimeError(f"خطا در ترجمه {self.provider_name}: {last}")
 
@@ -49,7 +52,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
     def test_connection(self):
         """Small authenticated request used by the UI diagnostics."""
         payload = {"model": self.model_name, "messages":[{"role":"user","content":"Reply only with OK"}],"max_tokens":8,"temperature":0}
-        r = requests.post(self.base_url + "/chat/completions", headers={"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json","User-Agent":"Trarium/2.18.0"}, json=payload, timeout=30)
+        r = requests.post(self.base_url + "/chat/completions", headers={"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json","User-Agent":"Trarium/2.19.0"}, json=payload, timeout=30)
         if r.status_code >= 400:
             raise RuntimeError(f"{self.provider_name} HTTP {r.status_code}: {r.text[:600]}")
         data=r.json(); choices=data.get("choices") or []

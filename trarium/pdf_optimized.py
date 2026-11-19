@@ -82,7 +82,11 @@ def _has_easyocr() -> bool:
 
 
 def _is_tesseract_installed() -> bool:
+    """Both the binary and the pytesseract wrapper are required."""
     try:
+        import importlib.util
+        if importlib.util.find_spec("pytesseract") is None:
+            return False
         from trarium.install_tesseract import _find_tesseract
         return _find_tesseract() is not None
     except Exception:
@@ -778,6 +782,23 @@ def _preflight_htmlbox(rect, text: str, fontsize: float, target_lang: str, page_
         tmp.close()
 
 
+def _page_text_is_invisible(page) -> bool:
+    """Detect an invisible OCR layer (render mode 3).
+
+    Such pages look scanned, so the original glyphs stay in the page image; if we
+    do not paint over the block, the translation is printed on top of them.
+    """
+    try:
+        trace = page.get_texttrace()
+    except Exception:
+        return False
+    types = [int(span.get("type", 0) or 0) for span in trace if span]
+    if not types:
+        return False
+    invisible = sum(1 for item in types if item == 3)
+    return invisible >= max(1, int(len(types) * 0.5))
+
+
 def _write_text(page, rect, text, original_size: float, target_lang: str, scanned: bool | None = None) -> tuple[bool,str]:
     import pymupdf, html as html_mod
     if not text or not text.strip():
@@ -790,7 +811,7 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
     # inside the page image, so the original (Chinese) text would stay visible
     # under the translation. Paint the block area first in that case.
     if scanned is None:
-        scanned = not page.get_text().strip()
+        scanned = (not page.get_text().strip()) or _page_text_is_invisible(page)
     cover_fill=(1,1,1) if scanned else None
     base_size=max(7.0,min(float(original_size or 11),18.0))
     fits,_=_preflight_htmlbox(inset,text,base_size,target_lang,page_rect)
@@ -811,6 +832,19 @@ def _write_text(page, rect, text, original_size: float, target_lang: str, scanne
         spare,scale=page.insert_htmlbox(inset,html,css=_htmlbox_css(base_size,target_lang),archive=arch,scale_low=0.20)
         if spare < 0:
             return False,"درج متن بعد از پاک‌سازی شکست خورد"
+        # The visible glyphs are shaped (presentation forms), so copy/search sees
+        # nothing readable. Store the logical text invisibly on the same spot:
+        # MuPDF reorders RTL runs when extracting, so the reversed string comes
+        # back as normal, searchable Persian.
+        rtl = target_lang in {"fa", "ar", "he", "ur"}
+        hidden = text[::-1] if rtl else text
+        try:
+            for size in (6.0, 4.0, 3.0, 2.0):
+                if page.insert_textbox(inset, hidden, fontsize=size, fontname="Sahel",
+                                       fontfile=str(_FONT_PATH), render_mode=3, align=0) >= 0:
+                    break
+        except Exception:
+            pass
         return True,""
     except Exception as exc:
         return False,str(exc)
@@ -1067,6 +1101,14 @@ def _translator_identity(translator):
     return provider, model
 
 
+def _call_translator(translator, text: str, target_lang: str, instructions: str) -> str:
+    """Send the rules as a system message; older translators fall back to text only."""
+    try:
+        return translator.translate(text, target_lang, instructions=instructions)
+    except TypeError:
+        return translator.translate(text, target_lang)
+
+
 def _translate_marker_batch(translator, entries, target_lang, registry_prompt: str = "", protect_nontranslatable: bool = True, short_prompt: str = ""):
     prepared = []
     mappings = []
@@ -1075,15 +1117,18 @@ def _translate_marker_batch(translator, entries, target_lang, registry_prompt: s
         prepared.append(f"[TRARIUM_BLOCK_{i}]\n{p.text}")
         mappings.append(p.mapping)
     combined = "\n\n".join(prepared)
-    prompt = (
-        "Translate every marked block completely and faithfully. Output only translated blocks. "
-        "Keep [TRARIUM_BLOCK_n] markers exactly. Preserve every __TRARIUM_PH_####__ token exactly. "
-        "Do not summarize or omit text.\n"
-        + (f"Style: {short_prompt}.\n" if short_prompt else "")
-        + (registry_prompt + "\n" if registry_prompt else "")
-        + f"Target language: {target_lang}\n\n{combined}"
-    )
-    result = translator.translate(prompt, target_lang)
+    # The rules go in the system message; the block text stays clean.
+    instruction_lines = [
+        "Translate every marked block completely and faithfully. Output only translated blocks.",
+        "Keep [TRARIUM_BLOCK_n] markers exactly. Preserve every __TRARIUM_PH_####__ token exactly.",
+        "Do not summarize or omit text.",
+    ]
+    if short_prompt:
+        instruction_lines.append(f"Style: {short_prompt}.")
+    if registry_prompt:
+        instruction_lines.append(registry_prompt)
+    instruction_lines.append(f"Target language: {target_lang}")
+    result = _call_translator(translator, combined, target_lang, "\n".join(instruction_lines))
     parsed = _parse_marked_translation(result, len(entries))
     mapped = {}
     for i, entry in enumerate(entries):
@@ -1202,14 +1247,17 @@ def _translate_blocks_resilient(translator, entries, target_lang, max_workers=4,
         p, i, text = entry
         source = safe_normalize_text(text)
         protected = _protect_placeholders(source) if protect_nontranslatable else type("P", (), {"text": source, "mapping": {}})()
-        prompt = (
-            "Translate this literary text completely and faithfully. Output only the translation. "
-            "Preserve __TRARIUM_PH_####__ tokens exactly. Do not summarize or omit.\n"
-            + (f"Style: {short_prompt}.\n" if short_prompt else "")
-            + f"Target language: {target_lang}\n\n{protected.text}"
-        )
+        instruction_lines = [
+            "Translate this literary text completely and faithfully. Output only the translation.",
+            "Preserve __TRARIUM_PH_####__ tokens exactly. Do not summarize or omit.",
+        ]
+        if short_prompt:
+            instruction_lines.append(f"Style: {short_prompt}.")
+        instruction_lines.append(f"Target language: {target_lang}")
+        instructions = "\n".join(instruction_lines)
+        prompt = f"{instructions}\n\n{protected.text}"
         try:
-            out = translator.translate(prompt, target_lang)
+            out = _call_translator(translator, protected.text, target_lang, instructions)
             usage = getattr(translator, "last_usage", {}) or {}
             stats["api_requests"] += 1
             stats["input_tokens"] += int(usage.get("input_tokens") or estimate_tokens(prompt))

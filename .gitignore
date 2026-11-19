@@ -8,3 +8,6 @@ qa/qa_results_*.json
 qa/_pdf_out/
 qa/_cn/
 .venv/
+
+# build artifacts
+*.egg-info/

@@ -32,11 +32,20 @@ def project_key(source_path: str | Path, target_lang: str = "fa",
                 provider: str = "", model: str = "") -> str:
     """کلید پایدار پروژه: مسیر و اندازه و زبان، نه زمان اجرا."""
     path = Path(str(source_path))
+    digest = ""
     try:
         size = path.stat().st_size if path.exists() else 0
+        if path.exists():
+            # Job files are all called input.<ext>, so the name cannot identify a
+            # project. A content hash does.
+            hasher = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(262144), b""):
+                    hasher.update(chunk)
+            digest = hasher.hexdigest()[:16]
     except OSError:
         size = 0
-    raw = "|".join([path.name, str(size), target_lang or "", provider or "", model or ""])
+    raw = "|".join([digest or path.name, str(size), target_lang or "", provider or "", model or ""])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
@@ -89,8 +98,11 @@ class ResumeLedger:
             )
             db.execute(
                 "UPDATE projects SET source_path=CASE WHEN ?<>'' THEN ? ELSE source_path END,"
-                " target_lang=?, provider=?, model=? WHERE key=?",
-                (source_path, source_path, target_lang, provider, model, key),
+                " target_lang=CASE WHEN ?<>'' THEN ? ELSE target_lang END,"
+                " provider=CASE WHEN ?<>'' THEN ? ELSE provider END,"
+                " model=CASE WHEN ?<>'' THEN ? ELSE model END WHERE key=?",
+                (source_path, source_path, target_lang, target_lang,
+                 provider, provider, model, model, key),
             )
             for stage in STAGES:
                 db.execute("INSERT OR IGNORE INTO stages(project_key,stage) VALUES(?,?)", (key, stage))

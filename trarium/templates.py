@@ -109,8 +109,14 @@ def _custom_bucket() -> dict:
 
 
 def _slug(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9\-]+", "-", (value or "").strip().lower()).strip("-")
-    return slug[:40] or "profile"
+    """Unicode-aware key so two Persian template names cannot collide."""
+    import hashlib
+    text = (value or "").strip().lower()
+    slug = re.sub(r"[^\w\-]+", "-", text, flags=re.UNICODE).strip("-")
+    if not slug or slug == "profile":
+        slug = "profile"
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+    return f"{slug[:32]}-{digest}"
 
 
 def list_templates() -> list[ProjectTemplate]:
@@ -161,19 +167,23 @@ def delete_custom(key: str) -> bool:
     return True
 
 
-def apply_template(key: str, base: dict | None = None) -> dict:
-    """تنظیمات قالب را روی یک کپی از تنظیمات فعلی می‌نشاند."""
+def apply_template(key: str, base: dict | None = None, *, only_missing: bool = False) -> dict:
+    """تنظیمات قالب را روی یک کپی از تنظیمات فعلی می‌نشاند.
+
+    ``only_missing`` برای وقتی است که کاربر تنظیمات خودش را در فرم انتخاب
+    کرده است؛ قالب نباید آن‌ها را بازنویسی کند.
+    """
     template = get_template(key)
     result = dict(base or {})
     if not template:
         return result
     for name, value in template.settings.items():
-        if name in TEMPLATE_KEYS:
+        if name in TEMPLATE_KEYS and (not only_missing or name not in result):
             result[name] = value
     result["template"] = template.key
     return result
 
 
-def resolve(key: str | None, base: dict | None = None) -> dict:
+def resolve(key: str | None, base: dict | None = None, *, only_missing: bool = False) -> dict:
     """اگر قالب نامعتبر بود، تنظیمات پایه دست‌نخورده برمی‌گردد."""
-    return apply_template(key, base) if key else dict(base or {})
+    return apply_template(key, base, only_missing=only_missing) if key else dict(base or {})

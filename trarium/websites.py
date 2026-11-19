@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup, NavigableString
 
 from trarium.cache import TranslationCache, normalize_cache_text
 
-USER_AGENT = "Trarium/2.18.0 (local translation app)"
+USER_AGENT = "Trarium/2.19.0 (local translation app)"
 BLOCK_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "figcaption",
               "td", "th", "dt", "dd", "summary", "caption")
 SKIP_TAGS = {"script", "style", "noscript", "code", "pre", "svg", "math", "template",
@@ -105,16 +105,33 @@ class WebsiteResult:
             path.write_text(done[0].html, encoding="utf-8")
             return path
         path = out / f"{stem}_html.zip"
+        names = {page.url: f"page_{index:03d}.html" for index, page in enumerate(done, 1)}
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
             links = []
             for index, page in enumerate(done, 1):
                 name = f"page_{index:03d}.html"
-                archive.writestr(name, page.html)
+                archive.writestr(name, _relink(page.html, page.url, names))
                 links.append(f'<li><a href="{name}">{_escape_text(page.title or page.url)}</a></li>')
             archive.writestr("index.html",
                              '<!doctype html><meta charset="utf-8"><title>'
                              + _escape_text(self.title) + "</title><ul>" + "".join(links) + "</ul>")
         return path
+
+
+def _relink(html: str, base_url: str, names: dict[str, str]) -> str:
+    """Point internal links at the local page files inside the ZIP."""
+    if not html:
+        return html
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        for anchor in soup.find_all("a", href=True):
+            target = urljoin(base_url, anchor["href"]).split("#", 1)[0]
+            local = names.get(target) or names.get(normalize_url(target))
+            if local:
+                anchor["href"] = local
+        return str(soup)
+    except Exception:
+        return html
 
 
 def _escape_text(value: str) -> str:
@@ -227,11 +244,12 @@ def extract_blocks(html: str) -> tuple[BeautifulSoup, list[str], str]:
         if len(text) < 2 or not re.search(r"[^\W\d_]", text, re.UNICODE):
             continue
         key = normalize_cache_text(text)
-        if key in seen:
-            continue
-        seen.add(key)
+        # Mark every element, including repeated paragraphs; otherwise the second
+        # copy of a sentence stayed English in the output page.
         element["data-trarium-block"] = str(len(blocks))
-        blocks.append(text)
+        if key not in seen:
+            seen.add(key)
+            blocks.append(text)
     return soup, blocks, str(title_tag or "").strip()
 
 

@@ -351,15 +351,19 @@ def enhance_archive(source: str | Path, destination: str | Path, settings: Manga
             (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"))]
         for i, name in enumerate(images, 1):
             data = archive.read(name)
+            # Keep the archive path unique: identical file names in different
+            # folders used to overwrite each other.
+            arcname = name.replace("\\", "/")
+            safe_name = f"{i:04d}_" + Path(arcname).name
             temp = destination.parent / f"__tmp_{i}{Path(name).suffix.lower()}"
             temp.write_bytes(data)
             try:
-                report = enhance_file(temp, destination.parent / Path(name).name, settings)
+                report = enhance_file(temp, destination.parent / safe_name, settings)
                 reports.append(report)
                 if report.get("output") and Path(report["output"]).exists():
-                    out.write(report["output"], Path(name).name)
+                    out.write(report["output"], arcname)
                 else:
-                    out.writestr(Path(name).name, data)
+                    out.writestr(arcname, data)
             finally:
                 temp.unlink(missing_ok=True)
             if progress:

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from trarium.extractors.generic import decode_text
+from trarium.utils import ascii_digits
 
 SUBTITLE_OUTPUT_EXTENSIONS = {".srt", ".vtt", ".sbv", ".lrc", ".ass", ".ssa", ".sub"}
 
@@ -31,7 +32,9 @@ class SubtitleFile:
 
     def render(self, texts: list[str]) -> str:
         """متن‌های ترجمه‌شده را با همان زمان‌بندی و ترتیب برمی‌گرداند."""
-        values = list(texts) + [""] * max(0, len(self.cues) - len(texts))
+        # Translated prose often turns 10 into ۱۰; subtitle numbers/timings stay ASCII.
+        values = [ascii_digits(str(value)) for value in texts]
+        values += [""] * max(0, len(self.cues) - len(values))
         if self.kind in {"srt", "vtt", "sbv"}:
             return self._render_blocks(values)
         if self.kind == "lrc":
@@ -133,7 +136,7 @@ def _read_ass(text: str) -> tuple[str, list[Cue]]:
 def _read_lrc(text: str) -> tuple[str, list[Cue]]:
     cues: list[Cue] = []
     for line in text.splitlines():
-        match = re.match(r"^(\[[^\]]*\])(.*)$", line)
+        match = re.match(r"^((?:\[[^\]]*\])+)(.*)$", line)
         if not match:
             continue
         body = match.group(2).strip()

@@ -22,6 +22,32 @@ SHORT_PROMPT_CHIPS: dict[str, str] = {
 }
 
 
+CONFLICT_GROUPS: list[set[str]] = [
+    # Only one register can be asked for at a time.
+    {"ادبی و شاعرانه ننویس", "ترجمهٔ عادی و روان", "خودمونی و محاوره‌ای", "لحن رسمی و کتابی"},
+]
+
+
+def conflicting_labels(label: str) -> set[str]:
+    """Labels that cannot be active together with `label`."""
+    for group in CONFLICT_GROUPS:
+        if label in group:
+            return group - {label}
+    return set()
+
+
+def filter_conflicts(labels) -> list[str]:
+    """Keep the newest register chip and drop the contradictory older ones."""
+    result: list[str] = []
+    for label in labels or []:
+        for group in CONFLICT_GROUPS:
+            if str(label) in group:
+                result = [item for item in result if item not in group]
+        if label not in result:
+            result.append(label)
+    return result
+
+
 def validate_chips() -> None:
     """قاعدهٔ توکن: دست‌کم دو کلیدواژه و هرکدام دست‌کم ۱۰ نویسه."""
     if len(SHORT_PROMPT_CHIPS) < 2:

@@ -349,10 +349,15 @@ class UsageTrackingTranslator:
         getter = getattr(self.inner, "get_token_limit", None)
         return getter() if callable(getter) else 8000
 
-    def translate(self, text: str, target_lang: str = "fa") -> str:
+    def translate(self, text: str, target_lang: str = "fa", instructions: str = "") -> str:
         started = time.monotonic()
         try:
-            output = self.inner.translate(text, target_lang)
+            try:
+                output = self.inner.translate(text, target_lang, instructions)
+            except TypeError as exc:
+                if "instructions" not in str(exc) and "positional argument" not in str(exc):
+                    raise
+                output = self.inner.translate(text, target_lang)
         except Exception as exc:
             self.calls += 1
             self.last_error = str(exc)
@@ -389,13 +394,15 @@ class UsageTrackingTranslator:
 
 def record_ocr(pages: int = 0, requests: int = 1, provider: str = "local",
                model: str = "", project: str = "", job_id: str = "",
-               estimated_input: int = 0, estimated_output: int = 0) -> None:
+               estimated_input: int = 0, estimated_output: int = 0,
+               error: str = "") -> None:
     """Record OCR work using local page counts (no invented official quota)."""
-    if pages <= 0 and requests <= 0:
+    if pages <= 0 and requests <= 0 and not error:
         return
     try:
         default_store().record(provider or "local", model or "ocr", KIND_OCR,
                                max(0, int(estimated_input)), max(0, int(estimated_output)),
-                               max(1, int(requests)), project, job_id, cost_usd=0.0, estimated=True)
+                               max(0, int(requests)), project, job_id, cost_usd=0.0,
+                               estimated=True, error=str(error or "")[:300])
     except Exception:
         pass

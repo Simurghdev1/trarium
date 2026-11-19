@@ -2,6 +2,8 @@
 
 import os
 import sys
+from pathlib import Path
+
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -112,10 +114,35 @@ def main(file_path, to, provider, api_key, model, base_url, ocr, ocr_method, out
     if delay < 0:
         raise click.BadParameter("delay نمی‌تواند منفی باشد")
 
-    # پارس صفحات رد شده
-    user_skip = parse_skip_pages(skip_pages) if skip_pages else set()
+    # پارس صفحات رد شده؛ ورودی بد باید پیام روشن بدهد، نه traceback.
+    try:
+        user_skip = parse_skip_pages(skip_pages) if skip_pages else set()
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--skip-pages")
+    if user_skip and not str(file_path).lower().endswith(".pdf"):
+        raise click.BadParameter("رد کردن صفحه فقط برای PDF معنا دارد؛ برای این فایل از بازهٔ فصل استفاده کنید.",
+                                 param_hint="--skip-pages")
     if user_skip:
         console.print(f"  🚫 صفحات رد شده: {sorted([i+1 for i in user_skip])}")
+
+    # مسیر خروجی پیش از خرج کردن API اعتبارسنجی می‌شود.
+    if not output:
+        out_dir = Path.cwd() / "trarium_output"
+        output = str(out_dir / f"{Path(file_path).stem}_{to}.{out_format}")
+    out_path = Path(output)
+    if out_path.exists() and out_path.is_dir():
+        out_path = out_path / f"{Path(file_path).stem}_{to}.{out_format}"
+    if out_path.suffix.lower().lstrip(".") not in {"txt", "pdf", "epub"}:
+        out_path = out_path.with_suffix("." + out_format)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        probe = out_path.parent / f".trarium_write_test_{os.getpid()}"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        console.print(f"[red]❌ مسیر خروجی قابل نوشتن نیست: {out_path} ({exc})[/]")
+        sys.exit(1)
+    output = str(out_path)
 
     console.print(Panel("[bold]📄 مرحله ۱: استخراج متن[/]", style="cyan"))
 
@@ -138,18 +165,28 @@ def main(file_path, to, provider, api_key, model, base_url, ocr, ocr_method, out
 
     console.print(Panel(f"[bold]🌍 مرحله ۲: ترجمه به {to} ({provider})[/]", style="cyan"))
 
+    if user_skip:
+        # صفحه‌های PDF در لایهٔ چیدمان رد می‌شوند، نه با حذف فصل از متن.
+        try:
+            from trarium.pdf_optimized import translate_pdf_optimized
+            translator = get_translator(provider, api_key=api_key, model_name=model,
+                                        base_url=base_url, provider_name="OpenAI-compatible") \
+                if provider == "openai_compatible" else get_translator(provider, api_key=api_key, model_name=model)
+            if not str(output).lower().endswith(".pdf"):
+                output = str(Path(output).with_suffix(".pdf"))
+            _, stats = translate_pdf_optimized(file_path, translator, to, output,
+                                               skip_pages=user_skip, return_stats=True,
+                                               translation_workers=workers,
+                                               translation_batch_chars=chunk_size)
+            console.print(f"  ✍️ {stats.translated_blocks} بلاک در {stats.pages_written} صفحه نوشته شد")
+            console.print("\n[bold green]🎉 تراریوم تموم شد![/]\n")
+            return
+        except Exception as exc:
+            console.print(f"[red]❌ خطا در ترجمهٔ PDF: {exc}[/]")
+            sys.exit(1)
+
     try:
         translator = CachedTranslator(get_translator(provider, api_key=api_key, model_name=model, base_url=base_url, provider_name="OpenAI-compatible") if provider == "openai_compatible" else get_translator(provider, api_key=api_key, model_name=model), provider, model)
-
-        # فیلتر کردن فصل‌های رد شده
-        if user_skip:
-            active_chapters = [ch for i, ch in enumerate(book.chapters) if i not in user_skip]
-            if not active_chapters:
-                console.print("[red]❌ همه فصل‌ها رد شدن![/]")
-                sys.exit(1)
-            book.chapters = active_chapters
-            book.total_chars = sum(len(ch.get("content", "")) for ch in active_chapters)
-            console.print(f"  📊 بخش‌های فعال: {len(active_chapters)}")
 
         pipeline = TranslationPipeline(
             translator=translator,

@@ -9,6 +9,19 @@ from trarium.extractors.base import BaseExtractor, ExtractedBook
 from trarium.extractors.watermark import strip_watermarks
 
 
+def _chapter_title(html: str, fallback: str) -> str:
+    """Real chapter title (h1/h2/title), not the internal xhtml file name."""
+    for pattern in (r"<h1[^>]*>(.*?)</h1>", r"<h2[^>]*>(.*?)</h2>", r"<title[^>]*>(.*?)</title>"):
+        match = re.search(pattern, html, flags=re.I | re.S)
+        if match:
+            value = re.sub(r"<[^>]+>", " ", match.group(1))
+            value = unescape(re.sub(r"\s+", " ", value)).strip()
+            if value:
+                return value[:200]
+    stem = re.sub(r"\.[^.]+$", "", fallback.rsplit("/", 1)[-1])
+    return re.sub(r"[_\-]+", " ", stem).strip() or fallback
+
+
 class EPUBExtractor(BaseExtractor):
     """استخراج متن از EPUB."""
 
@@ -53,7 +66,7 @@ class EPUBExtractor(BaseExtractor):
                 # خطوط واترمارک (مثل OceanofPDF.com) نه ترجمه می‌شوند نه در کتاب می‌مانند.
                 text = strip_watermarks(text)
                 if text:
-                    chapters.append({"title": item.get_name(), "content": text})
+                    chapters.append({"title": _chapter_title(content, item.get_name()), "content": text})
                     full_text_parts.append(text)
 
         full_text = "\n\n".join(full_text_parts)

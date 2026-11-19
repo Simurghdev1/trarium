@@ -326,6 +326,10 @@ class NovelScraper:
                 result = self.scrape_chapter(current)
             except Exception as exc:
                 console.print(f"  ❌ خطا در {current}: {exc}")
+                if not results:
+                    # An empty list looked like "no chapters found"; the real
+                    # reason (403/503/timeout) must reach the user.
+                    raise RuntimeError(f"دریافت فصل اول ناموفق بود: {exc}") from exc
                 break
             if result.text:
                 results.append(result)

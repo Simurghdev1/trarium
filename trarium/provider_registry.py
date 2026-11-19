@@ -5,6 +5,8 @@ this factory, so credentials and model defaults cannot drift apart.
 """
 from __future__ import annotations
 
+import os
+
 from trarium.local_state import get_provider_config, save_provider_config
 from trarium.translators import get_translator
 from trarium.translators.gemini import GEMINI_MODELS
@@ -40,13 +42,33 @@ def default_model(provider: str) -> str:
     return list(choices.values())[0]
 
 
+ENV_KEYS = {
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    "groq": ("GROQ_API_KEY",),
+    "openai_compatible": ("TRARIUM_API_KEY",),
+}
+
+
+def env_key(provider: str) -> str:
+    """Read a key from the environment so CLI/background runs match the UI."""
+    for name in ENV_KEYS.get(provider, ()):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
 def has_credentials(provider: str) -> bool:
     if provider == "router9":
         return True
     saved = get_provider_config(provider)
     if provider == "openai_compatible":
-        return bool(saved["api_key"] and saved["base_url"] and saved["model"])
-    return bool(saved["api_key"])
+        key = saved["api_key"] or env_key(provider)
+        base = saved["base_url"] or os.environ.get("TRARIUM_BASE_URL", "").strip()
+        model = saved["model"] or os.environ.get("TRARIUM_MODEL", "").strip()
+        return bool(key and base and model)
+    return bool(saved["api_key"] or env_key(provider))
 
 
 def build_translator(provider: str, model: str = "", *, api_key: str | None = None,
@@ -55,14 +77,18 @@ def build_translator(provider: str, model: str = "", *, api_key: str | None = No
     provider = (provider or "openrouter").strip().lower()
     saved = get_provider_config(provider)
     key = saved["api_key"] if api_key is None else api_key
+    if not key:
+        key = env_key(provider)
+    base_url = base_url or os.environ.get("TRARIUM_BASE_URL", "").strip() or None
+    provider_name = provider_name or "OpenAI-compatible"
     chosen_model = (model or saved["model"] or default_model(provider)).strip()
     if provider == "router9":
         return get_translator("router9", api_key=key or "9router", model_name=chosen_model or "auto")
     if provider == "openai_compatible":
         return get_translator(
             "openai_compatible", api_key=key, model_name=chosen_model,
-            base_url=(saved["base_url"] if base_url is None else base_url),
-            provider_name=provider_name or "OpenAI-compatible",
+            base_url=(saved["base_url"] or (base_url or "")),
+            provider_name=provider_name,
         )
     return get_translator(provider, api_key=key, model_name=chosen_model)
 

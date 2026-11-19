@@ -20,6 +20,40 @@ def _safe_name(value: str, fallback: str = "translated") -> str:
     return name or fallback
 
 
+def _parse_page_selection(value) -> set[int]:
+    """"1,3-5" or [1, 3, 5] → zero-based page indexes."""
+    if not value:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        return {max(0, int(item) - 1) for item in value if str(item).strip().isdigit()}
+    pages: set[int] = set()
+    for part in str(value).replace("،", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, _, end = part.partition("-")
+            if start.strip().isdigit() and end.strip().isdigit():
+                first, last = int(start), int(end)
+                pages.update(range(max(1, first) - 1, max(first, last)))
+        elif part.isdigit() and int(part) > 0:
+            pages.add(int(part) - 1)
+    return pages
+
+
+def _title_stem(ctx, source: Path | None = None) -> str:
+    """Human file name for outputs (never the internal input.<ext>)."""
+    display = str(ctx.config.get("display_name") or "")
+    if display:
+        return _safe_name(Path(display).stem)
+    title = str(ctx.job.get("title") or "")
+    if title and Path(title).stem not in {"input"}:
+        return _safe_name(title)
+    if source is not None:
+        return _safe_name(source.stem)
+    return "translated"
+
+
 def _pipeline(ctx, *, chunk_size: int, workers: int, delay: float, on_unit_done=None,
               target_lang: str | None = None) -> TranslationPipeline:
     cfg = ctx.config
@@ -94,7 +128,7 @@ def _handle_office(ctx, source: Path, suffix: str) -> bool:
     out_dir = ctx.directory / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     target_lang = ctx.job.get("target_lang") or "fa"
-    out = out_dir / f"{_safe_name(ctx.job['title'])}_{target_lang}{suffix}"
+    out = out_dir / f"{_title_stem(ctx, source)}_{target_lang}{suffix}"
     out.write_bytes(content)
     stats = pipeline.stats
     ctx.unit_done(0, title=suffix)
@@ -128,7 +162,7 @@ def _handle_structured(ctx, source: Path, suffix: str) -> bool:
     out_dir = ctx.directory / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     target_lang = ctx.job.get("target_lang") or "fa"
-    out = out_dir / f"{_safe_name(ctx.job['title'])}_{target_lang}{suffix}"
+    out = out_dir / f"{_title_stem(ctx, source)}_{target_lang}{suffix}"
     out.write_text(content, encoding="utf-8")
     stats = pipeline.stats
     ctx.unit_done(0, title=suffix)
@@ -203,7 +237,7 @@ def _handle_subtitle(ctx, source: Path, suffix: str) -> bool:
     out_dir = ctx.directory / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     target_lang = ctx.job.get("target_lang") or "fa"
-    out = out_dir / f"{_safe_name(ctx.job['title'])}_{target_lang}{suffix}"
+    out = out_dir / f"{_title_stem(ctx, source)}_{target_lang}{suffix}"
     out.write_text(document.render(texts), encoding="utf-8")
     stats = pipeline.stats
     ctx.update(total_units=len(batches), completed_units=len(batches) - failed, failed_units=failed,
@@ -276,8 +310,11 @@ def handle_book(ctx) -> None:
     ctx.checkpoint()
     result = pipeline.run(book)
     if result.translated_chunks == 0:
-        raise RuntimeError("هیچ بخشی ترجمه نشد؛ خطا: "
-                           + (ctx.store.events(ctx.job_id, 1)[-1]["message"] if ctx.store.events(ctx.job_id, 1) else ""))
+        detail = getattr(result, "error_message", "") or ""
+        events = ctx.store.events(ctx.job_id, 1)
+        if not detail and events:
+            detail = events[-1]["message"]
+        raise RuntimeError("هیچ بخشی ترجمه نشد؛ خطا: " + (detail or "خطای نامشخص"))
     if track:
         ledger.complete(track, "translate",
                         f"{result.translated_chunks}/{len(chunks)} بخش",
@@ -330,8 +367,10 @@ def handle_pdf(ctx) -> None:
     total_pages = len(doc)
     doc.close()
     ctx.ensure_units([f"صفحه {i + 1}" for i in range(total_pages)])
-    out = ctx.directory / "output" / f"{_safe_name(ctx.job['title'])}_fa.pdf"
+    target_lang = ctx.job.get("target_lang") or "fa"
+    out = ctx.directory / "output" / f"{_title_stem(ctx, source)}_{target_lang}.pdf"
     out.parent.mkdir(parents=True, exist_ok=True)
+    page_range = cfg.get("pages") or ""
     last_completed = -1
 
     def progress(value: float, message: str) -> None:
@@ -340,15 +379,19 @@ def handle_pdf(ctx) -> None:
         value = max(0.0, min(1.0, float(value)))
         completed = int(value * total_pages)
         if completed > last_completed:
-            for idx in range(last_completed + 1, completed + 1):
+            # Never insert a unit past the last real page (that is what made a
+            # two-page job report "3 of 2").
+            for idx in range(last_completed + 1, min(completed, total_pages)):
                 ctx.store.set_unit(ctx.job_id, idx, "completed")
-            last_completed = completed
+            last_completed = min(completed, total_pages)
         stage = "OCR و تحلیل" if value < 0.40 else ("ترجمه" if value < 0.80 else "ساخت PDF")
         ctx.update(progress=value, stage=stage, current_unit=message[:300],
                    completed_units=max(0, min(total_pages, completed)))
 
+    skip_pages = _parse_page_selection(page_range)
     _, stats = translate_pdf_optimized(
-        str(source), ctx.make_translator(), ctx.job.get("target_lang") or "fa", str(out),
+        str(source), ctx.make_translator(), target_lang, str(out),
+        skip_pages=skip_pages,
         translation_workers=int(cfg.get("workers", 3)),
         translation_batch_chars=int(cfg.get("chunk_size", 14000)),
         progress_callback=progress, return_stats=True,
@@ -364,6 +407,9 @@ def handle_pdf(ctx) -> None:
         use_cache=bool(cfg.get("use_cache", True)),
         short_prompt=str(cfg.get("short_prompt") or ""),
     )
+    if stats.translated_blocks == 0 and stats.total_blocks > 0:
+        reason = stats.first_translation_error or stats.first_write_error or "خطای نامشخص"
+        raise RuntimeError("هیچ بلوکی ترجمه نشد؛ PDF ترجمه‌نشده ذخیره نشد. علت: " + str(reason))
     for idx in range(total_pages):
         ctx.store.set_unit(ctx.job_id, idx, "completed")
     if track:
@@ -524,13 +570,22 @@ def handle_manga(ctx) -> None:
     enhanced_dir = ctx.directory / "enhanced"
     enhanced_dir.mkdir(parents=True, exist_ok=True)
     images: list[Path] = []
+    rel_names: dict[Path, Path] = {}
     if zipfile.is_zipfile(source):
         with zipfile.ZipFile(source) as archive:
             for name in archive.namelist():
-                if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")):
-                    target = work / Path(name).name
-                    target.write_bytes(archive.read(name))
-                    images.append(target)
+                if not name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")):
+                    continue
+                rel = Path(name.replace("\\", "/"))
+                if rel.is_absolute() or ".." in rel.parts:
+                    continue
+                # Keep the folder structure: two "01.png" in different folders
+                # must not overwrite each other.
+                target = work / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(name))
+                images.append(target)
+                rel_names[target] = rel
     elif source.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
         images = [source]
     if not images:
@@ -543,7 +598,10 @@ def handle_manga(ctx) -> None:
         ctx.unit_started(idx, image.name)
         ctx.checkpoint()
         try:
-            report = enhance_file(image, enhanced_dir / image.name, settings)
+            relative = rel_names.get(image) or Path(image.name)
+            destination = enhanced_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            report = enhance_file(image, destination, settings)
             reports.append(report)
             ctx.unit_done(idx, title=image.name, failed=not report.get("ok"),
                           error=report.get("error", ""))
@@ -555,8 +613,8 @@ def handle_manga(ctx) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     zip_path = out_dir / f"{_safe_name(ctx.job['title'])}_enhanced.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file in sorted(enhanced_dir.iterdir()):
+        for file in sorted(enhanced_dir.rglob("*")):
             if file.is_file():
-                archive.write(file, file.name)
+                archive.write(file, file.relative_to(enhanced_dir).as_posix())
         archive.writestr("report.json", json.dumps(reports, ensure_ascii=False, indent=2))
     ctx.finish(zip_path)

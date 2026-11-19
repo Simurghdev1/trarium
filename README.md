@@ -253,7 +253,7 @@ In **حفظ قالب PDF**, enable OCR and use **بنچمارک ۱۰ صفحه** 
 The project includes a smoke suite:
 
 ```bash
-python -m unittest discover -s tests -v
+.venv/bin/python -m pytest tests -q -p no:cacheprovider -v
 ```
 
 It covers marker recovery, PDF layout output, failed-chunk preservation, native PDF extraction and Next Chapter detection.

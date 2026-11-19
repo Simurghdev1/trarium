@@ -52,8 +52,16 @@ def _read_bytes(path: str | Path, limit: int = 200 * 1024 * 1024) -> bytes | Non
 def submit_upload_job(ctx: dict, uploaded, kind: str | None = None, config: dict | None = None) -> str:
     """Queue an uploaded file for background processing."""
     suffix = Path(uploaded.name).suffix.lower()
-    kind = kind or ("pdf" if suffix == ".pdf" else "book")
-    config = config or ctx["job_config"]("pdf" if kind == "pdf" else "txt")
+    if kind is None:
+        if suffix == ".pdf":
+            kind = "pdf"
+        elif suffix in {".cbz", ".cbr"}:
+            kind = "manga"
+        else:
+            kind = "book"
+    config = dict(config or ctx["job_config"]("pdf" if kind == "pdf" else "txt"))
+    # Remember the real file name; the job's own file is always input.<ext>.
+    config.setdefault("display_name", uploaded.name)
     chain = config.get("provider_chain") or []
     missing = [item["provider"] for item in chain if not has_credentials(item.get("provider", ""))]
     if missing:
@@ -180,7 +188,7 @@ def render_queue_tab(ctx: dict) -> None:
             out_fmt = st.selectbox("فرمت خروجی", ["txt", "epub", "html", "pdf"], key="queue_format")
             st.caption("برای زیرنویس، Word/PowerPoint/Excel، JSON/CSV، نوت‌بوک و فایل کد، خروجی همیشه با فرمت خودِ فایل ساخته می‌شود.")
         with q3:
-            kind_override = st.selectbox("نوع تسک", ["تشخیص خودکار", "متن/کتاب", "PDF"],
+            kind_override = st.selectbox("نوع تسک", ["تشخیص خودکار", "متن/کتاب", "PDF", "مانگا (CBZ/تصویر)"],
                                          key="queue_kind")
         if st.button("افزودن فایل‌ها به صف", type="primary", key="queue_add_files") and files:
             added = []
@@ -191,9 +199,15 @@ def render_queue_tab(ctx: dict) -> None:
                         kind = "pdf"
                     elif kind_override == "متن/کتاب":
                         kind = "book"
+                    elif kind_override.startswith("مانگا"):
+                        kind = "manga"
                     config = ctx["job_config"]("pdf" if kind == "pdf" else out_fmt)
+                    detected = kind or (
+                        "pdf" if Path(uploaded.name).suffix.lower() == ".pdf"
+                        else "manga" if Path(uploaded.name).suffix.lower() in {".cbz", ".cbr"}
+                        else "book")
                     job_id = _manager().submit(
-                        kind or ("pdf" if Path(uploaded.name).suffix.lower() == ".pdf" else "book"),
+                        detected,
                         Path(uploaded.name).stem, config=config, source_bytes=uploaded.getvalue(),
                         source_name=uploaded.name, target_lang=ctx["target_lang"],
                         provider=ctx["provider"], model=ctx["model"], priority=priority,
@@ -219,6 +233,8 @@ def render_queue_tab(ctx: dict) -> None:
         if st.button("افزودن وب‌ناول به صف", key="queue_add_novel"):
             if not novel_url.strip():
                 st.warning("لینک فصل شروع را وارد کنید.")
+            elif chapter_end and int(chapter_start) > int(chapter_end):
+                st.error("فصل شروع نمی‌تواند بعد از فصل پایان باشد.")
             else:
                 try:
                     config = ctx["job_config"](novel_fmt, extra={
@@ -427,7 +443,7 @@ def render_manga_tab(ctx: dict) -> None:
             with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive, tempfile.TemporaryDirectory() as td:
                 for uploaded in uploads:
                     name = Path(uploaded.name)
-                    if name.suffix.lower() == ".zip":
+                    if name.suffix.lower() in {".zip", ".cbz"}:
                         try:
                             with zipfile.ZipFile(io.BytesIO(uploaded.getvalue())) as source:
                                 for inner in source.namelist():
@@ -458,10 +474,10 @@ def render_manga_tab(ctx: dict) -> None:
                 buffer = io.BytesIO()
                 with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
                     for uploaded in uploads:
-                        if Path(uploaded.name).suffix.lower() == ".zip":
+                        if Path(uploaded.name).suffix.lower() in {".zip", ".cbz"}:
                             with zipfile.ZipFile(io.BytesIO(uploaded.getvalue())) as source:
                                 for inner in source.namelist():
-                                    if inner.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                                    if inner.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")):
                                         archive.writestr(Path(inner).name, source.read(inner))
                         else:
                             archive.writestr(Path(uploaded.name).name, uploaded.getvalue())

@@ -19,7 +19,8 @@ def normalize_cache_text(text: str) -> str:
 
 class TranslationCache:
     def __init__(self, path: str | None = None):
-        self.path = Path(path or (Path.home() / ".trarium" / "cache.sqlite3"))
+        from trarium.local_state import trarium_home
+        self.path = Path(path) if path else trarium_home() / "cache.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         with sqlite3.connect(self.path) as db:
@@ -77,20 +78,26 @@ class CachedTranslator:
     def get_token_limit(self):
         return self.inner.get_token_limit()
 
-    def translate(self, text: str, target_lang: str = "fa") -> str:
-        hit = self.cache.get(text, target_lang, self.provider, self.model, self.instructions)
+    def translate(self, text: str, target_lang: str = "fa", instructions: str = "") -> str:
+        style = (self.instructions + "|" + str(instructions or "")).strip("|")
+        hit = self.cache.get(text, target_lang, self.provider, self.model, style)
         if hit is not None:
             self.hits += 1
             self.last_usage = {"cache_hit": True, "input_tokens": 0, "output_tokens": 0}
             return hit
         self.misses += 1
         try:
-            value = self.inner.translate(text, target_lang)
+            try:
+                value = self.inner.translate(text, target_lang, instructions)
+            except TypeError as exc:
+                if "instructions" not in str(exc) and "positional argument" not in str(exc):
+                    raise
+                value = self.inner.translate(text, target_lang)
             self.last_error = ""
             self.last_usage = getattr(self.inner, "last_usage", {}) or {}
         except Exception as exc:
             self.last_error = str(exc)
             raise
         if value and str(value).strip():
-            self.cache.put(text, str(value), target_lang, self.provider, self.model, self.instructions)
+            self.cache.put(text, str(value), target_lang, self.provider, self.model, style)
         return str(value or "")

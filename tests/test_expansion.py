@@ -456,8 +456,13 @@ def test_queue_runs_multiple_projects_by_priority():
         ctx.finish(ctx.directory / "out.txt")
 
     manager.register_handler("tick", handler)
+    # Hold the queue while the three jobs are submitted: an idle dispatcher
+    # launches the first job before the others exist, which makes the run order
+    # depend on machine speed instead of on priority.
+    manager.pause_queue(True)
     ids = [manager.submit("tick", name, priority=prio, units=["only"])
            for name, prio in [("low", 1), ("high", 9), ("mid", 5)]]
+    manager.pause_queue(False)
     deadline = time.time() + 10
     while time.time() < deadline and any(store.get(i)["status"] != STATUS_COMPLETED for i in ids):
         time.sleep(0.05)

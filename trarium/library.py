@@ -48,7 +48,9 @@ _SORT_KEYS = {
 }
 
 _FIELDS = {"title", "author", "category", "status", "job_id", "settings", "cover",
-           "source_path", "last_opened"}
+           "path", "last_opened"}
+# Callers historically used source_path; the column is called path.
+_FIELD_ALIASES = {"source_path": "path"}
 
 
 class Library:
@@ -124,7 +126,7 @@ class Library:
                 cover_rel = str(cover_path)
         except Exception:
             cover_rel = ""
-        meta_title = title or Path(filename).stem
+        meta_title = (title or book_title_from_filename(filename) or "بدون عنوان").strip()[:200]
         meta_author = author
         if not title:
             try:
@@ -161,9 +163,11 @@ class Library:
                    category: str | None = None, playlist: str | None = None) -> list[dict]:
         clauses, params = [], []
         if search.strip():
-            like = f"%{search.strip()}%"
-            clauses.append("(books.title LIKE ? OR books.author LIKE ? OR books.filename LIKE ?"
-                           " OR books.category LIKE ?)")
+            # Use ESCAPE so a title containing % or _ can still be searched literally.
+            term = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{term}%"
+            clauses.append("(books.title LIKE ? ESCAPE '\\' OR books.author LIKE ? ESCAPE '\\'"
+                           " OR books.filename LIKE ? ESCAPE '\\' OR books.category LIKE ? ESCAPE '\\')")
             params.extend([like, like, like, like])
         if status:
             clauses.append("books.status=?")
@@ -185,7 +189,10 @@ class Library:
         return [self._decode(row) for row in rows]
 
     def update_book(self, book_id: str, **fields) -> None:
+        fields = {_FIELD_ALIASES.get(key, key): value for key, value in fields.items()}
         clean = {key: value for key, value in fields.items() if key in _FIELDS}
+        if "title" in clean:
+            clean["title"] = str(clean["title"] or "").strip() or "بدون عنوان"
         if not clean:
             return
         if "settings" in clean and not isinstance(clean["settings"], str):
@@ -227,11 +234,15 @@ class Library:
                 Path(book["cover"]).unlink(missing_ok=True)
             except OSError:
                 pass
-        if remove_file and book.get("path"):
-            try:
-                Path(book["path"]).unlink(missing_ok=True)
-            except OSError:
-                pass
+        if remove_file:
+            # Always remove the library's own copy; an external original is left alone.
+            for candidate in {book.get("path") or "", str(self.root / "files" / f"{book.get('id')}{book.get('ext') or ''}")}:
+                if not candidate:
+                    continue
+                try:
+                    Path(candidate).unlink(missing_ok=True)
+                except OSError:
+                    pass
         return True
 
     def touch(self, book_id: str) -> None:

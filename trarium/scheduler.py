@@ -22,15 +22,20 @@ class FallbackTranslator:
 
     def _ordered(self):
         now = time.monotonic()
-        available = [(n, t) for n, t in self.translators if self.cooldowns.get(n, 0) <= now]
-        cooling = [(n, t) for n, t in self.translators if self.cooldowns.get(n, 0) > now]
-        return available + cooling
+        # Cooling providers are skipped; retrying them is what made a dead
+        # provider stall every request until its cooldown expired.
+        return [(n, t) for n, t in self.translators if self.cooldowns.get(n, 0) <= now]
 
-    def translate(self, text, target_lang="fa"):
+    def translate(self, text, target_lang="fa", instructions=""):
         last = None
         for name, translator in self._ordered():
             try:
-                value = translator.translate(text, target_lang)
+                try:
+                    value = translator.translate(text, target_lang, instructions)
+                except TypeError as exc:
+                    if "instructions" not in str(exc) and "positional argument" not in str(exc):
+                        raise
+                    value = translator.translate(text, target_lang)
                 if not str(value or "").strip():
                     raise RuntimeError("پاسخ خالی بود")
                 self.last_provider = name

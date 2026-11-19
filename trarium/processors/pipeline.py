@@ -5,7 +5,7 @@ import hashlib
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Lock
 
 from rich.console import Console
@@ -45,6 +45,11 @@ class TranslationResult:
     estimated_input_tokens: int = 0
     estimated_output_tokens: int = 0
     protected_spans: int = 0
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def error_message(self) -> str:
+        return self.errors[0] if self.errors else ""
 
 class TranslationPipeline:
     def __init__(self, translator, target_lang="fa", chunk_size=14000, delay_between_requests=0.0,
@@ -113,12 +118,11 @@ class TranslationPipeline:
             self.stats["protected_spans"] += len(p.mapping)
         return p.text, p.mapping
 
-    def _prompt(self, prepared: str, registry_prompt: str = ""):
-        """Build the user message only.
+    def _instructions(self, prepared: str, registry_prompt: str = ""):
+        """Build the extra instruction text, sent as a system message.
 
-        The provider layer already sends its own system prompt (and repeats the
-        target language), so re-sending the whole instruction block here doubled
-        the input tokens of every request without changing the output.
+        It must never be prepended to the payload itself: models then translate
+        the instruction and it leaks into the output (seen with free models).
         """
         parts = []
         if self.short_prompt:
@@ -126,15 +130,23 @@ class TranslationPipeline:
         if registry_prompt:
             parts.append(registry_prompt)
         if "__TRARIUM_PH_" in prepared:
-            parts.append("Preserve every __TRARIUM_PH_####__ token exactly.")
-        if not parts:
-            return prepared
-        return "\n".join(parts) + "\n\n" + prepared
+            parts.append("Keep every placeholder token of the form __TRARIUM_PH_0000__ unchanged "
+                         "and in place; never translate, drop or renumber them.")
+        return " ".join(parts)
 
-    def _translated(self, source: str, key: str, prompt: str):
+    def _call_translate(self, text: str, instructions: str) -> str:
+        """Call the translator, keeping compatibility with wrappers without `instructions`."""
+        try:
+            return self.translator.translate(text, self.target_lang, instructions)
+        except TypeError as exc:
+            if "instructions" not in str(exc) and "positional argument" not in str(exc):
+                raise
+            return self.translator.translate(text, self.target_lang)
+
+    def _translated(self, source: str, key: str, instructions: str):
         provider = self._provider_name(); model = self._model_name()
         if self.translation_memory:
-            hit = self.cache.get(source, self.target_lang, provider, model, self.short_prompt)
+            hit = self.cache.get(source, self.target_lang, provider, model, (self.short_prompt + "|" + instructions).strip("|"))
             if hit is not None:
                 self.stats["cache_hits"] += 1
                 return hit, True
@@ -146,13 +158,13 @@ class TranslationPipeline:
                 return stored["0"], True
         self._wait_rate_limit()
         self.stats["api_requests"] += 1
-        out = self.translator.translate(prompt, self.target_lang)
+        out = self._call_translate(source, instructions)
         usage = getattr(self.translator, "last_usage", {}) or {}
-        self.stats["in_tokens"] += int(usage.get("input_tokens") or estimate_tokens(prompt))
+        self.stats["in_tokens"] += int(usage.get("input_tokens") or estimate_tokens(source))
         self.stats["out_tokens"] += int(usage.get("output_tokens") or estimate_tokens(str(out)))
-        out = clean_translation(str(out))
+        out = clean_translation(str(out), self.target_lang)
         if self.translation_memory:
-            self.cache.put(source, out, self.target_lang, provider, model, self.short_prompt)
+            self.cache.put(source, out, self.target_lang, provider, model, (self.short_prompt + "|" + instructions).strip("|"))
         if self.use_checkpoint:
             self.checkpoint.put(key, "0", out)
         return out, False
@@ -167,12 +179,12 @@ class TranslationPipeline:
         if not text.strip():
             return text
         prepared, mapping = self._prepare(text)
-        prompt = self._prompt(prepared)
-        key = hashlib.sha256(("block|" + self.target_lang + "|" + prepared).encode("utf-8")).hexdigest()
+        instructions = self._instructions(prepared)
+        key = hashlib.sha256(("block|" + self.target_lang + "|" + prepared + instructions).encode("utf-8")).hexdigest()
         last: Exception | None = None
         for attempt in range(3):
             try:
-                output, _reused = self._translated(prepared, key, prompt)
+                output, _reused = self._translated(prepared, key, instructions)
                 output = restore(output, mapping)
                 if not output.strip():
                     raise RuntimeError("پاسخ ترجمه خالی بود")
@@ -203,13 +215,13 @@ class TranslationPipeline:
                 return idx, {"title":chunk.get("title","متن"),"content":source,"failed":False,"error":""}
             prepared, mapping = self._prepare(source)
             registry_prompt = self.registry.prompt(source, self.target_lang) if self.registry else ""
-            prompt = self._prompt(prepared, registry_prompt)
+            instructions = self._instructions(prepared, registry_prompt)
             unit_hash = hashlib.sha256((job_id + "|" + prepared).encode("utf-8")).hexdigest()
             try:
                 last = None
                 for attempt in range(3):
                     try:
-                        output, reused = self._translated(prepared, unit_hash, prompt)
+                        output, reused = self._translated(prepared, unit_hash, instructions)
                         output = restore(output, mapping)
                         if not output.strip():
                             raise RuntimeError("پاسخ ترجمه خالی بود")
@@ -234,11 +246,26 @@ class TranslationPipeline:
                     self.control()
 
         failed = [p for p in translated_parts if p and p.get("failed")]
-        translated_text = "\n\n".join(f"--- {p['title']} ---\n\n{p['content']}" for p in translated_parts if p)
+        # Only print a chapter heading when it carries information; otherwise the
+        # same "--- متن ---" line appeared at every chunk boundary.
+        pieces: list[str] = []
+        last_title = None
+        for part in translated_parts:
+            if not part:
+                continue
+            title = str(part.get("title") or "").strip()
+            generic = bool(re.fullmatch(r"(?:متن|text|page\s*\d+|صفحه\s*\d+)", title, re.I))
+            if title and not generic and title != last_title:
+                pieces.append(f"--- {title} ---")
+                last_title = title
+            pieces.append(part.get("content") or "")
+        translated_text = "\n\n".join(piece for piece in pieces if piece)
+        errors = [str(p.get("error") or "") for p in failed if p.get("error")]
         return TranslationResult(
             title=book.title, author=book.author, original_lang="auto", target_lang=self.target_lang,
             translated_text=translated_text, total_chunks=len(chunks), translated_chunks=len(chunks)-len(failed),
             total_chars=book.total_chars, translated_chars=len(translated_text), elapsed_seconds=time.monotonic()-started,
             failed_chunks=len(failed), cache_hits=self.stats["cache_hits"], checkpoint_hits=self.stats["checkpoint_hits"],
             api_requests=self.stats["api_requests"], estimated_input_tokens=self.stats["in_tokens"],
-            estimated_output_tokens=self.stats["out_tokens"], protected_spans=self.stats["protected_spans"])
+            estimated_output_tokens=self.stats["out_tokens"], protected_spans=self.stats["protected_spans"],
+            errors=errors[:20])

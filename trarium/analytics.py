@@ -28,8 +28,11 @@ def dashboard(days: int = 30, *, job_store: JobStore | None = None, usage_store=
     cutoff = time.time() - max(1, int(days)) * 86400
     recent = [job for job in jobs if float(job.get("created_at") or 0) >= cutoff]
 
-    completed = [job for job in jobs if job.get("status") == "completed"]
-    failed = [job for job in jobs if job.get("status") == "failed"]
+    # Manga jobs are image processing, not translated books.
+    book_kinds = {"book", "pdf", "novel", "website"}
+    book_jobs = [job for job in jobs if job.get("kind") in book_kinds]
+    completed = [job for job in book_jobs if job.get("status") == "completed"]
+    failed = [job for job in book_jobs if job.get("status") == "failed"]
     pages = sum(_job_pages(job) for job in jobs)
     tokens_jobs = sum(int(job.get("input_tokens") or 0) + int(job.get("output_tokens") or 0)
                       for job in jobs)
@@ -41,7 +44,8 @@ def dashboard(days: int = 30, *, job_store: JobStore | None = None, usage_store=
         started = float(job.get("started_at") or 0)
         finished = float(job.get("finished_at") or 0)
         if started and finished and finished > started:
-            total_seconds += finished - started
+            paused = float((job.get("config") or {}).get("paused_seconds") or 0)
+            total_seconds += max(0.0, finished - started - paused)
             speed_pages += _job_pages(job)
     pages_per_minute = round(speed_pages / (total_seconds / 60), 2) if total_seconds > 0 else 0.0
 
@@ -85,8 +89,8 @@ def dashboard(days: int = 30, *, job_store: JobStore | None = None, usage_store=
         "days": int(days),
         "books_translated": len(completed),
         "books_failed": len(failed),
-        "books_total": len(jobs),
-        "books_recent": len(recent),
+        "books_total": len(book_jobs),
+        "books_recent": len([job for job in recent if job.get("kind") in book_kinds]),
         "pages_processed": pages,
         "tokens_jobs": tokens_jobs,
         "cost_jobs": round(cost_jobs, 6),

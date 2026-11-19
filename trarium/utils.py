@@ -4,7 +4,35 @@ from __future__ import annotations
 import re
 
 
-def clean_translation(text: str) -> str:
+PERSIAN_LETTER_MAP = str.maketrans({"\u064a": "\u06cc", "\u0643": "\u06a9", "\u0629": "\u0647"})
+PERSIAN_DIGITS = str.maketrans("\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9", "0123456789")
+
+
+def normalize_persian_letters(text: str) -> str:
+    """Replace Arabic ي/ك/ة with the Persian letters so search and fonts behave."""
+    return str(text or "").translate(PERSIAN_LETTER_MAP)
+
+
+def ascii_digits(text: str) -> str:
+    """Turn Persian/Arabic digits back into ASCII digits (subtitle timings, numbers)."""
+    value = str(text or "").translate(PERSIAN_DIGITS)
+    return value.translate(str.maketrans("\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669", "0123456789"))
+
+
+def is_permanent_http_error(exc: Exception | str) -> bool:
+    """True for 400/401/403/404/422; retrying those only wastes time and quota."""
+    text = str(exc or "")
+    match = re.search(r"\bHTTP\s*(\d{3})\b", text) or re.search(r"\b(\d{3})\b", text)
+    if not match:
+        return False
+    try:
+        status = int(match.group(1))
+    except ValueError:
+        return False
+    return status in {400, 401, 403, 404, 405, 413, 422}
+
+
+def clean_translation(text: str, target_lang: str | None = None) -> str:
     """Conservative cleanup that removes obvious meta chatter without deleting story text."""
     if not text:
         return ""
@@ -25,6 +53,8 @@ def clean_translation(text: str) -> str:
     result = "\n".join(lines).strip()
     result = re.sub(r"\n{3,}", "\n\n", result)
     result = "\n".join(re.sub(r"[ \t]{2,}", " ", line) for line in result.split("\n"))
+    if target_lang == "fa":
+        result = normalize_persian_letters(result)
     return result.strip() or str(text).strip()
 
 

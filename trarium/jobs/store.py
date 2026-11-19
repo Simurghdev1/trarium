@@ -155,19 +155,22 @@ class JobStore:
             row = db.execute("SELECT id,position,status FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not row or row["status"] != STATUS_QUEUED:
                 return
-            if delta < 0:
-                other = db.execute(
-                    "SELECT id,position FROM jobs WHERE status='queued' AND position<?"
-                    " ORDER BY position DESC LIMIT 1", (row["position"],)).fetchone()
-            else:
-                other = db.execute(
-                    "SELECT id,position FROM jobs WHERE status='queued' AND position>?"
-                    " ORDER BY position ASC LIMIT 1", (row["position"],)).fetchone()
-            if not other:
+            # Renumber first: every queued job used to start at position 0, so the
+            # old swap-based move had nothing to swap and the buttons did nothing.
+            queued = db.execute(
+                "SELECT id FROM jobs WHERE status='queued'"
+                " ORDER BY priority DESC, position ASC, created_at ASC").fetchall()
+            order = [str(item["id"]) for item in queued]
+            if job_id not in order:
                 return
+            index = order.index(job_id)
+            target = index + (-1 if delta < 0 else 1)
+            if target < 0 or target >= len(order):
+                return
+            order[index], order[target] = order[target], order[index]
             now = time.time()
-            db.execute("UPDATE jobs SET position=?, updated_at=? WHERE id=?", (other["position"], now, row["id"]))
-            db.execute("UPDATE jobs SET position=?, updated_at=? WHERE id=?", (row["position"], now, other["id"]))
+            for position, item_id in enumerate(order):
+                db.execute("UPDATE jobs SET position=?, updated_at=? WHERE id=?", (position, now, item_id))
             db.commit()
 
     def requeue_orphans(self) -> int:
