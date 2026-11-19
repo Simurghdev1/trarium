@@ -34,7 +34,7 @@ STATUS_ICONS = {
 }
 KIND_LABELS = {
     "book": "کتاب/سند", "pdf": "PDF", "novel": "وب‌ناول", "website": "وب‌سایت",
-    "manga": "مانگا",
+    "manga": "مانگا", "youtube": "زیرنویس یوتیوب",
 }
 
 
@@ -310,6 +310,49 @@ def render_queue_tab(ctx: dict) -> None:
         _auto_list()
     else:
         _job_list()
+
+
+# ---------------------------------------------------------------------- youtube
+def render_youtube_tab(ctx: dict) -> None:
+    import os
+    import tempfile
+
+    st.markdown("### 🎬 ترجمه زیرنویس یوتیوب")
+    st.caption("لینک ویدیو را بدهید؛ زیرنویس اصلی (دستی، وگرنه خودکار) با yt-dlp بدون دانلود ویدیو "
+               "گرفته و با همان زمان‌بندی ترجمه می‌شود. خروجی: فایل SRT.")
+    url = st.text_input("لینک یوتیوب", placeholder="https://www.youtube.com/watch?v=...", key="yt_url")
+    langs = st.text_input("زبان زیرنویس مبدأ (به ترتیب ترجیح)", value="en, en-orig, en-US, en-GB",
+                          key="yt_langs", help="اگر هیچ‌کدام نبود، زبان اصلی ویدیو گرفته می‌شود.")
+    cookies = st.file_uploader(
+        "cookies.txt یوتیوب (اختیاری)", type=["txt"], key="yt_cookies",
+        help="فقط وقتی سرور با خطای «not a bot» بسته شده. فایل فقط برای همین دریافت "
+             "استفاده و بعد پاک می‌شود و جایی ذخیره نمی‌شود.")
+    if st.button("🚀 دریافت و ترجمه", type="primary", key="yt_run"):
+        try:
+            from trarium.youtube import video_id
+            video_id(url)
+        except Exception as exc:
+            st.warning(str(exc))
+            return
+        extra = {"url": url.strip(),
+                 "languages": [x.strip() for x in langs.split(",") if x.strip()] or None}
+        if cookies is not None:
+            fd, path = tempfile.mkstemp(prefix="trarium_yt_", suffix=".txt")
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(cookies.getvalue())
+            os.chmod(path, 0o600)
+            extra["cookies_path"] = path
+        try:
+            config = ctx["job_config"]("srt", extra=extra)
+            job_id = _manager().submit("youtube", "یوتیوب: " + url.strip()[:60], config=config,
+                                       target_lang=ctx["target_lang"], provider=ctx["provider"],
+                                       model=ctx["model"])
+            st.query_params["job"] = job_id
+            st.success(f"تسک زیرنویس یوتیوب در صف قرار گرفت: {job_id} — پیشرفت و دانلود در «صف و تسک‌ها».")
+        except Exception as exc:
+            if extra.get("cookies_path"):
+                Path(extra["cookies_path"]).unlink(missing_ok=True)
+            st.error(str(exc))
 
 
 # ---------------------------------------------------------------------- website

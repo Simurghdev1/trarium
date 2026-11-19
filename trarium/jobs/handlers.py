@@ -257,9 +257,16 @@ def handle_youtube(ctx) -> None:
 
     cfg = ctx.config
     ctx.set_stage("دریافت زیرنویس یوتیوب")
-    source, meta = fetch_subtitles(str(cfg.get("url") or ""), ctx.directory / "youtube",
-                                   cfg.get("languages") or None)
-    ctx.log(f"زیرنویس با {meta.get('method')} دریافت شد: {meta.get('file')}")
+    cookies = cfg.get("cookies_path") or None
+    try:
+        source, meta = fetch_subtitles(str(cfg.get("url") or ""), ctx.directory / "youtube",
+                                       cfg.get("languages") or None, cookies=cookies)
+    finally:
+        # کوکی یوتیوب اطلاعات ورود کاربر است؛ بعد از دریافت نگهش نمی‌داریم.
+        if cookies:
+            Path(cookies).unlink(missing_ok=True)
+    kind = "خودکار" if meta.get("generated") else "دستی"
+    ctx.log(f"زیرنویس {kind} ({meta.get('language') or '?'}) با {meta.get('method')} دریافت شد: {meta.get('file')}")
     ctx.update(source_path=str(source))
     if not _handle_subtitle(ctx, source, source.suffix.lower()):
         raise RuntimeError("زیرنویس دریافت‌شده متنی برای ترجمه نداشت.")
