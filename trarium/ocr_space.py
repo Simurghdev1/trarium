@@ -245,7 +245,10 @@ def merge_lines(blocks: list[dict], gap_factor: float = 1.35, max_lines: int = 4
             # OCR.space pads a line box downwards, so two lines of one title often
             # overlap by a third of a line; that is still the next line, not a
             # different block. Rejecting it split a three-line manga title.
-            close = -0.6 * min(last_h, this_h) <= (y0 - last[3]) <= gap_factor * height
+            # The gap is judged against one line, not the whole block so far: a
+            # two-line title used to reach down and swallow the lettering on the
+            # cover art below it (Josep Moore p5).
+            close = -0.6 * min(last_h, this_h) <= (y0 - last[3]) <= gap_factor * min(last_h, this_h)
             # A line two times taller is a different text (the artwork lettering
             # under a printed title); merging them glued the title to the artwork.
             same_size = max(last_h, this_h) / min(last_h, this_h) <= 1.8

@@ -39,3 +39,12 @@ def test_grown_box_stays_on_the_source_text():
     assert out.y1 == 170
     assert out.y0 >= cover.y0 - 0.25 * cover.height - 0.01
     assert out.contains(cover)
+
+
+def test_two_line_title_does_not_swallow_cover_lettering():
+    # p5: printed title, then same-size lettering on the cover art 25pt lower.
+    lines = [((150, 60, 420, 82), "OFFICE ROMANCE"), ((140, 78, 430, 100), "WITH MY ARCHENEMY"),
+             ((110, 128, 470, 152), "OFFICE ROMANCE"), ((105, 152, 475, 172), "WITH MY ARCHENEMY")]
+    blocks = merge_lines([{"bbox": b, "text": t, "font_size": 16} for b, t in lines])
+    assert blocks[0]["text"] == "OFFICE ROMANCE WITH MY ARCHENEMY"
+    assert blocks[0]["bbox"][3] <= 100
