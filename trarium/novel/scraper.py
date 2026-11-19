@@ -381,8 +381,8 @@ class NovelScraper:
 
 def _download_image(url: str, timeout: int = 20) -> bytes | None:
     try:
-        import requests
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+        from trarium.netguard import safe_get
+        response = safe_get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         signature_ok = response.content.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF8", b"RIFF"))
@@ -394,11 +394,13 @@ def _download_image(url: str, timeout: int = 20) -> bytes | None:
 
 
 def fetch_page(url: str, use_browser: bool = False) -> str:
+    from trarium.netguard import assert_public_url
+    assert_public_url(url)
     return _fetch_with_playwright(url) if use_browser else _fetch_with_requests(url)
 
 
 def _fetch_with_requests(url: str) -> str:
-    import requests
+    from trarium.netguard import BlockedURLError, safe_get
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -407,10 +409,12 @@ def _fetch_with_requests(url: str) -> str:
     last = None
     for attempt in range(3):
         try:
-            response = requests.get(url, headers=headers, timeout=30)
+            response = safe_get(url, headers=headers, timeout=30)
             response.raise_for_status()
             response.encoding = response.apparent_encoding or response.encoding or "utf-8"
             return response.text
+        except BlockedURLError:
+            raise
         except Exception as exc:
             last = exc
             if attempt < 2:

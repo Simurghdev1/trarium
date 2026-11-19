@@ -174,7 +174,8 @@ def _reshape_for_pdf(text: str) -> str:
         return text
 
 
-def save_as_epub(result, output_path: str | None = None) -> str:
+def save_as_epub(result, output_path: str | None = None, cover=None) -> str:
+    """Write the translation as an EPUB; ``cover`` (epub_cover.Cover) is kept as the book's cover."""
     path = Path(output_path or f"{_safe_name(result.title)}_translated.epub")
     path.parent.mkdir(parents=True, exist_ok=True)
     book_id = str(uuid.uuid4())
@@ -199,18 +200,30 @@ def save_as_epub(result, output_path: str | None = None) -> str:
             manifest.append('<item id="font" href="fonts/Sahel.ttf" media-type="font/ttf"/>')
         spine = []
         nav = []
+        cover_meta = ""
+        if cover is not None:
+            # The source book's own cover: declared both ways (EPUB 3 and 2) and
+            # shown as the first page, so every reader and library app finds it.
+            cover_href = f"images/cover{cover.ext}"
+            manifest.append(f'<item id="cover-image" href="{cover_href}" media-type="{cover.media_type}" properties="cover-image"/>')
+            manifest.append('<item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>')
+            spine.append('<itemref idref="cover"/>')
+            cover_meta = '<meta name="cover" content="cover-image"/>'
         for i, ch_title, _ in chapters:
             href = f"chapter_{i}.xhtml"
             manifest.append(f'<item id="c{i}" href="{href}" media-type="application/xhtml+xml"/>')
             spine.append(f'<itemref idref="c{i}"/>')
             nav.append(f'<li><a href="{href}">{xml_escape(ch_title)}</a></li>')
         opf = f'''<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="bookid">urn:uuid:{book_id}</dc:identifier><dc:title>{title}</dc:title><dc:language>{xml_escape(result.target_lang or 'fa')}</dc:language><meta property="dcterms:modified">{modified}</meta></metadata><manifest>{''.join(manifest)}</manifest><spine>{''.join(spine)}</spine></package>'''
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="bookid">urn:uuid:{book_id}</dc:identifier><dc:title>{title}</dc:title><dc:language>{xml_escape(result.target_lang or 'fa')}</dc:language><meta property="dcterms:modified">{modified}</meta>{cover_meta}</metadata><manifest>{''.join(manifest)}</manifest><spine>{''.join(spine)}</spine></package>'''
         zf.writestr("OEBPS/content.opf", opf)
         zf.writestr("OEBPS/style.css", "@font-face{font-family:Sahel;src:url(fonts/Sahel.ttf)}body{font-family:Sahel,Tahoma,sans-serif;direction:rtl;text-align:right;line-height:1.9;margin:1.5em}h1{text-align:center}p{margin:.6em 0}")
         zf.writestr("OEBPS/nav.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" dir="rtl"><head><title>{title}</title></head><body><nav epub:type="toc"><ol>{"".join(nav)}</ol></nav></body></html>')
         if _FONT_PATH.exists():
             zf.write(_FONT_PATH, "OEBPS/fonts/Sahel.ttf")
+        if cover is not None:
+            zf.writestr(f"OEBPS/images/cover{cover.ext}", cover.data)
+            zf.writestr("OEBPS/cover.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>{title}</title><style>body{{margin:0;padding:0;text-align:center}}img{{max-width:100%;max-height:100vh}}</style></head><body epub:type="cover"><img src="images/cover{cover.ext}" alt="{title}"/></body></html>')
         for i, ch_title, content in chapters:
             paras = "".join(f"<p>{xml_escape(p.strip())}</p>" for p in re.split(r"\n{2,}", content) if p.strip())
             zf.writestr(f"OEBPS/chapter_{i}.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" dir="rtl"><head><title>{xml_escape(ch_title)}</title><link rel="stylesheet" href="style.css"/></head><body><h1>{xml_escape(ch_title)}</h1>{paras}</body></html>')

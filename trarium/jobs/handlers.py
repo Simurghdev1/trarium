@@ -1,6 +1,8 @@
 """Job handlers. Each one is idempotent: completed units are skipped on resume."""
 from __future__ import annotations
 
+import os
+
 import json
 import re
 import zipfile
@@ -99,7 +101,8 @@ def _save_book_result(ctx, result, fmt: str, stem: str) -> Path:
     if fmt == "pdf":
         save_as_pdf(result, str(path))
     elif fmt == "epub":
-        save_as_epub(result, str(path))
+        from trarium.epub_cover import cover_from_source
+        save_as_epub(result, str(path), cover=cover_from_source(ctx.job.get("source_path")))
     elif fmt == "html":
         save_as_html(result, str(path))
     else:
@@ -247,6 +250,21 @@ def _handle_subtitle(ctx, source: Path, suffix: str) -> bool:
     return True
 
 
+# ------------------------------------------------------------------------ youtube
+def handle_youtube(ctx) -> None:
+    """زیرنویس اصلی یوتیوب را می‌گیرد و با مسیر ترجمهٔ زیرنویس ترجمه می‌کند."""
+    from trarium.youtube import fetch_subtitles
+
+    cfg = ctx.config
+    ctx.set_stage("دریافت زیرنویس یوتیوب")
+    source, meta = fetch_subtitles(str(cfg.get("url") or ""), ctx.directory / "youtube",
+                                   cfg.get("languages") or None)
+    ctx.log(f"زیرنویس با {meta.get('method')} دریافت شد: {meta.get('file')}")
+    ctx.update(source_path=str(source))
+    if not _handle_subtitle(ctx, source, source.suffix.lower()):
+        raise RuntimeError("زیرنویس دریافت‌شده متنی برای ترجمه نداشت.")
+
+
 # --------------------------------------------------------------------------- book
 def handle_book(ctx) -> None:
     cfg = ctx.config
@@ -335,6 +353,35 @@ def handle_book(ctx) -> None:
 
 
 # ---------------------------------------------------------------------------- pdf
+def _classic_ocr_pages(ctx, source: Path, skip_pages, cfg) -> tuple[dict, set]:
+    """OCR.space for pages that have no text layer (only when its key exists)."""
+    import pymupdf
+
+    key = str(cfg.get("ocr_space_key") or os.environ.get("OCR_SPACE_KEY") or "")
+    if not key or cfg.get("ocr_space") is False:
+        return {}, set()
+    pages: set[int] = set()
+    with pymupdf.open(str(source)) as doc:
+        for i, page in enumerate(doc):
+            if i in (skip_pages or set()):
+                continue
+            if len(page.get_text().strip()) < 20 and page.get_images():
+                pages.add(i)
+        if not pages:
+            return {}, set()
+        from trarium.ocr_space import ocr_page
+
+        result = {}
+        for i in sorted(pages):
+            ctx.checkpoint()
+            ctx.set_stage(f"OCR صفحهٔ {i + 1}")
+            try:
+                result[i] = ocr_page(doc[i], language=str(cfg.get("ocr_lang") or "eng"), dpi=200, key=key)
+            except Exception as exc:
+                ctx.log(f"OCR صفحهٔ {i + 1} ناموفق: {exc}", "warning")
+    return result, set(result)
+
+
 def handle_pdf(ctx) -> None:
     import pymupdf
 
@@ -389,13 +436,18 @@ def handle_pdf(ctx) -> None:
                    completed_units=max(0, min(total_pages, completed)))
 
     skip_pages = _parse_page_selection(page_range)
+    # Same settings as the classic QA pipeline that gave the clean result: text
+    # layer first, OCR.space only for pages without one, cover with the sampled
+    # paper colour (never white boxes), skip text printed on artwork, measure
+    # with the real font, keep cover/plate pages untouched, review and QC.
+    precomputed, force_ocr = _classic_ocr_pages(ctx, source, skip_pages, cfg)
     _, stats = translate_pdf_optimized(
         str(source), ctx.make_translator(), target_lang, str(out),
         skip_pages=skip_pages,
         translation_workers=int(cfg.get("workers", 3)),
         translation_batch_chars=int(cfg.get("chunk_size", 14000)),
         progress_callback=progress, return_stats=True,
-        enable_ocr=bool(cfg.get("enable_ocr", False)),
+        enable_ocr=bool(cfg.get("enable_ocr", False)) and not precomputed,
         ocr_method=str(cfg.get("ocr_method") or "auto"),
         ocr_lang=str(cfg.get("ocr_lang") or "eng"),
         api_key=str(cfg.get("ocr_api_key") or "") or None,
@@ -405,6 +457,14 @@ def handle_pdf(ctx) -> None:
         adaptive_batch=bool(cfg.get("adaptive_batch", True)),
         use_checkpoint=bool(cfg.get("use_checkpoint", True)),
         use_cache=bool(cfg.get("use_cache", True)),
+        self_review=bool(cfg.get("self_review", True)),
+        final_check=bool(cfg.get("final_check", True)),
+        uniform_font=True, skip_text_on_image=True, match_background=True,
+        precomputed_ocr=precomputed or None, force_ocr_pages=force_ocr or None,
+        style=str(cfg.get("style") or "") or None,
+        translation_qc=True, qc_repair=bool(cfg.get("qc_repair", True)),
+        cover_detection=bool(cfg.get("cover_detection", True)),
+        vision_api_key=os.environ.get("GEMINI_API_KEY") or None,
         short_prompt=str(cfg.get("short_prompt") or ""),
     )
     if stats.translated_blocks == 0 and stats.total_blocks > 0:

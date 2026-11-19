@@ -42,7 +42,19 @@ class TrariumSmokeTests(unittest.TestCase):
         self.assertEqual(done[(0, 1)], "TRANSLATED_SINGLE")
 
     def test_pdf_layout_smoke(self):
-        translator = FakeTranslator()
+        class PersianStub(BaseTranslator):
+            """A translator that answers in Persian, like a real one."""
+
+            def get_token_limit(self):
+                return 100000
+
+            def translate(self, text, target_lang="fa"):
+                if "[TRARIUM_BLOCK_" in text:
+                    block = text.split("[TRARIUM_BLOCK_")[-1].split("]")[0]
+                    return f"[TRARIUM_BLOCK_{block}]\nترجمه TRANSLATED_FIRST"
+                return "ترجمه TRANSLATED_SINGLE"
+
+        translator = PersianStub()
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "input.pdf"
             dst = Path(td) / "output.pdf"

@@ -394,7 +394,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def site_server():
+def site_server(monkeypatch):
+    # Local test server on 127.0.0.1: the SSRF guard blocks it unless the
+    # developer opt-in is set (never set on a public deploy).
+    monkeypatch.setenv("TRARIUM_ALLOW_PRIVATE_URLS", "1")
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -435,7 +438,8 @@ def test_website_crawls_internal_pages_and_respects_robots(site_server):
         translate_site(site_server + "/private", FakeTranslator(), "fa", delay=0)
 
 
-def test_website_reports_failed_page_without_stopping():
+def test_website_reports_failed_page_without_stopping(monkeypatch):
+    monkeypatch.setenv("TRARIUM_ALLOW_PRIVATE_URLS", "1")
     result = translate_site("http://127.0.0.1:1/missing", FakeTranslator(), "fa", delay=0)
     assert result.pages_failed == 1
     assert result.pages[0].error

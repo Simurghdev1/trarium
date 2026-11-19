@@ -1,0 +1,75 @@
+name: Trarium full feature run (FA)
+on:
+  push:
+    branches: ["ci/full-run"]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  OCR_SPACE_KEY: ${{ secrets.OCR_SPACE_KEY }}
+  TRARIUM_OCR_SPACE_KEY: ${{ secrets.OCR_SPACE_KEY }}
+jobs:
+  main-suite:
+    name: Trarium main v2.19 — every feature
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pip install -r requirements.txt requests yt-dlp youtube-transcript-api
+      - name: Run all features
+        env:
+          TRARIUM_HOME: ${{ runner.temp }}/trarium-home
+          ONLY: ${{ contains(github.event.head_commit.message, '[pdf]') && 'pdf' || (contains(github.event.head_commit.message, '[only]') && 'youtube,novel' || '') }}
+        run: |
+          mkdir -p ci_out/main
+          python ci_run/main_suite.py 2>&1 | tee ci_out/main/run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trarium-main-outputs
+          path: ci_out/main/**
+
+  classic:
+    name: Classic QA-branch pipeline — PDFs (OCR.space + Gemini lite, plain style)
+    if: ${{ !contains(github.event.head_commit.message, '[only]') && !contains(github.event.head_commit.message, '[pdf]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+      - uses: actions/checkout@v4
+        with:
+          ref: qa/v2.17.0-audit
+          path: classic
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r classic/requirements.txt requests
+      - name: Translate both PDFs
+        working-directory: classic
+        env:
+          TRARIUM_HOME: ${{ runner.temp }}/trarium-home-classic
+        run: |
+          sed -i 's#^OPENROUTER_MODELS = \[#OPENROUTER_MODELS = [\n    "google/gemini-2.5-flash-lite",#' qa/run_undine_test.py
+          mkdir -p ../out
+          set +e
+          python qa/run_undine_test.py --input "../ci/ci_run/inputs/Undine_Trarium_Test_6_Pages.pdf" --outdir ../out/undine_6p --style plain --qc-repair 2>&1 | tee ../out/undine_6p.log
+          python qa/run_undine_test.py --input "../ci/ci_run/inputs/Josep Moore - Mangas ENG.pdf" --outdir ../out/manga --ocr-pages 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 --style plain --qc-repair 2>&1 | tee ../out/manga.log
+          true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trarium-classic-outputs
+          path: out/**
