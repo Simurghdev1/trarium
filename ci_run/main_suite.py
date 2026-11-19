@@ -25,6 +25,7 @@ def step(name):
         return fn
     return deco
 
+ONLY = os.environ.get("ONLY", "").strip()
 PATTERNS = r"sk-or-v1-[0-9a-f]{20,}|AIza[0-9A-Za-z_-]{30,}|AQ\.Ab8[0-9A-Za-z_-]{20,}|gsk_[0-9A-Za-z]{20,}|ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{30,}|K8[0-9]{13,}"
 
 @step("01_key_leak_scan")
@@ -104,6 +105,7 @@ def fetch_youtube_srt(url: str, dest: Path) -> str:
     raise RuntimeError(f"YouTube blocked: {tries}")
 
 NOVEL_CANDIDATES = [
+    "https://wuxia.click/chapter/martial-world-1",
     "https://www.royalroad.com/fiction/21220/mother-of-learning/chapter/301778/1-good-morning-brother",
     "https://wanderinginn.com/2016/07/27/1-00/",
     "https://www.royalroad.com/fiction/25137/worth-the-candle/chapter/366248/taking-the-fall",
@@ -118,11 +120,12 @@ def _():
 def _():
     if (YT / "5XLEjBlSaAY_en.srt").exists():
         submit("book", "youtube_5XLEjBlSaAY", {"output_format": "srt"}, YT / "5XLEjBlSaAY_en.srt")
-    submit("pdf", "Undine_Trarium_Test_6_Pages", {}, INP / "Undine_Trarium_Test_6_Pages.pdf")
-    submit("pdf", "Josep_Moore_Mangas", {"enable_ocr": True, "ocr_method": "openrouter",
+    if not ONLY:
+      submit("pdf", "Undine_Trarium_Test_6_Pages", {}, INP / "Undine_Trarium_Test_6_Pages.pdf")
+      submit("pdf", "Josep_Moore_Mangas", {"enable_ocr": True, "ocr_method": "openrouter",
            "ocr_api_key": os.environ.get("OPENROUTER_API_KEY", ""), "ocr_vision_model": "google/gemini-2.5-flash-lite"},
            INP / "Josep Moore - Mangas ENG.pdf")
-    submit("book", "Omniscient_Readers_Viewpoint_2", {"output_format": "epub", "chunk_size": 12000, "workers": 4},
+      submit("book", "Omniscient_Readers_Viewpoint_2", {"output_format": "epub", "chunk_size": 12000, "workers": 4},
            INP / "_OceanofPDF.com_Omniscient_readers_viewpoint_novel_2_-_singNsong.epub")
     from trarium.novel.scraper import NovelScraper
     novel_url, tried = "", []
@@ -136,7 +139,8 @@ def _():
             tried.append((cand, str(exc)[:150]))
     report["novel_pick"] = {"url": novel_url, "tried": tried}
     submit("novel", "web_novel_5_chapters", {"url": novel_url, "chapter_count": 5, "output_format": "epub"})
-    # manga enhance on 4 pages of the manga PDF
+    if ONLY:
+        return {"jobs": jobs}
     import pymupdf
     z = OUT / "manga_pages.zip"
     with pymupdf.open(str(INP / "Josep Moore - Mangas ENG.pdf")) as d, zipfile.ZipFile(z, "w") as zf:

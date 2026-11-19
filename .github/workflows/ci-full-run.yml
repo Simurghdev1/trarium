@@ -30,6 +30,7 @@ jobs:
       - name: Run all features
         env:
           TRARIUM_HOME: ${{ runner.temp }}/trarium-home
+          ONLY: ${{ contains(github.event.head_commit.message, '[only]') && 'youtube,novel' || '' }}
         run: |
           mkdir -p ci_out/main
           python ci_run/main_suite.py 2>&1 | tee ci_out/main/run.log
@@ -41,6 +42,7 @@ jobs:
 
   classic:
     name: Classic QA-branch pipeline — PDFs (OCR.space + Gemini lite, plain style)
+    if: ${{ !contains(github.event.head_commit.message, '[only]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
