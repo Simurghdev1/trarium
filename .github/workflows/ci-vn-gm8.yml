@@ -1,0 +1,52 @@
+name: Trarium GameMaker 8 (experimental) - Undertale demo opening
+on:
+  workflow_dispatch:
+    inputs:
+      tr_b64:
+        description: "gzip+base64 translation map (id -> fa). Empty = run the untouched official demo."
+        required: false
+        default: ""
+      every:
+        description: "periodic screenshot interval (s)"
+        required: false
+        default: "1.0"
+permissions:
+  contents: read
+jobs:
+  gm8:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pillow arabic-reshaper
+      - name: Official free demo (undertale.com/demo)
+        shell: bash
+        run: |
+          curl -sL -o demo.zip "https://thisisatestofthevideogamedeliverysystem.sfo2.digitaloceanspaces.com/game/UndertaleDemo.zip"
+          echo "e569a8f34b53d2e0abbc7f935346ddce  demo.zip" | md5sum -c -
+          mkdir game && cd game && unzip -q ../demo.zip && ls
+      - name: Build Persian test copy (local only, never uploaded)
+        if: ${{ github.event.inputs.tr_b64 != '' }}
+        shell: bash
+        env:
+          TR_B64: ${{ github.event.inputs.tr_b64 }}
+        run: |
+          mkdir -p out
+          printf '%s' "$TR_B64" | base64 -d | gunzip > tr.json
+          python -m trarium.vn.gm8 build game/UndertaleDemo.exe tr.json game/UndertaleDemo.exe --report out/report.json 2>&1 | tee out/build.log
+      - name: Play + screenshots
+        shell: bash
+        run: |
+          mkdir -p out/shots
+          python trarium/vn/gm8/win_driver.py game/UndertaleDemo.exe trarium/vn/gm8/plans/undertale_demo_opening.json out/shots --every ${{ github.event.inputs.every || '1.0' }} 2>&1 | tee out/run.log
+          ls game
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gm8-shots
+          path: |
+            out/**
+            game/*.log
+            game/*.ini
