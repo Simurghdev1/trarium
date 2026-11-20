@@ -19,8 +19,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-PROTECT = re.compile(r"\[[^\]]*\]|&[A-Za-z_][\w.]*|\{[^}]*\}")
-TAG = re.compile(r"\[[^\]]*\]")
+# یک تگ؛ کروشه‌های داخل مقدارها (text="[x]" یا &tf.a[tf.i]) تگ را نمی‌شکنند
+TAG = re.compile(r"""\[(?:[^\[\]"']|"[^"]*"|'[^']*'|\[[^\[\]]*\])*\]""")
+PROTECT = re.compile(TAG.pattern + r"|&[A-Za-z_][\w.]*|\{[^}]*\}")
 LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 ATTR_TAGS = {"glink": "text", "ptext": "text", "mtext": "text", "chara_new": "jname", "button": "hint"}
 ATTR = re.compile(r'(?P<key>\b(?:text|jname|hint))\s*=\s*(?:"(?P<v1>[^"]*)"|\'(?P<v2>[^\']*)\'|(?P<v3>[^\s\]"\']+))')
