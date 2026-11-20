@@ -132,3 +132,10 @@ def test_rpgmaker_build(tmp_path):
     assert lst[2]["parameters"][0] == "خط دوم"
     assert all("ترجمه" in c for c in lst[3]["parameters"][0])
     assert "Sahel.ttf" in css
+
+
+def test_renpy_screen_keywords_untouched(tmp_path):
+    root = _renpy_game(tmp_path)
+    (root / "game" / "screens.rpy").write_text('screen x():\n    hbox:\n        style_prefix "slot"\n        thumb "gui/a.png"\n', encoding="utf-8")
+    texts = [s.text for s in rp.extract(root / "game")]
+    assert "slot" not in texts and "gui/a.png" not in texts

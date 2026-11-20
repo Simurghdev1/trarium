@@ -88,8 +88,24 @@ def script_files(game: Path) -> list[Path]:
     return out
 
 
+SPEAKERS_BUILTIN = {"extend", "narrator", "centered", "vcentered", "nvl_narrator"}
+DEFINE_CHAR = re.compile(r"^\s*define\s+([A-Za-z_]\w*)\s*=\s*(?:Character|DynamicCharacter|NVLCharacter)\(")
+
+
+def speakers(game: Path) -> set[str]:
+    """اسم متغیرهای شخصیت؛ فقط خطی که با یکی از این‌ها شروع شود دیالوگ است."""
+    names = set(SPEAKERS_BUILTIN)
+    for path in script_files(game):
+        for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            m = DEFINE_CHAR.match(line)
+            if m:
+                names.add(m.group(1))
+    return names
+
+
 def extract(game: Path) -> list[Segment]:
     segments: list[Segment] = []
+    who_ok = speakers(game)
     for path in script_files(game):
         lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
         in_python = None
@@ -108,7 +124,7 @@ def extract(game: Path) -> list[Segment]:
                 continue
             m = SAY.match(line)
             first = stripped.split()[0] if stripped.split() else ""
-            if m and first not in KEYWORDS and (m.group("who") or stripped.startswith('"')):
+            if m and first not in KEYWORDS and ((m.group("who") in who_ok) or stripped.startswith('"')):
                 body = m.group("body")
                 if LETTER.search(body):
                     kind = "menu" if m.group("post").rstrip().endswith(":") else "say"
@@ -151,12 +167,18 @@ init -1 python:
 init 999 python:
     config.rtl = True
     for _s in ("default", "say_dialogue", "say_label", "button_text", "choice_button_text",
-               "input", "interface", "gui_text", "label_text", "pref_label_text"):
+               "input", "interface", "gui_text", "label_text", "pref_label_text", "history_text"):
         try:
             _st = getattr(style, _s)
             _st.font = "trarium_fa/Sahel.ttf"
             if renpy.version_tuple >= (8, 1):
                 _st.shaper = "harfbuzz"
+        except Exception:
+            pass
+    # Persian reads from the right: dialogue and history lines hug the right edge.
+    for _s in ("say_dialogue", "history_text", "nvl_dialogue"):
+        try:
+            getattr(style, _s).text_align = 1.0
         except Exception:
             pass
     try:
