@@ -4,7 +4,7 @@
 فارسی‌شده. فایل اجرایی بازی (exe/app) دست نمی‌خورد؛ فقط متن‌ها و فونت عوض می‌شوند.
 
 موتورها: Ren'Py (کامل، با فونت و راست‌به‌چپ)، RPG Maker MV/MZ (متن‌ها؛ نمایش
-فارسی پیوسته هنوز پلاگین RTL لازم دارد).
+فارسی پیوسته هنوز پلاگین RTL لازم دارد)، TyranoScript (متن + فونت + CSS راست‌به‌چپ؛ فقط پچ).
 """
 from trarium.vn.detect import detect_engine
 from trarium.vn.build import translate_game

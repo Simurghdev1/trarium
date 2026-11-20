@@ -1,3 +1,4 @@
+import re
 import json
 import zipfile
 from pathlib import Path
@@ -139,3 +140,64 @@ def test_renpy_screen_keywords_untouched(tmp_path):
     (root / "game" / "screens.rpy").write_text('screen x():\n    hbox:\n        style_prefix "slot"\n        thumb "gui/a.png"\n', encoding="utf-8")
     texts = [s.text for s in rp.extract(root / "game")]
     assert "slot" not in texts and "gui/a.png" not in texts
+
+
+TYRANO_KS = """;comment Hello
+*start
+[cm]
+[chara_new  name="akane" storage="a.png" jname="Akane"  ]
+#Akane:happy
+Hello there,[r]how are you?[p]
+#
+It is [emb exp="f.name"]'s turn.[l]
+[glink color="blue" text="Yes, please" target="*a"]
+@glink text=Never target=*b
+[ptext text=&f.savetext x=1]
+[iscript]
+f.msg = "do not touch"
+[endscript]
+/*
+Block comment text
+*/
+"""
+
+
+def _tyrano_game(tmp: Path) -> Path:
+    sc = tmp / "TG" / "data" / "scenario"
+    sc.mkdir(parents=True)
+    (sc / "scene1.ks").write_text(TYRANO_KS, encoding="utf-8")
+    (sc / "first.ks").write_text('[title name="Demo"]\n@jump storage="scene1.ks"\n', encoding="utf-8")
+    (tmp / "TG" / "tyrano").mkdir()
+    (tmp / "TG" / "tyrano" / "libs.js").write_text("engine")
+    return tmp / "TG"
+
+
+def test_tyrano_extract(tmp_path):
+    from trarium.vn import tyrano as ty
+    root = _tyrano_game(tmp_path)
+    assert detect_engine(root) == "tyrano"
+    segs, _ = ty.extract(root)
+    got = {(s.kind, s.text) for s in segs}
+    assert ("text", "Hello there,[r]how are you?[p]") in got
+    assert ("name", "Akane") in got and ("jname", "Akane") in got
+    assert ("attr", "Yes, please") in got and ("attr", "Never") in got
+    texts = " ".join(s.text for s in segs)
+    assert "do not touch" not in texts and "Block comment" not in texts and "savetext" not in texts and "comment Hello" not in texts
+
+
+def test_tyrano_build_patch_only(tmp_path):
+    root = _tyrano_game(tmp_path)
+    rep = translate_game(root, tmp_path / "out", FakePipeline())
+    assert rep["engine"] == "tyrano" and rep["full_zip"] is None
+    with zipfile.ZipFile(tmp_path / "out" / rep["patch_zip"]) as z:
+        names = z.namelist()
+        ks = z.read("data/scenario/scene1.ks").decode()
+        first = z.read("data/scenario/first.ks").decode()
+    assert not any(n.startswith("tyrano/") for n in names)
+    assert "data/others/Sahel.ttf" in names and "data/others/trarium_fa.css" in names
+    assert "trarium_fa.css" in first
+    assert "[r]" in ks and "[p]" in ks and '[emb exp="f.name"]' in ks and 'f.msg = "do not touch"' in ks
+    assert 'target="*a"' in ks and "*start" in ks
+    # اسم گوینده و jname یکی‌اند
+    jn = re.search(r'jname="([^"]+)"', ks).group(1)
+    assert f"#{jn}:happy" in ks and "ترجمه" in jn

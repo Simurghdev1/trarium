@@ -12,6 +12,7 @@ from pathlib import Path
 from trarium.structured import translate_segments
 from trarium.vn import renpy as rp
 from trarium.vn import rpgmaker as rm
+from trarium.vn import tyrano as ty
 from trarium.vn.detect import detect_engine, find_root
 
 FONT = Path(__file__).resolve().parents[1] / "fonts" / "Sahel.ttf"
@@ -105,8 +106,24 @@ def translate_game(source: Path, outdir: Path, pipeline, limit: int | None = Non
         report.update({"segments": len(idx), "translated": done, "kept_original": len(idx) - done, "rejected": why,
                        "note": "متن‌ها فارسی شدند؛ برای چسبیدن حروف و راست‌به‌چپ در پنجرهٔ پیام هنوز پلاگین RTL لازم است."})
         report["samples"] = [{"en": col.texts[i], "fa": t} for i, t in list(zip(idx, trs))[:12]]
+    elif engine == "tyrano":
+        troot = ty.find_root(root)
+        segs, docs = ty.extract(troot)
+        if not segs:
+            raise RuntimeError("هیچ متنی در data/scenario پیدا نشد.")
+        if limit:
+            segs = segs[:limit]
+        trs, why = _protected_translate(pipeline, [s.text for s in segs], ty.PROTECT)
+        stats = ty.apply(segs, trs, docs)
+        ty.install_font(troot, FONT)
+        report.update({"segments": stats["segments"], "translated": stats["written"],
+                       "kept_original": stats["kept_original"], "rejected": why,
+                       "by_kind": {k: sum(1 for s in segs if s.kind == k) for k in ("text", "name", "jname", "attr")},
+                       "note": "مجوز TyranoScript بازتوزیع موتور را منع می‌کند؛ خروجی فقط پچ است."})
+        report["samples"] = [{"file": str(s.file.relative_to(root)), "line": s.line + 1, "src": s.text, "fa": t}
+                             for s, t in list(zip(segs, trs))[:12]]
     else:
-        raise RuntimeError(f"موتور این بازی پشتیبانی نمی‌شود ({engine}). فعلاً Ren'Py و RPG Maker MV/MZ.")
+        raise RuntimeError(f"موتور این بازی پشتیبانی نمی‌شود ({engine}). فعلاً Ren'Py، RPG Maker MV/MZ و TyranoScript.")
 
     after = _snapshot(root)
     changed_files = sorted(k for k, v in after.items() if before.get(k) != v)
@@ -116,11 +133,14 @@ def translate_game(source: Path, outdir: Path, pipeline, limit: int | None = Non
             z.write(root / rel, rel)
         z.writestr("README_FA.txt", "محتوای این زیپ را در پوشهٔ اصلی بازی کپی کنید و جایگزین کنید. ساخته‌شده با تراریوم.\n")
     full = outdir / f"{name}_fa_full.zip"
-    with zipfile.ZipFile(full, "w", zipfile.ZIP_DEFLATED) as z:
-        for p in sorted(root.rglob("*")):
-            if p.is_file():
-                z.write(p, p.relative_to(root))
-    report.update({"changed_files": changed_files, "patch_zip": patch.name, "full_zip": full.name,
+    if engine == "tyrano":      # بدون بازتوزیع موتور
+        full = None
+    else:
+        with zipfile.ZipFile(full, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in sorted(root.rglob("*")):
+                if p.is_file():
+                    z.write(p, p.relative_to(root))
+    report.update({"changed_files": changed_files, "patch_zip": patch.name, "full_zip": full.name if full else None,
                    "seconds": round(time.time() - started, 1), "game_root": str(root)})
     status = getattr(getattr(pipeline, "translator", None), "status", None)
     if callable(status):

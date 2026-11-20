@@ -9,7 +9,9 @@ def find_root(folder: Path) -> Path:
     folder = Path(folder)
     for _ in range(3):
         entries = [p for p in folder.iterdir() if not p.name.startswith(("__MACOSX", "."))]
-        if len(entries) == 1 and entries[0].is_dir() and detect_engine(folder) == "unknown":
+        direct = (folder / "game").is_dir() or (folder / "www" / "data").is_dir() or \
+            (folder / "data" / "System.json").is_file() or (folder / "data" / "scenario").is_dir()
+        if len(entries) == 1 and entries[0].is_dir() and not direct:
             folder = entries[0]
         else:
             break
@@ -24,6 +26,7 @@ def detect_engine(folder: Path) -> str:
     for data in (folder / "www" / "data", folder / "data"):
         if (data / "System.json").is_file() and (data / "MapInfos.json").is_file():
             return "rpgmaker"
-    if (folder / "data" / "scenario").is_dir() and any((folder / "data" / "scenario").rglob("*.ks")):
+    from trarium.vn.tyrano import find_root as tyrano_root
+    if tyrano_root(folder) is not None:
         return "tyrano"
     return "unknown"
