@@ -30,6 +30,7 @@ SAY = re.compile(
     r'^(?P<pre>\s*(?:(?P<who>[A-Za-z_]\w*)(?:\s+[A-Za-z_@][\w-]*)*\s+)?)' + _STR +
     r'(?P<post>\s*(?:\(.*\))?\s*(?:with\s+[\w.()]+)?\s*(?:id\s+\w+)?\s*(?:nointeract)?\s*(?:if\s+.+)?:?\s*(?:#.*)?)$'
 )
+SCREEN_TEXT = re.compile(r'^(?P<pre>\s*text\s+)' + _STR + r'(?P<post>.*)$')
 UNDERSCORE = re.compile(r'(?P<pre>_{1,2}\(\s*)' + _STR + r'(?P<post>\s*\))')
 CHARACTER = re.compile(r'(?P<pre>Character\(\s*)' + _STR)
 PROTECT = re.compile(r"\{[^{}]*\}|\[[^\[\]]*\]|%\([^)]*\)[sdif]|%[sdif]|\\n|\\\"|\\'")
@@ -130,6 +131,10 @@ def extract(game: Path) -> list[Segment]:
                     kind = "menu" if m.group("post").rstrip().endswith(":") else "say"
                     segments.append(Segment(path, no, m.start("body"), m.end("body"), _unescape(body), kind))
                 continue
+            m3 = SCREEN_TEXT.match(line)
+            if m3 and len(m3.group("body").split()) >= 2 and LETTER.search(m3.group("body")):
+                segments.append(Segment(path, no, m3.start("body"), m3.end("body"), _unescape(m3.group("body")), "screen_text"))
+                continue
             for rx, kind in ((UNDERSCORE, "ui"), (CHARACTER, "name")):
                 for m2 in rx.finditer(line):
                     if LETTER.search(m2.group("body")):
@@ -228,3 +233,34 @@ def unpack_rpa(archive: Path, dest: Path, only=(".rpy",)) -> list[Path]:
             out.write_bytes(data)
             written.append(out)
     return written
+
+
+# ------------------------------------------------- old engines (Ren'Py < 7)
+TAG = re.compile(r"\{[^{}]*\}")
+
+
+def preshape(text: str, font: Path, size: int, width: int | None) -> str:
+    """برای موتورهای قدیمی بدون شکل‌دهی عربی: حروف چسبیده + ترتیب نمایشی، خط‌به‌خط.
+
+    تگ‌های {i} برداشته می‌شوند چون با برعکس شدن ترتیب، باز و بسته‌شان جابه‌جا می‌شود.
+    خط‌شکنی خودمان انجام می‌شود تا خط اول جمله بالا بماند.
+    """
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    from PIL import ImageFont
+
+    plain = TAG.sub("", text).replace("\\n", " ").strip()
+    lines = [plain]
+    if width:
+        f = ImageFont.truetype(str(font), size)
+        lines, cur = [], ""
+        for word in plain.split():
+            trial = (cur + " " + word).strip()
+            if cur and f.getlength(arabic_reshaper.reshape(trial)) > width:
+                lines.append(cur)
+                cur = word
+            else:
+                cur = trial
+        if cur:
+            lines.append(cur)
+    return "\\n".join(get_display(arabic_reshaper.reshape(l)) for l in lines)
