@@ -132,7 +132,7 @@ class Game:
             cls = ctypes.create_unicode_buffer(64)
             user32.GetClassNameW(h, cls, 64)
             if p.value == pid and user32.IsWindowVisible(h) and (
-                    cls.value == "#32770" or "Message" in cls.value):
+                    cls.value == "#32770" or "Message" in cls.value or cls.value == "TErrorForm"):
                 hits.append(h)
             return True
         user32.EnumWindows(cb, 0)
@@ -149,7 +149,9 @@ class Game:
                 return True
             user32.EnumChildWindows(h, ccb, 0)
             self.say("dialog", [(a, b) for a, b, _ in texts])
-            buttons = [c for a, b, c in texts if a in ("Button", "TButton")]
+            buttons = [c for a, b, c in texts if a in ("Button", "TButton", "TBitBtn")]
+            ign = [c for a, b, c in texts if "gnore" in b]
+            buttons = ign or buttons
             if buttons:
                 user32.SendMessageW(buttons[0], 0x00F5, 0, 0)   # BM_CLICK
             else:
