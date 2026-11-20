@@ -82,7 +82,8 @@ class Game:
         self.focus()
         threading.Thread(target=self._periodic, daemon=True).start()
 
-    def _find(self):
+    def windows(self):
+        """All visible top-level windows of the game: [(area, hwnd, title, w, h)]."""
         found = []
         pid = self.proc.pid
 
@@ -93,11 +94,17 @@ class Game:
             if p.value == pid and user32.IsWindowVisible(h):
                 r = wintypes.RECT()
                 user32.GetClientRect(h, ctypes.byref(r))
-                if r.right - r.left >= 300:
-                    found.append(h)
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(h, buf, 256)
+                w, hh = r.right - r.left, r.bottom - r.top
+                found.append((w * hh, h, buf.value, w, hh))
             return True
         user32.EnumWindows(cb, 0)
-        return found[0] if found else None
+        return sorted(found, reverse=True)
+
+    def _find(self):
+        ws = self.windows()
+        return ws[0][1] if ws and ws[0][3] >= 300 else None
 
     def focus(self):
         if not self.hwnd:
@@ -132,8 +139,22 @@ class Game:
                 return False
 
     def _periodic(self):
+        k = 0
+        os.makedirs(os.path.join(self.out, "full"), exist_ok=True)
+        last = None
         while not self.stop:
             t = time.time() - self.t0
+            ws = [(w[2], w[3], w[4]) for w in self.windows()]
+            if ws != last:
+                self.say("windows", ws)
+                last = ws
+            self.hwnd = self._find() or self.hwnd
+            if k % 10 == 0:
+                try:
+                    ImageGrab.grab(all_screens=True).save(os.path.join(self.out, "full", "f%06.1f.png" % t))
+                except Exception as e:  # noqa: BLE001
+                    self.say("full grab failed", e)
+            k += 1
             self.grab(os.path.join(self.out, "periodic", "t%06.1f.png" % t))
             time.sleep(self.every)
 
