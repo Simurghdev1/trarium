@@ -84,6 +84,16 @@ class Game:
                 break
             time.sleep(0.5)
         time.sleep(1)
+        for _ in range(6):   # fallback: a box we could not recognise -> focus it and press Enter
+            ws = self.windows()
+            if ws and ws[0][3] >= 300 and "LoadForm" not in ws[0][2]:
+                break
+            small = [w for w in ws if 0 < w[3] < 300 and 0 < w[4] < 200]
+            if small:
+                self.say("enter on", small[0][2])
+                self.hwnd = small[0][1]
+                self.key("enter")
+            time.sleep(1)
         self.hwnd = self._find() or self.hwnd
         self.focus()
         threading.Thread(target=self._periodic, daemon=True).start()
