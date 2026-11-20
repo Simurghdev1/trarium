@@ -163,6 +163,8 @@ init -1 python:
     for _name in ("text_font", "name_text_font", "interface_text_font"):
         if hasattr(gui, _name):
             setattr(gui, _name, "trarium_fa/Sahel.ttf")
+    if hasattr(gui, "dialogue_text_xalign"):
+        gui.dialogue_text_xalign = 1.0
 
 init 999 python:
     config.rtl = True
