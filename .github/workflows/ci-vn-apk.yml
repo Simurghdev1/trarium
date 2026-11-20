@@ -34,12 +34,14 @@ jobs:
           cat > $G/zz_ci_shot.rpy <<'R'
           label main_menu:
               return
+          init -999 python:
+              config.performance_test = False
           init 1000 python:
               _preferences.afm_enable = True
               _preferences.afm_time = 3
           R
           mkdir -p out/screenshots
-          export SDL_AUDIODRIVER=dummy RENPY_PLATFORM=linux-x86_64
+          export SDL_AUDIODRIVER=dummy RENPY_PLATFORM=linux-x86_64 RENPY_PERFORMANCE_TEST=0
           xvfb-run -s "-screen 0 1024x600x24" bash -c '
             renpy-6.99.4-sdk/renpy.sh out/work/project > out/game_run.log 2>&1 &
             sleep 20
