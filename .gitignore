@@ -11,3 +11,4 @@ qa/_cn/
 
 # build artifacts
 *.egg-info/
+ci_run/inputs/vn/*.apk
