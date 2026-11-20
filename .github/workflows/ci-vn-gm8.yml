@@ -39,7 +39,7 @@ jobs:
         run: |
           mkdir -p out
           printf '%s' "$TR_B64" | base64 -d | gunzip > tr.json
-          python -m trarium.vn.gm8 build game/UndertaleDemo.exe tr.json game/UndertaleDemo.exe --report out/report.json 2>&1 | tee out/build.log
+          python -m trarium.vn.gm8 build game/UndertaleDemo.exe tr.json game/UndertaleDemo.exe --report out/report.json --preview out/preview 2>&1 | tee out/build.log
       - name: Play + screenshots
         shell: bash
         run: |
