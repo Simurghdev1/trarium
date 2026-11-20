@@ -26,15 +26,18 @@ WRAP = re.compile(rb"if\s+myx\s*>\s*writingxend\s+then")
 WRAP_NEW = b"if ((!__fa && myx > writingxend) || (__fa && myx < writingx - 4)) then"
 COLOR = re.compile(rb"(draw_set_color\(mycolor\)[^\r\n]*\r?\n)")
 COLOR_ADD = (b"__big = 0\r\n"
+             b"__gs = 0.5\r\n"
              b"if (__fa) {\r\n"
              b"  draw_set_font(myfont)\r\n"
              b"  if (string_length(myletter) > 0) { if (ord(myletter) >= 128) __big = 1 }\r\n"
-             b"  if (__big) myx -= string_width(myletter) / 2\r\n"
+             b"  __gs = 0.5\r\n"
+             b"%s"
+             b"  if (__big) myx -= string_width(myletter) * __gs\r\n"
              b"  else { if (myletter == \" \") myx -= spacing / 2 else myx -= spacing }\r\n"
              b"}\r\n")
 DRAW = re.compile(rb"else\s+draw_text\(myx \+ \(random\(shake\)-\(shake/2\)\), myy \+ \(random\(shake\)-\(shake/2\)\), myletter\)")
 DRAW_NEW = (b"else { if (__big) draw_text_transformed(myx + (random(shake)-(shake/2)), "
-            b"myy + (random(shake)-(shake/2)), myletter, 0.5, 0.5, 0) "
+            b"myy + (random(shake)-(shake/2)), myletter, __gs, __gs, 0) "
             b"else draw_text(myx + (random(shake)-(shake/2)), myy + (random(shake)-(shake/2)), myletter) }")
 ADV = re.compile(rb"\r?\nmyx\s*=\s*\(myx\s*\+\s*spacing\)")
 ADV_NEW = b"\r\nif (!__fa) myx = (myx + spacing)"
@@ -44,11 +47,14 @@ def is_typewriter(code: bytes) -> bool:
     return bool(HEAD.search(code) and DRAW.search(code) and ADV.search(code))
 
 
-def patch_typewriter(code: bytes, bubble_width: int = 185) -> bytes:
-    """Return the patched draw-event code (raises ValueError if a pattern is missing)."""
+def patch_typewriter(code: bytes, bubble_width: int = 185, fonts_1x=()) -> bytes:
+    """Return the patched draw-event code (raises ValueError if a pattern is missing).
+    ``fonts_1x``: font assets whose Persian glyphs are stored at 1x (drawn unscaled,
+    for rooms that are not view-scaled); all others are 2x glyphs drawn at 0.5."""
+    one = b"".join(b"  if (myfont == %s) __gs = 1\r\n" % f for f in fonts_1x)
     steps = [(HEAD, lambda m: m.group(1) + HEAD_ADD % bubble_width, 1),
              (WRAP, lambda m: WRAP_NEW, 1),
-             (COLOR, lambda m: m.group(1) + COLOR_ADD, 1),
+             (COLOR, lambda m: m.group(1) + COLOR_ADD % one, 1),
              (DRAW, lambda m: DRAW_NEW, 1),
              (ADV, lambda m: ADV_NEW, 1)]
     out = NEWLINE_CALL.sub(INLINE_NEWLINE, code)

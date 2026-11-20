@@ -24,18 +24,19 @@ from .gml_patch import HELPER_NAME, HELPER_SRC, MARK, draw_text_call, is_typewri
 from .strings import code_blocks, scan_literals, short_hash
 
 FONT_TTF = str(Path(__file__).resolve().parents[2] / "fonts" / "Sahel.ttf")
-FA_PX = 30  # Persian size at 2x
+FA_PX = 30     # Persian size at 2x (view-scaled rooms, drawn at 0.5)
+FA_PX_1X = 17  # Persian size for 1:1 rooms (drawn unscaled)
 
 
 class Measure:
-    def __init__(self, font, spacing):
-        self.f, self.spacing = font, spacing
+    def __init__(self, font, spacing, scale=0.5):
+        self.f, self.spacing, self.scale = font, spacing, scale
 
     def width(self, prepared: str, gm: GlyphMap) -> float:
         w = 0.0
         for c in CODE_RE.sub("", prepared):
             if ord(c) >= 0x80:
-                w += self.f.dmap[gm.map[c] * 6 + 4] / 2
+                w += self.f.dmap[gm.map[c] * 6 + 4] * self.scale
             elif c == " ":
                 w += self.spacing / 2
             else:
@@ -62,7 +63,7 @@ def wrap_page(text: str, meas: Measure, gm: GlyphMap, width: float) -> list[str]
     return lines
 
 
-def _preview(d: str, n: int, font, enc: bytes, ent: dict) -> None:
+def _preview(d: str, n: int, font, enc: bytes, ent: dict, scale: float) -> None:
     from PIL import Image
     from .preview import draw_rtl
     Path(d).mkdir(parents=True, exist_ok=True)
@@ -72,7 +73,7 @@ def _preview(d: str, n: int, font, enc: bytes, ent: dict) -> None:
     dark = ent.get("font") != "fnt_plain"
     img = Image.new("RGB", ((w + 24) * 2, (ent.get("max_lines", 3) * vs + 14) * 2),
                     (0, 0, 0) if dark else (255, 255, 255))
-    draw_rtl(img, font, enc, w + 12, 6, sp, vs, (255, 255, 255) if dark else (0, 0, 0))
+    draw_rtl(img, font, enc, w + 12, 6, sp, vs, (255, 255, 255) if dark else (0, 0, 0), scale=scale)
     img.save(Path(d) / ("%02d.png" % n))
 
 
@@ -90,12 +91,18 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
         gm.add(needed_glyphs(prepare(e["fa"].replace("&", " "))))
     log("persian glyph forms: %d / 128 slots" % len(gm.map))
     used_fonts = sorted({e.get("font", "fnt_maintext") for e in by_id.values()})
+    scale_of = {}
+    for e in by_id.values():
+        scale_of[e.get("font", "fnt_maintext")] = 1.0 if e.get("glyph_scale") == 1 else 0.5
     for name in used_fonts:
         i = font_idx[name]
         f = fonts.get(i)
         base = original_baseline(f)
-        cell = 2 * f.glyph(65)[3] + 12
-        add_glyphs(f, gm.map, GlyphStyle(FONT_TTF, FA_PX, 2 * base, cell))
+        if scale_of[name] == 1.0:   # room drawn 1:1 -> glyphs at screen size, antialiased
+            st = GlyphStyle(FONT_TTF, FA_PX_1X, base, f.glyph(65)[3] + 8, threshold=0)
+        else:
+            st = GlyphStyle(FONT_TTF, FA_PX, 2 * base, 2 * f.glyph(65)[3] + 12)
+        add_glyphs(f, gm.map, st)
         fonts.put(i, f)
         log("font %s: +%d glyphs, atlas %dx%d" % (name, len(gm.map), f.map_w, f.map_h))
 
@@ -119,7 +126,7 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
             font = fonts.get(font_idx[ent.get("font", "fnt_maintext")])
             mode = ent.get("mode", "writer")
             if mode == "writer":
-                meas = Measure(font, ent.get("spacing", 8))
+                meas = Measure(font, ent.get("spacing", 8), scale_of[ent.get("font", "fnt_maintext")])
                 lines = wrap_page(fa, meas, gm, ent.get("width", 200))
                 if ent.get("center"):
                     lines = [" " * max(0, round((ent.get("width", 200) - meas.width(prepare(l), gm)) / 2
@@ -134,7 +141,7 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
                 pos = e_
                 applied[lid] = {"lines": lines}
                 if preview_dir:
-                    _preview(preview_dir, len(applied), font, enc, ent)
+                    _preview(preview_dir, len(applied), font, enc, ent, meas.scale)
             else:
                 call = draw_text_call(code, s, e_)
                 if not call:
@@ -160,7 +167,7 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
             new += code[pos:]
             code = bytes(new)
         if is_typewriter(code):
-            code = patch_typewriter(code)
+            code = patch_typewriter(code, fonts_1x=[n.encode() for n, sc in scale_of.items() if sc == 1.0])
             typewriters += 1
             changed = True
         if changed:

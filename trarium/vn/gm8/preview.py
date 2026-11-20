@@ -20,7 +20,7 @@ def atlas(font: Font) -> Image.Image:
 
 
 def draw_rtl(canvas: Image.Image, font: Font, s: bytes, right_x: float, y: float, spacing: int,
-             vspacing: int, color=(255, 255, 255), left_x: float | None = None):
+             vspacing: int, color=(255, 255, 255), left_x: float | None = None, scale: float = 0.5):
     """Draw like the patched writer onto a 2x canvas; returns min x reached (1x units)."""
     at = atlas(font)
     s = CODE.sub(b"", s)
@@ -30,8 +30,10 @@ def draw_rtl(canvas: Image.Image, font: Font, s: bytes, right_x: float, y: float
         for b in line:
             gx, gy, gw, gh, adv, off = font.dmap[b * 6:b * 6 + 6]
             if b >= 0x80:
-                x -= adv / 2
+                x -= adv * scale
                 g = at.crop((gx, gy, gx + gw, gy + gh))
+                if scale == 1.0:
+                    g = g.resize((gw * 2, gh * 2), Image.NEAREST)
                 X, Y = round(x * 2), round((y + li * vspacing) * 2)
             else:
                 x -= spacing / 2 if b == 0x20 else spacing
