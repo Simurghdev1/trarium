@@ -30,7 +30,7 @@ rpys = ak.decompile(game, UNRPYC)
 font_name = ak.font_of(game) or "CarroisGothic-Regular.ttf"
 segs = rp.extract(game)
 trs, why = _protected_translate(pipe, [s.text.replace("\n", " ") for s in segs], rp.PROTECT)
-SIZES = {"say": (24, 679), "menu": (36, None), "screen_text": (20, 560), "ui": (28, None), "name": (24, None)}
+SIZES = {"say": (24, 560), "menu": (36, None), "screen_text": (20, 480), "ui": (28, None), "name": (24, None)}
 shaped = []
 for s, t in zip(segs, trs):
     if t is None:
@@ -41,7 +41,7 @@ review = [{"file": s.file.name, "line": s.line + 1, "kind": s.kind, "en": s.text
 (OUT / "translation_review.json").write_text(json.dumps(review, ensure_ascii=False, indent=1), encoding="utf-8")
 stats = rp.apply(segs, shaped)
 (game / font_name).write_bytes(ak.FONT.read_bytes())
-ak.right_align(game, 679)
+ak.right_align(game, 560)
 shutil.make_archive(str(OUT / "translated_scripts_rpy"), "zip", game, ".", )
 for p in game.glob("*.rpyc"):
     if p.name != "script_version.rpyc":
