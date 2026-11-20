@@ -1,0 +1,20 @@
+[
+  ["log", "intro story: no input"],
+  ["wait", 72],
+  ["key", "z"], ["wait", 4],
+  ["key", "z"], ["wait", 3],
+  ["key", "z"], ["wait", 2.5],
+  ["key", "z"], ["wait", 0.6],
+  ["key", "right"], ["key", "right"], ["key", "right"], ["key", "right"], ["key", "right"],
+  ["wait", 0.5], ["key", "up"], ["wait", 0.6],
+  ["key", "z"], ["wait", 2.5],
+  ["key", "right"], ["wait", 1.0],
+  ["key", "z"], ["wait", 10],
+  ["log", "fall room: walk north"],
+  ["hold", "up", 5.0], ["wait", 2.0],
+  ["log", "flowey + battle: advance text"],
+  ["press_every", "z", 3.0, 165],
+  ["log", "follow toriel"],
+  ["hold", "up", 4.0],
+  ["press_every", "z", 3.0, 30]
+]
