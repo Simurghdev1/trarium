@@ -85,6 +85,11 @@ def right_align(game: Path, width: int):
         i = s.index(line)
         s = s[:i] + f"    style.say_dialogue.text_align = 1.0\n    style.say_dialogue.min_width = {width}\n" + s[i:]
         p.write_text(s, encoding="utf-8")
+    # متن پیش‌شکل‌داده‌شده فارسی در حالت تایپ‌شدن از چپ ظاهر می‌شود؛ متن یک‌جا نمایش داده شود
+    s = p.read_text(encoding="utf-8")
+    s2 = re.sub(r"config\.default_text_cps\s*=\s*\d+", "config.default_text_cps = 0", s)
+    if s2 != s:
+        p.write_text(s2, encoding="utf-8")
 
 
 def compile_game(sdk: Path, project: Path) -> str:
