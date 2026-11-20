@@ -91,17 +91,21 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
         gm.add(needed_glyphs(prepare(e["fa"].replace("&", " "))))
     log("persian glyph forms: %d / 128 slots" % len(gm.map))
     used_fonts = sorted({e.get("font", "fnt_maintext") for e in by_id.values()})
-    scale_of = {}
+    scale_of, px_of, crisp_of = {}, {}, {}
     for e in by_id.values():
-        scale_of[e.get("font", "fnt_maintext")] = 1.0 if e.get("glyph_scale") == 1 else 0.5
+        fn = e.get("font", "fnt_maintext")
+        scale_of[fn] = 0.5 if e.get("glyph_scale") == 0.5 else 1.0
+        px_of[fn] = e.get("glyph_px", FA_PX_1X if scale_of[fn] == 1.0 else FA_PX)
+        crisp_of[fn] = e.get("crisp", scale_of[fn] == 0.5)
     for name in used_fonts:
         i = font_idx[name]
         f = fonts.get(i)
         base = original_baseline(f)
-        if scale_of[name] == 1.0:   # room drawn 1:1 -> glyphs at screen size, antialiased
-            st = GlyphStyle(FONT_TTF, FA_PX_1X, base, f.glyph(65)[3] + 8, threshold=0)
-        else:
-            st = GlyphStyle(FONT_TTF, FA_PX, 2 * base, 2 * f.glyph(65)[3] + 12)
+        thr = 128 if crisp_of[name] else 0
+        if scale_of[name] == 1.0:   # glyphs at the font's own pixel size, drawn unscaled
+            st = GlyphStyle(FONT_TTF, px_of[name], base, f.glyph(65)[3] + 8, threshold=thr)
+        else:                       # 2x glyphs drawn at 0.5 (only for engines that render views at port size)
+            st = GlyphStyle(FONT_TTF, px_of[name], 2 * base, 2 * f.glyph(65)[3] + 12, threshold=thr)
         add_glyphs(f, gm.map, st)
         fonts.put(i, f)
         log("font %s: +%d glyphs, atlas %dx%d" % (name, len(gm.map), f.map_w, f.map_h))
