@@ -8,7 +8,12 @@ Plan file (JSON list of steps):
   ["hold", key, seconds]                  # hold a key down (walking)
   ["shot", "name"]                        # named screenshot
   ["press_every", key, interval, total]   # press key repeatedly
-Periodic screenshots are also taken every --every seconds (named t####.png).
+  ["advance", key, interval, total, max_settle]
+      # like press_every, but before each press wait (up to max_settle s) until the
+      # frame stops changing (text fully typed), save pages/p###.png, then press
+Periodic screenshots are also taken every --every seconds (named t####.png), and a
+watcher saves every new frame that stays unchanged for 2 consecutive polls
+(stable/s####.png) - i.e. dialogue pages after the typewriter has finished.
 """
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ import threading
 import time
 from ctypes import wintypes
 
-from PIL import ImageGrab
+from PIL import ImageChops, ImageGrab
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 VK = {"z": 0x5A, "x": 0x58, "c": 0x43, "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
@@ -63,6 +68,9 @@ class Game:
         self.stop = False
         self.log = open(os.path.join(out, "driver.log"), "a", encoding="utf-8")
         os.makedirs(os.path.join(out, "periodic"), exist_ok=True)
+        os.makedirs(os.path.join(out, "stable"), exist_ok=True)
+        os.makedirs(os.path.join(out, "pages"), exist_ok=True)
+        self.npage = 0
 
     def say(self, *a):
         line = "[%7.2f] " % (time.time() - self.t0) + " ".join(str(x) for x in a)
@@ -182,24 +190,62 @@ class Game:
         user32.ClientToScreen(self.hwnd, ctypes.byref(pt))
         return (pt.x, pt.y, pt.x + r.right, pt.y + r.bottom)
 
-    def grab(self, path):
+    def grab(self, path=None):
         with self.lock:
             try:
                 if not self.hwnd:
                     self.hwnd = self._find()
                 bbox = self.rect() if self.hwnd else None
                 img = ImageGrab.grab(bbox=bbox, all_screens=True)
-                img.save(path)
-                return True
+                if path:
+                    img.save(path)
+                return img
             except Exception as e:  # noqa: BLE001
                 self.say("grab failed", e)
-                return False
+                return None
+
+    @staticmethod
+    def same(a, b, tol=0.0005):
+        """True if two frames are (almost) identical."""
+        if a is None or b is None or a.size != b.size:
+            return False
+        d = ImageChops.difference(a.convert("L"), b.convert("L")).point(lambda v: 255 if v > 24 else 0)
+        if d.getbbox() is None:
+            return True
+        return d.histogram()[255] <= tol * a.size[0] * a.size[1]
+
+    def settle(self, max_wait, poll=0.35):
+        """Wait until the frame is unchanged over 2 consecutive polls; return that frame."""
+        end = time.time() + max_wait
+        prev, run = self.grab(), 0
+        while time.time() < end:
+            time.sleep(poll)
+            cur = self.grab()
+            run = run + 1 if self.same(prev, cur) else 0
+            prev = cur
+            if run >= 2:
+                return cur, True
+        return prev, False
 
     def _periodic(self):
         k = 0
         os.makedirs(os.path.join(self.out, "full"), exist_ok=True)
         last = None
+        nxt = 0.0
+        prev, run, saved, ns = None, 0, None, 0
         while not self.stop:
+            # stable-frame watcher (fast poll); periodic + bookkeeping every self.every
+            cur = self.grab()
+            run = run + 1 if self.same(prev, cur) else 0
+            prev = cur
+            if run == 2 and cur is not None and not self.same(cur, saved, tol=0.0):
+                ns += 1
+                cur.save(os.path.join(self.out, "stable", "s%03d_t%06.1f.png" % (ns, time.time() - self.t0)))
+                saved = cur
+            if time.time() - self.t0 < nxt:
+                time.sleep(0.3)
+                continue
+            nxt = time.time() - self.t0 + self.every
             t = time.time() - self.t0
             self.dismiss_dialogs()
             ws = [(w[2], w[3], w[4]) for w in self.windows()]
@@ -214,7 +260,7 @@ class Game:
                     self.say("full grab failed", e)
             k += 1
             self.grab(os.path.join(self.out, "periodic", "t%06.1f.png" % t))
-            time.sleep(self.every)
+            time.sleep(0.3)
 
     def key(self, k, hold=0.09):
         self.focus()
@@ -246,6 +292,18 @@ class Game:
                 while time.time() < end and self.proc.poll() is None:
                     self.key(k)
                     time.sleep(max(0.0, interval - 0.14))
+            elif op == "advance":
+                _, k, interval, total, max_settle = step
+                end = time.time() + total
+                while time.time() < end and self.proc.poll() is None:
+                    time.sleep(max(0.0, min(interval - 0.14, end - time.time())))
+                    img, ok = self.settle(min(max_settle, max(0.0, end - time.time())))
+                    if img is not None:
+                        self.npage += 1
+                        img.save(os.path.join(self.out, "pages", "p%03d_t%06.1f%s.png" % (
+                            self.npage, time.time() - self.t0, "" if ok else "_unsettled")))
+                    if time.time() < end:
+                        self.key(k)
             elif op == "log":
                 self.say(*step[1:])
         self.stop = True

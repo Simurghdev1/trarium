@@ -42,7 +42,7 @@
   ["hold", "up", 2.0],
   ["wait", 1.0],
   ["log", "flowey + battle + toriel: advance text"],
-  ["press_every", "z", 3.0, 115],
+  ["advance", "z", 2.5, 115, 4.0],
   ["log", "follow toriel north into the ruins entrance"],
   ["hold", "up", 3.5],
   ["wait", 2.0],
@@ -55,5 +55,5 @@
   ["wait", 1.5],
   ["log", "next room: walk north into Toriel's trigger, advance her lines"],
   ["hold", "up", 2.5],
-  ["press_every", "z", 3.0, 40]
+  ["advance", "z", 2.5, 40, 4.0]
 ]
