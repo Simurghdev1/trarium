@@ -79,6 +79,12 @@ class Game:
             if self.hwnd:
                 break
         self.say("hwnd", self.hwnd)
+        for _ in range(20):
+            if self.dismiss_dialogs():
+                break
+            time.sleep(0.5)
+        time.sleep(1)
+        self.hwnd = self._find() or self.hwnd
         self.focus()
         threading.Thread(target=self._periodic, daemon=True).start()
 
@@ -101,6 +107,41 @@ class Game:
             return True
         user32.EnumWindows(cb, 0)
         return sorted(found, reverse=True)
+
+    def dismiss_dialogs(self):
+        """Click OK on message boxes of the game (e.g. 'No sound device detected' on CI)."""
+        pid = self.proc.pid
+        hits = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def cb(h, _l):
+            p = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(h, ctypes.byref(p))
+            cls = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(h, cls, 64)
+            if p.value == pid and cls.value == "#32770" and user32.IsWindowVisible(h):
+                hits.append(h)
+            return True
+        user32.EnumWindows(cb, 0)
+        for h in hits:
+            texts = []
+
+            @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            def ccb(c, _l):
+                buf = ctypes.create_unicode_buffer(512)
+                user32.GetWindowTextW(c, buf, 512)
+                cls = ctypes.create_unicode_buffer(64)
+                user32.GetClassNameW(c, cls, 64)
+                texts.append((cls.value, buf.value, c))
+                return True
+            user32.EnumChildWindows(h, ccb, 0)
+            self.say("dialog", [(a, b) for a, b, _ in texts])
+            buttons = [c for a, b, c in texts if a == "Button"]
+            if buttons:
+                user32.SendMessageW(buttons[0], 0x00F5, 0, 0)   # BM_CLICK
+            else:
+                user32.PostMessageW(h, 0x0010, 0, 0)            # WM_CLOSE
+        return len(hits)
 
     def _find(self):
         ws = self.windows()
@@ -144,6 +185,7 @@ class Game:
         last = None
         while not self.stop:
             t = time.time() - self.t0
+            self.dismiss_dialogs()
             ws = [(w[2], w[3], w[4]) for w in self.windows()]
             if ws != last:
                 self.say("windows", ws)
