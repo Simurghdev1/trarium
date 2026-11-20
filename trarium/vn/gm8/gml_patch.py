@@ -65,17 +65,28 @@ def patch_typewriter(code: bytes, bubble_width: int = 185, fonts_1x=()) -> bytes
     return out
 
 
-HELPER_SRC = (
-    b"// Trarium: draw a Persian string (stored in right-to-left draw order).\r\n"
-    b"// argument0 = right edge x, argument1 = y, argument2 = string. Returns width.\r\n"
-    b"var __i, __c, __x;\r\n"
-    b"__x = argument0\r\n"
-    b"for (__i = 1; __i <= string_length(argument2); __i += 1) {\r\n"
-    b"  __c = string_char_at(argument2, __i)\r\n"
-    b"  if (ord(__c) >= 128) { __x -= string_width(__c) / 2; draw_text_transformed(__x, argument1, __c, 0.5, 0.5, 0) }\r\n"
-    b"  else { if (__c == \" \") __x -= string_width(__c) / 2 else __x -= string_width(__c); draw_text(__x, argument1, __c) }\r\n"
-    b"}\r\n"
-    b"return argument0 - __x\r\n")
+def helper_src(scale: float = 0.5) -> bytes:
+    """GML for the label helper; ``scale`` is how the font's Persian glyphs are drawn
+    (0.5 for 2x glyphs in view-scaled rooms, 1 for glyphs stored at screen size)."""
+    k = b"%g" % scale
+    return (
+        b"// Trarium: draw a Persian string (stored in right-to-left draw order).\r\n"
+        b"// argument0 = right edge x, argument1 = y, argument2 = string. Returns width.\r\n"
+        b"var __i, __c, __x;\r\n"
+        b"__x = argument0\r\n"
+        b"for (__i = 1; __i <= string_length(argument2); __i += 1) {\r\n"
+        b"  __c = string_char_at(argument2, __i)\r\n"
+        b"  if (ord(__c) >= 128) { __x -= string_width(__c) * " + k + b"; draw_text_transformed(__x, argument1, __c, " + k + b", " + k + b", 0) }\r\n"
+        b"  else { if (__c == \" \") __x -= string_width(__c) / 2 else __x -= string_width(__c); draw_text(__x, argument1, __c) }\r\n"
+        b"}\r\n"
+        b"return argument0 - __x\r\n")
+
+
+def helper_name(scale: float = 0.5) -> bytes:
+    return HELPER_NAME if scale == 0.5 else HELPER_NAME + b"_1x"
+
+
+HELPER_SRC = helper_src(0.5)
 
 
 def draw_text_call(code: bytes, lit_start: int, lit_end: int):

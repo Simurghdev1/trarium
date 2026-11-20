@@ -20,7 +20,7 @@ from pathlib import Path
 from .exe import GM8Exe, Script
 from .fa_text import CODE_RE, GlyphMap, needed_glyphs, prepare
 from .font import GlyphStyle, add_glyphs, original_baseline
-from .gml_patch import HELPER_NAME, HELPER_SRC, MARK, draw_text_call, is_typewriter, patch_typewriter
+from .gml_patch import HELPER_NAME, MARK, helper_name, helper_src, draw_text_call, is_typewriter, patch_typewriter
 from .strings import code_blocks, scan_literals, short_hash
 
 FONT_TTF = str(Path(__file__).resolve().parents[2] / "fonts" / "Sahel.ttf")
@@ -145,7 +145,7 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
     problems = []
     applied = {}
     typewriters = 0
-    helper_needed = False
+    helpers_needed = set()
     for where, code, setter in code_blocks(g):
         lits = list(scan_literals(code))
         new = bytearray()
@@ -182,7 +182,8 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
                     problems.append({"id": lid, "error": "not a draw_text label"})
                     continue
                 cs, ce, xe, ye = call
-                meas = Measure(font, font.glyph(65)[4])
+                lsc = scale_of[ent.get("font", "fnt_maintext")]
+                meas = Measure(font, font.glyph(65)[4], lsc)
                 prep = prepare(fa)
                 fa_w = meas.width(prep, gm)
                 en_w = sum(font.glyph(b)[4] for b in t)
@@ -191,9 +192,9 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
                     right = b"%d" % int(align.split(":")[1])
                 else:
                     right = b"(%s) + %d" % (xe, round(en_w / 2 + fa_w / 2))
-                new += code[pos:cs] + HELPER_NAME + b"(" + right + b", " + ye + b", " + q + gm.encode(prep) + q + b")"
+                new += code[pos:cs] + helper_name(lsc) + b"(" + right + b", " + ye + b", " + q + gm.encode(prep) + q + b")"
                 pos = ce
-                helper_needed = True
+                helpers_needed.add(lsc)
                 applied[lid] = {"x": right.decode(), "w": fa_w}
             changed = True
             stats[mode] += 1
@@ -206,10 +207,10 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
             changed = True
         if changed:
             setter(code)
-    if helper_needed:
+    for hs in sorted(helpers_needed):
         sc = g.section("scripts")
         sc.chunks.append(b"")
-        sc.put(len(sc.chunks) - 1, Script(HELPER_NAME, 800, HELPER_SRC))
+        sc.put(len(sc.chunks) - 1, Script(helper_name(hs), 800, helper_src(hs)))
     missing = sorted(set(by_id) - set(applied))
     out = g.build()
     Path(exe_out).write_bytes(out)
