@@ -102,8 +102,10 @@ class Game:
                 user32.GetClientRect(h, ctypes.byref(r))
                 buf = ctypes.create_unicode_buffer(256)
                 user32.GetWindowTextW(h, buf, 256)
+                cls = ctypes.create_unicode_buffer(64)
+                user32.GetClassNameW(h, cls, 64)
                 w, hh = r.right - r.left, r.bottom - r.top
-                found.append((w * hh, h, buf.value, w, hh))
+                found.append((w * hh, h, buf.value + "|" + cls.value, w, hh))
             return True
         user32.EnumWindows(cb, 0)
         return sorted(found, reverse=True)
@@ -119,7 +121,8 @@ class Game:
             user32.GetWindowThreadProcessId(h, ctypes.byref(p))
             cls = ctypes.create_unicode_buffer(64)
             user32.GetClassNameW(h, cls, 64)
-            if p.value == pid and cls.value == "#32770" and user32.IsWindowVisible(h):
+            if p.value == pid and user32.IsWindowVisible(h) and (
+                    cls.value == "#32770" or "Message" in cls.value):
                 hits.append(h)
             return True
         user32.EnumWindows(cb, 0)
@@ -136,11 +139,12 @@ class Game:
                 return True
             user32.EnumChildWindows(h, ccb, 0)
             self.say("dialog", [(a, b) for a, b, _ in texts])
-            buttons = [c for a, b, c in texts if a == "Button"]
+            buttons = [c for a, b, c in texts if a in ("Button", "TButton")]
             if buttons:
                 user32.SendMessageW(buttons[0], 0x00F5, 0, 0)   # BM_CLICK
             else:
-                user32.PostMessageW(h, 0x0010, 0, 0)            # WM_CLOSE
+                user32.PostMessageW(h, 0x0100, 0x0D, 0)         # Enter
+                user32.PostMessageW(h, 0x0101, 0x0D, 0)
         return len(hits)
 
     def _find(self):
