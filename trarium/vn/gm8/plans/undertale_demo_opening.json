@@ -42,10 +42,18 @@
   ["hold", "up", 2.0],
   ["wait", 1.0],
   ["log", "flowey + battle + toriel: advance text"],
-  ["press_every", "z", 3.0, 180],
-  ["log", "follow toriel north"],
+  ["press_every", "z", 3.0, 115],
+  ["log", "follow toriel north into the ruins entrance"],
   ["hold", "up", 3.5],
   ["wait", 2.0],
   ["hold", "up", 1.5],
-  ["press_every", "z", 3.0, 30]
+  ["log", "ruins entrance: step right past the save point, climb, step back under doorA"],
+  ["hold", "right", 0.35],
+  ["hold", "up", 3.0],
+  ["hold", "left", 0.35],
+  ["hold", "up", 2.0],
+  ["wait", 1.5],
+  ["log", "next room: walk north into Toriel's trigger, advance her lines"],
+  ["hold", "up", 2.5],
+  ["press_every", "z", 3.0, 40]
 ]

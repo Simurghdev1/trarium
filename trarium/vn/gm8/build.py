@@ -44,6 +44,36 @@ class Measure:
         return w
 
 
+_RANK = {"&": 0, "^": 1, "\\": 2, "/": 3, "%": 4}
+
+
+def writer_safe(s: str) -> str:
+    """Order control codes so a GM8 typewriter that tests ``& ^ \\ / %`` once per
+    character (in that order) consumes every code: a line break is moved in front of
+    the codes before it; any other run the writer cannot chain gets a space between."""
+    toks, pos = [], 0
+    for m in CODE_RE.finditer(s):
+        toks += list(s[pos:m.start()])
+        toks.append((m.group(0),))
+        pos = m.end()
+    toks += list(s[pos:])
+    changed = True
+    while changed:
+        changed = False
+        for i in range(1, len(toks)):
+            a, b = toks[i - 1], toks[i]
+            if isinstance(a, tuple) and b == ("&",) and a != ("&",):
+                toks[i - 1], toks[i] = b, a
+                changed = True
+    out = []
+    for i, t in enumerate(toks):
+        if isinstance(t, tuple) and i and isinstance(toks[i - 1], tuple) and \
+                _RANK[t[0][0]] <= _RANK[toks[i - 1][0][0]]:
+            out.append(" ")
+        out.append(t[0] if isinstance(t, tuple) else t)
+    return "".join(out)
+
+
 def wrap_page(text: str, meas: Measure, gm: GlyphMap, width: float) -> list[str]:
     """Greedy word wrap of one page (logical order) -> list of lines; keeps manual '&'."""
     lines = []
@@ -138,7 +168,7 @@ def build(exe_in: str, tr_path: str, exe_out: str, report_path: str | None = Non
                 worst = max(meas.width(prepare(l), gm) for l in lines)
                 if len(lines) > ent.get("max_lines", 3) or worst > ent.get("width", 200) + 0.5:
                     problems.append({"id": lid, "lines": len(lines), "widest": worst})
-                enc = MARK + gm.encode(prepare("&".join(lines)))
+                enc = gm.encode(writer_safe(prepare("&".join(lines)))) + MARK  # mark last: never chained with a leading code
                 if q in enc:
                     raise ValueError("quote char inside translation " + lid)
                 new += code[pos:s] + q + enc + q

@@ -104,3 +104,13 @@ def test_font_glyphs_added():
 def test_real_exe_roundtrip():
     data = open(os.environ["GM8_TEST_EXE"], "rb").read()
     assert E.GM8Exe(data).build() == data
+
+
+def test_writer_safe_code_order():
+    from trarium.vn.gm8.build import writer_safe
+    # pause before a line break: the writer tests '&' before '^', so the break goes first
+    assert writer_safe("a^2&b/") == "a&^2b/"
+    # two colour codes in a row cannot chain in one step -> separated by a space
+    assert writer_safe("\\E2\\Wx/") == "\\E2 \\Wx/"
+    # legal chains are left alone
+    assert writer_safe("&^1\\Yx/%%") == "&^1\\Yx/%%"
