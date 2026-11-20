@@ -1,0 +1,71 @@
+name: Trarium visual novel (Ren'Py → FA)
+on:
+  push:
+    branches: ["feat/visual-novel"]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  RENPY: "8.3.7"
+jobs:
+  renpy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements.txt requests pytest
+      - run: python -m pytest tests/test_vn.py -q -p no:cacheprovider
+      - name: Ren'Py SDK
+        run: |
+          curl -sL "https://www.renpy.org/dl/$RENPY/renpy-$RENPY-sdk.tar.bz2" | tar xj
+          mv renpy-$RENPY-sdk sdk
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb imagemagick >/dev/null
+      - name: Translate The Question
+        run: |
+          mkdir -p out
+          cp -r sdk/the_question out/the_question_src
+          python ci_run/vn_run.py out/the_question_src out 2>&1 | tee out/run.log
+          ROOT=$(tail -1 out/run.log)
+          rm -rf sdk/the_question_fa && cp -r "$ROOT" sdk/the_question_fa
+      - name: Ren'Py lint (original + Persian)
+        run: |
+          set +e
+          sdk/renpy.sh sdk/the_question lint > out/lint_original.txt 2>&1
+          sdk/renpy.sh sdk/the_question_fa lint > out/lint_fa.txt 2>&1
+          echo "lint exit: $?" >> out/lint_fa.txt
+          tail -20 out/lint_fa.txt
+      - name: Screenshots in the real engine
+        run: |
+          set +e
+          cat > sdk/the_question_fa/game/zz_ci_shot.rpy <<'R'
+          label main_menu:
+              return
+          init 1000 python:
+              config.default_afm_enable = True
+              config.default_afm_time = 4
+              _preferences.afm_enable = True
+              _preferences.afm_time = 4
+          R
+          mkdir -p out/screenshots
+          export SDL_AUDIODRIVER=dummy
+          xvfb-run -s "-screen 0 1280x720x24" bash -c '
+            sdk/renpy.sh sdk/the_question_fa > out/game_run.log 2>&1 &
+            sleep 25
+            for i in $(seq -w 1 12); do import -window root out/screenshots/shot_$i.png; sleep 5; done
+            kill %1'
+          ls out/screenshots | wc -l
+          rm sdk/the_question_fa/game/zz_ci_shot.rpy
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trarium-vn-outputs
+          path: |
+            out/*.zip
+            out/*.json
+            out/*.txt
+            out/*.log
+            out/screenshots/**
