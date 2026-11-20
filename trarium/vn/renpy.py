@@ -205,6 +205,18 @@ def install_font(game: Path, font: Path) -> list[Path]:
 
 
 # ---------------------------------------------------------------- RPA archives
+class _IndexUnpickler(pickle.Unpickler):
+    """فهرست RPA فقط dict/list/tuple/int/bytes است؛ هیچ کلاس یا تابعی بار نمی‌شود (جلوگیری از اجرای کد)."""
+
+    def find_class(self, module, name):
+        if (module, name) == ("_codecs", "encode"):  # bytes با پروتکل ۲ در پایتون ۳ (Ren'Py 8)
+            import _codecs
+            return _codecs.encode
+        if module in ("builtins", "__builtin__") and name in ("bytes", "bytearray", "str", "unicode"):
+            return {"bytes": bytes, "bytearray": bytearray}.get(name, str)
+        raise pickle.UnpicklingError(f"آرشیو RPA مشکوک است (شیء {module}.{name}).")
+
+
 def unpack_rpa(archive: Path, dest: Path, only=(".rpy",)) -> list[Path]:
     """RPA-3.0/2.0: فقط اسکریپت‌های .rpy را بیرون می‌آورد."""
     raw = archive.read_bytes()
@@ -215,7 +227,9 @@ def unpack_rpa(archive: Path, dest: Path, only=(".rpy",)) -> list[Path]:
         offset, key = int(header[1], 16), 0
     else:
         raise ValueError(f"فرمت آرشیو پشتیبانی نمی‌شود: {header[0]}")
-    index = pickle.loads(zlib.decompress(raw[offset:]), encoding="bytes")
+    import io
+    index = _IndexUnpickler(io.BytesIO(zlib.decompress(raw[offset:])), encoding="bytes").load()
+    root = Path(dest).resolve()
     written = []
     for name, chunks in index.items():
         name = name.decode("utf-8") if isinstance(name, bytes) else name
@@ -228,6 +242,8 @@ def unpack_rpa(archive: Path, dest: Path, only=(".rpy",)) -> list[Path]:
             prefix = prefix.encode("latin-1")
         data = prefix + raw[start: start + length - len(prefix)]
         out = dest / name
+        if root not in out.resolve().parents:
+            continue
         out.parent.mkdir(parents=True, exist_ok=True)
         if not out.exists():
             out.write_bytes(data)

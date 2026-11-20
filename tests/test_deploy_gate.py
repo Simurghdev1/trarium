@@ -20,7 +20,7 @@ if sys.argv[2] == "gate":
     at.text_input(key="_trarium_password").input("wrong").run()
     assert len(at.tabs) == 0 and at.error
     at.text_input(key="_trarium_password").input("s3cret-pass").run()
-assert len(at.tabs) == 10, len(at.tabs)
+assert len(at.tabs) == 11, len(at.tabs)
 print("OK")
 '''
 

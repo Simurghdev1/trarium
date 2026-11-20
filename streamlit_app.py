@@ -370,10 +370,10 @@ st.markdown(f'<div class="hero"><h1>🌿 Trarium</h1><p>ترجمه‌ی کتاب
 from trarium import expansion_ui
 
 (book_tab, layout_tab, web_tab, library_tab, queue_tab, site_tab, yt_tab, manga_tab,
- repair_tab, usage_tab) = st.tabs([
+ vn_tab, repair_tab, usage_tab) = st.tabs([
     "📄 ترجمه متنی", "🎨 حفظ قالب PDF", "🌐 وب‌ناول", "📚 کتابخانه",
     "🗂️ صف و تسک‌ها", "🌐 ترجمه وب‌سایت", "🎬 زیرنویس یوتیوب", "🖼️ افزایش کیفیت مانگا",
-    "🩺 تعمیر و تبدیل", "📊 مصرف و هزینه"])
+    "🎮 ویژوال ناول", "🩺 تعمیر و تبدیل", "📊 مصرف و هزینه"])
 
 
 
@@ -798,6 +798,10 @@ with yt_tab:
 
 with manga_tab:
     ui_panels.render_manga_tab(ui_ctx)
+
+with vn_tab:
+    from trarium.vn_tab import render_vn_tab
+    render_vn_tab(ui_ctx)
 
 with repair_tab:
     expansion_ui.render_repair_tab(ui_ctx)
