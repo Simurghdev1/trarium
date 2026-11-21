@@ -48,15 +48,17 @@ def test_inspect_renpy_zip(tmp_path):
     assert after == before             # پوشهٔ موقت پاک شد
 
 
-def test_inspect_rejects_non_zip_and_unknown(tmp_path):
+def test_any_file_type_accepted_without_engine(tmp_path):
+    # همهٔ نوع فایل‌ها پذیرفته می‌شوند؛ فایلی که آرشیو نیست به مسیر عمومی می‌رود و چیزی ترجمه‌پذیر ندارد
     bad = tmp_path / "x.zip"
-    bad.write_bytes(b"not a zip")
-    with pytest.raises(vn_tab.VNInputError):
-        vn_tab.inspect_upload(bad)
+    bad.write_bytes(b"\x00\x01binary\x00junk")
+    info = vn_tab.inspect_upload(bad)
+    assert info["engine"] == "unknown" and info["container"] == "file"
     other = tmp_path / "other.zip"
     with zipfile.ZipFile(other, "w") as f:
         f.writestr("readme.txt", "hi")
-    assert vn_tab.inspect_upload(other)["engine"] == "unknown"
+    info = vn_tab.inspect_upload(other)
+    assert info["engine"] in ("unknown", "generic") and not info.get("lines")
 
 
 def test_size_limit_and_zip_slip(tmp_path, monkeypatch):

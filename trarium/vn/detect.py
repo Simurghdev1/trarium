@@ -10,7 +10,9 @@ def find_root(folder: Path) -> Path:
     for _ in range(3):
         entries = [p for p in folder.iterdir() if not p.name.startswith(("__MACOSX", "."))]
         direct = (folder / "game").is_dir() or (folder / "www" / "data").is_dir() or \
-            (folder / "data" / "System.json").is_file() or (folder / "data" / "scenario").is_dir()
+            (folder / "data" / "System.json").is_file() or (folder / "data" / "scenario").is_dir() or \
+            any((folder / n).is_file() for n in ("data.win", "game.unx", "game.ios", "game.droid")) or \
+            (folder / "Data").is_dir()
         if len(entries) == 1 and entries[0].is_dir() and not direct:
             folder = entries[0]
         else:
@@ -29,4 +31,15 @@ def detect_engine(folder: Path) -> str:
     from trarium.vn.tyrano import find_root as tyrano_root
     if tyrano_root(folder) is not None:
         return "tyrano"
+    from trarium.vn.rgss.engine import archive_of, data_dir as rgss_data
+    if rgss_data(folder) is not None:
+        return "rgss"
+    if archive_of(folder) is not None:
+        return "rgss-archived"
+    from trarium.vn.gms.build import find_data_file
+    if find_data_file(folder) is not None:
+        return "gamemaker"
+    from trarium.vn.gm8.auto import find_gm8_exe
+    if find_gm8_exe(folder) is not None:
+        return "gm8"
     return "unknown"

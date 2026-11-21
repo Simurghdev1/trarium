@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+from html import escape as html_escape
 import shutil
 import tempfile
 import zipfile
@@ -17,6 +18,12 @@ ENGINE_LABELS = {
     "rpgmaker": "RPG Maker MV/MZ",
     "tyrano": "TyranoScript / TyranoBuilder",
     "renpy-apk": "Ren'Py (APK اندروید)",
+    "gamemaker": "GameMaker Studio",
+    "gamemaker-apk": "GameMaker (APK)",
+    "gm8": "GameMaker 8 (exe)",
+    "rgss": "RPG Maker XP/VX/Ace",
+    "rgss-archived": "RPG Maker (آرشیو رمزشده)",
+    "generic": "عمومی (هوش مصنوعی)",
     "unknown": "ناشناخته",
 }
 VN_SHORT_PROMPT = ("این‌ها دیالوگ یک بازی ویژوال ناول هستند: فارسی محاوره‌ای، طبیعی و کوتاه بنویس، ادبی ننویس. "
@@ -25,11 +32,11 @@ TMP_PREFIX = "trarium_vnui_"
 
 
 def max_upload_bytes() -> int:
-    return int(float(os.environ.get("TRARIUM_VN_MAX_MB", "200")) * 1024 * 1024)
+    return int(float(os.environ.get("TRARIUM_VN_MAX_MB", "2048")) * 1024 * 1024)
 
 
 def max_unpacked_bytes() -> int:
-    return int(float(os.environ.get("TRARIUM_VN_MAX_UNPACKED_MB", "1024")) * 1024 * 1024)
+    return int(float(os.environ.get("TRARIUM_VN_MAX_UNPACKED_MB", "6144")) * 1024 * 1024)
 
 
 class VNInputError(RuntimeError):
@@ -39,9 +46,12 @@ class VNInputError(RuntimeError):
 SEVEN_Z_SIG = b"7z\xbc\xaf\x27\x1c"
 RAR_SIGS = (b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00")
 # پسوندهایی که فایل‌آپلودر می‌پذیرد (tar.gz/tgz/tar.bz2/tar.xz با gz/bz2/xz پوشش داده می‌شوند).
-UPLOAD_TYPES = ["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "exe", "rpa", "apk"]
-EXE_HELP = ("این فایل exe باز نشد (احتمالاً با Enigma یا مانند آن بسته‌بندی شده یا بازی GameMaker تک‌فایلی است). "
-            "پوشهٔ کامل بازی را زیپ کنید و همان را بدهید، یا از «آپلود پوشه» استفاده کنید.")
+UPLOAD_TYPES = ["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "exe", "rpa", "apk",
+                "win", "unx", "ios", "droid", "iso"]   # فقط برای راهنما؛ آپلودر هر نوع فایلی را می‌پذیرد
+EXE_HELP = ("این فایل exe باز نشد (احتمالاً با Enigma یا مانند آن بسته‌بندی شده، یا بازی GameMaker 8.1/Studio تک‌فایلی است). "
+            "برای GameMaker Studio فایل data.win کنار exe را بدهید؛ در غیر این صورت پوشهٔ کامل بازی را زیپ کنید "
+            "یا از «آپلود پوشه» استفاده کنید.")
+GMS_NAMES = ("data.win", "game.unx", "game.ios", "game.droid")
 
 
 def _check_inside(dest: Path) -> None:
@@ -132,6 +142,66 @@ def _extract_7z_or_rar(archive: Path, dest: Path, kind: str) -> bool:
     return False
 
 
+ISO_NOT_AVAILABLE = ("باز کردن فایل ISO روی این سرور ممکن نیست (نه 7-Zip نصب است نه کتابخانهٔ pycdlib). "
+                     "محتوای ISO را بیرون بیاورید و زیپ کنید.")
+
+
+def is_iso(path: Path) -> bool:
+    """ISO 9660 / Joliet / UDF: شناسهٔ حجم در سکتور ۱۶ (CD001، BEA01، NSR0x)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0x8000)
+            vd = f.read(2048 * 4)
+    except OSError:
+        return False
+    return any(vd[i * 2048 + 1:i * 2048 + 6] in (b"CD001", b"BEA01", b"NSR02", b"NSR03") for i in range(len(vd) // 2048))
+
+
+def _extract_iso(archive: Path, dest: Path) -> None:
+    """اول 7z (اگر نصب است)، بعد pycdlib (پایتون خالص). مسیرها و حجم کنترل می‌شوند؛ ISO هرگز دوباره ساخته نمی‌شود."""
+    tool = _seven_zip_bin()
+    if tool:
+        import subprocess
+        r = subprocess.run([tool, "x", "-y", "-snl-", f"-o{dest}", str(archive)], capture_output=True, timeout=1800)
+        if r.returncode == 0 and any(dest.iterdir()):
+            return
+    try:
+        import pycdlib  # اختیاری
+    except ImportError:
+        raise VNInputError(ISO_NOT_AVAILABLE)
+    iso = pycdlib.PyCdlib()
+    iso.open(str(archive))
+    try:
+        if iso.has_udf():
+            facade, key = iso.get_udf_facade(), "udf_path"
+        elif iso.has_joliet():
+            facade, key = iso.get_joliet_facade(), "joliet_path"
+        elif iso.has_rock_ridge():
+            facade, key = iso.get_rock_ridge_facade(), "rr_path"
+        else:
+            facade, key = iso.get_iso9660_facade(), "iso_path"
+        root = dest.resolve()
+        total = 0
+        for dirpath, _dirs, files in iso.walk(**{key: "/"}):
+            for name in files:
+                src = (dirpath.rstrip("/") + "/" + name)
+                clean = name.split(";")[0] if key == "iso_path" else name
+                rel = (dirpath.strip("/") + "/" + clean).strip("/")
+                target = (dest / rel).resolve()
+                if root not in target.parents:
+                    raise VNInputError(f"مسیر نامعتبر در ISO: {rel}")
+                rec = facade.get_record(src)
+                size = rec.get_data_length() if hasattr(rec, "get_data_length") else 0
+                total += size
+                if total > max_unpacked_bytes():
+                    raise VNInputError("حجم محتوای ISO از سقف مجاز بیشتر است.")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with open(target, "wb") as out:
+                    facade.get_file_from_iso_fp(out, src)
+    finally:
+        iso.close()
+
+
 def _sfx_kind(path: Path) -> str | None:
     """exe خوداستخراج 7z/rar: امضای آرشیو بعد از بخش اجرایی پیدا می‌شود."""
     with open(path, "rb") as f:
@@ -152,6 +222,11 @@ def container_of(path: Path, name: str) -> str:
         head = f.read(8)
     if head.startswith(b"RPA-"):
         return "rpa"
+    if head[:4] == b"FORM":
+        from trarium.vn.gms.iff import looks_like_data_win
+        with open(path, "rb") as f:
+            if looks_like_data_win(f.read(12)):
+                return "gmsdata"
     if head.startswith(SEVEN_Z_SIG):
         return "7z"
     if head.startswith(RAR_SIGS):
@@ -160,10 +235,15 @@ def container_of(path: Path, name: str) -> str:
         return "exe"
     if zipfile.is_zipfile(path):
         return "zip"
+    if is_iso(path):
+        return "iso"
     import tarfile
-    if tarfile.is_tarfile(path):
-        return "tar"
-    return "unknown"
+    try:
+        if tarfile.is_tarfile(path):
+            return "tar"
+    except OSError:
+        pass
+    return "file"
 
 
 def prepare(path: Path, name: str, dest: Path) -> str:
@@ -177,6 +257,9 @@ def prepare(path: Path, name: str, dest: Path) -> str:
         _safe_extract(path, dest)
     elif kind == "tar":
         _extract_tar(path, dest)
+    elif kind == "gmsdata":
+        target = dest / (Path(name).name if Path(name).name.lower() in GMS_NAMES else "data.win")
+        _link_or_copy(path, target)
     elif kind == "rpa":
         game = dest / "game"
         game.mkdir(parents=True, exist_ok=True)
@@ -187,7 +270,11 @@ def prepare(path: Path, name: str, dest: Path) -> str:
                                "لطفاً پوشهٔ بازی را با .zip فشرده کنید و دوباره بدهید.")
     elif kind == "exe":
         opened = False
-        if zipfile.is_zipfile(path):          # Ren'Py / NW.js (package.nw) چسبیده به exe
+        from trarium.vn.gm8.auto import is_gm8_exe
+        if is_gm8_exe(path):                  # GameMaker 8.0: کل بازی داخل همین exe است
+            _link_or_copy(path, dest / (_safe_stem(Path(name).stem) + ".exe"))
+            opened = True
+        elif zipfile.is_zipfile(path):          # Ren'Py / NW.js (package.nw) چسبیده به exe
             try:
                 _safe_extract(path, dest); opened = True
             except zipfile.BadZipFile:
@@ -197,12 +284,66 @@ def prepare(path: Path, name: str, dest: Path) -> str:
             opened = bool(sfx) and _extract_7z_or_rar(path, dest, sfx)
         if not opened:
             raise VNInputError(EXE_HELP)
+    elif kind == "iso":
+        _extract_iso(path, dest)
     elif kind == "apk":
         raise VNInputError("APK مسیر جدا دارد.")
-    else:
-        raise VNInputError("این نوع فایل پشتیبانی نمی‌شود. zip، 7z، rar، tar(.gz)، exe، rpa یا apk بدهید.")
+    else:   # هر فایل دیگر: همان‌طور در پوشه گذاشته می‌شود تا مسیر عمومی (متن‌یاب) بررسی‌اش کند
+        _link_or_copy(path, dest / (Path(name).name.replace("/", "_").replace("\\", "_") or "file.bin"))
     _check_inside(dest)
+    from trarium.vn.detect import detect_engine, find_root
+    if detect_engine(find_root(dest)) == "unknown":
+        unpack_nested(dest)
     return kind
+
+
+NESTED_TYPES = ("zip", "tar", "7z", "rar", "iso")
+
+
+def unpack_nested(dest: Path, depth: int = 2) -> list[str]:
+    """آرشیوهای تودرتو (zip/tar/7z/rar/iso) را کنار خودشان در «<نام>.unpacked» باز می‌کند (حداکثر ۲ سطح)."""
+    opened: list[str] = []
+    for _level in range(depth):
+        found = False
+        for p in sorted(dest.rglob("*")):
+            if not p.is_file() or p.is_symlink() or ".unpacked" in p.name:
+                continue
+            out = p.with_name(p.name + ".unpacked")
+            if out.exists():
+                continue
+            try:
+                kind = container_of(p, p.name)
+            except OSError:
+                continue
+            if kind not in NESTED_TYPES or (kind == "zip" and p.suffix.lower() in (".apk", ".jar", ".docx", ".xlsx")):
+                continue
+            out.mkdir()
+            try:
+                if kind == "zip":
+                    _safe_extract(p, out)
+                elif kind == "tar":
+                    _extract_tar(p, out)
+                elif kind == "iso":
+                    _extract_iso(p, out)
+                elif not _extract_7z_or_rar(p, out, kind):
+                    shutil.rmtree(out, ignore_errors=True); continue
+            except (VNInputError, zipfile.BadZipFile, OSError):
+                shutil.rmtree(out, ignore_errors=True); continue
+            opened.append(str(p.relative_to(dest)))
+            found = True
+        _check_inside(dest)
+        if not found:
+            break
+    return opened
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """بدون کپی دوم روی دیسک اگر ممکن است (hard link)؛ وگرنه کپی جریانی."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
 
 
 def _apk_tools() -> tuple[Path, Path] | None:
@@ -212,12 +353,38 @@ def _apk_tools() -> tuple[Path, Path] | None:
     return None
 
 
+GMS_APK_ENTRY = "assets/game.droid"
+
+
+def _extract_member(path: Path, member: str, out: Path) -> Path:
+    """یک فایل از APK را جریانی (بدون خواندن کامل در حافظه) و با سقف حجم بیرون می‌کشد."""
+    with zipfile.ZipFile(path) as z:
+        info = z.getinfo(member)
+        if info.file_size > max_unpacked_bytes():
+            raise VNInputError("فایل داخل APK از سقف حجم بیشتر است.")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with z.open(info) as src, open(out, "wb") as dst:
+            shutil.copyfileobj(src, dst, 4 * 2**20)
+    return out
+
+
 def inspect_apk(path: Path) -> dict:
     with zipfile.ZipFile(path) as z:
-        names = [n for n in z.namelist() if n.startswith("assets/x-game/")]
+        all_names = z.namelist()
+        names = [n for n in all_names if n.startswith("assets/x-game/")]
+    if GMS_APK_ENTRY in all_names:
+        from trarium.vn.gms.build import inspect as gms_inspect
+        peek = Path(tempfile.mkdtemp(prefix=TMP_PREFIX + "apkgms_"))
+        try:
+            data = _extract_member(path, GMS_APK_ENTRY, peek / "game.droid")
+            info = gms_inspect(data)
+        finally:
+            shutil.rmtree(peek, ignore_errors=True)
+        return {"engine": "gamemaker-apk", **info}
     scripts = [n for n in names if n.endswith(".rpyc") and not n.endswith("script_version.rpyc")]
     if not names:
-        return {"engine": "unknown", "lines": 0, "note": "این APK بازی Ren'Py نیست (پوشهٔ assets/x-game ندارد)."}
+        return {"engine": "unknown", "lines": 0,
+                "note": "این APK بازی Ren'Py یا GameMaker نیست (assets/x-game یا assets/game.droid ندارد)."}
     return {"engine": "renpy-apk", "lines": None, "script_files": len(scripts), "apk_ready": _apk_tools() is not None}
 
 
@@ -260,6 +427,42 @@ def inspect_folder(folder: Path) -> dict:
         segs, _docs = ty.extract(ty.find_root(root))
         info["lines"] = len(segs)
         info["by_kind"] = {k: sum(1 for s in segs if s.kind == k) for k in ("text", "name", "jname", "attr")}
+    elif engine == "rgss":
+        from trarium.vn.rgss import engine as rg
+        items, _docs = rg.extract(root)
+        info["lines"] = len(items)
+        info["by_kind"] = {k: sum(1 for i in items if i.kind == k) for k in ("say", "choice", "db")}
+    elif engine == "rgss-archived":
+        info["note"] = ("داده‌های این بازی RPG Maker در آرشیو رمزشدهٔ Game.rgssad/rgss2a/rgss3a است؛ "
+                        "پوشهٔ Data باز لازم است.")
+    elif engine == "gamemaker":
+        from trarium.vn.gms.build import find_data_file, inspect as gms_inspect
+        data = find_data_file(root)
+        info.update(gms_inspect(data))
+        info["data_file"] = str(data.relative_to(root))
+    elif engine == "gm8":
+        from trarium.vn.gm8.auto import find_gm8_exe, inspect as gm8_inspect
+        exe = find_gm8_exe(root)
+        try:
+            info.update(gm8_inspect(exe))
+        except Exception as exc:
+            info["note"] = f"این exe بازی GameMaker 8 خوانده نشد: {exc}"
+        info["data_file"] = str(exe.relative_to(root))
+    else:
+        from trarium.vn import generic as gn
+        docs, binaries = gn.scan(root)
+        units = gn.candidates(docs)
+        sel = gn.select(units, None)
+        if units:
+            info.update({"engine": "generic", "lines": len(sel), "candidates": len(units), "text_files": len(docs)})
+            info["note"] = (f"موتور شناخته نشد؛ {len(docs)} فایل متنی با {len(units):,} رشته پیدا شد. موقع ترجمه، "
+                            "هوش مصنوعی با یک درخواست کوتاه روی نمونه تعیین می‌کند کدام‌ها متن بازیکن‌اند "
+                            f"(برآورد فعلی: {len(sel):,}).")
+        if binaries:
+            info["binary_untouched"] = binaries[:50]
+            extra = (f"{len(binaries)} فایل باینری رشتهٔ متنی دارند (مثلاً {binaries[0]['file']})، ولی ساختارشان "
+                     "ناشناخته است و دست نمی‌خورند (فقط فایل‌های .mo بازسازی می‌شوند).")
+            info["note"] = ((info.get("note") or "") + " " + extra).strip()
     return info
 
 
@@ -281,6 +484,20 @@ def inspect_upload(path: Path, name: str | None = None) -> dict:
         return info
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def save_upload(uploaded, out: Path) -> int:
+    """فایل آپلودشده را تکه‌تکه روی دیسک می‌نویسد (بدون کپی کامل دوم در حافظه)."""
+    total = 0
+    uploaded.seek(0)
+    with open(out, "wb") as f:
+        for block in iter(lambda: uploaded.read(8 * 2**20), b""):
+            total += len(block)
+            if total > max_upload_bytes():
+                raise VNInputError(f"فایل بزرگ‌تر از سقف {max_upload_bytes() // 2**20} مگابایت است.")
+            f.write(block)
+    uploaded.seek(0)
+    return total
 
 
 def folder_to_zip(files, out: Path) -> int:
@@ -342,7 +559,7 @@ def run_upload(path: Path, name: str, outdir: Path, pipeline, limit: int | None 
     try:
         src = work / (_safe_stem(Path(name).stem) or "game")
         kind = prepare(Path(path), name, src)
-        report = translate_game(src, outdir, pipeline, limit=limit or None)
+        report = translate_game(src, outdir, pipeline, limit=limit or None, in_place=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     _cleanup_build_tmp(report)
@@ -408,6 +625,40 @@ def run_apk(path: Path, outdir: Path, pipeline) -> dict:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def run_apk_gms(path: Path, outdir: Path, pipeline, limit: int | None = None) -> dict:
+    """APK بازی GameMaker Studio: assets/game.droid فارسی می‌شود؛ خروجی پچ (game.droid) و اگر ابزار امضا
+    روی سرور بود APK امضاشده."""
+    from trarium.vn import apk as ak
+    from trarium.vn.build import _protected_translate
+    from trarium.vn.gms import text as gtx
+    from trarium.vn.gms.build import translate_file
+    outdir.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=TMP_PREFIX + "apkgms_"))
+    try:
+        data = _extract_member(path, GMS_APK_ENTRY, work / "game.droid")
+        rep = translate_file(data, lambda texts: _protected_translate(pipeline, texts, gtx.PROTECT), limit)
+        stem = _safe_stem(Path(path).stem)
+        patch = outdir / f"{stem}_fa_patch.zip"
+        with zipfile.ZipFile(patch, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(data, GMS_APK_ENTRY)
+            z.writestr("README_FA.txt", "فایل assets/game.droid را داخل APK جایگزین کنید و APK را دوباره امضا کنید. "
+                                        "ساخته‌شده با تراریوم.\n")
+        result = {"engine": "gamemaker-apk", "segments": rep["segments"], "translated": rep["written"],
+                  "kept_original": rep["kept_original"], "rejected": rep["rejected"], "samples": rep["samples"],
+                  "patch_zip": patch.name, "full_zip": None, "apk": None}
+        out_apk = outdir / (stem + "-fa.apk")
+        try:
+            sign = ak.repack(Path(path), {GMS_APK_ENTRY: data.read_bytes()}, out_apk, work)
+            result["sign"] = sign
+            if out_apk.exists():
+                result["apk"] = out_apk.name
+        except Exception as exc:  # بدون zipalign/apksigner هم پچ تحویل داده می‌شود
+            result["note"] = f"ساخت APK ممکن نشد ({exc}); فقط پچ آماده است."
+        return result
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def sweep_stale(max_age_hours: float = 6.0) -> int:
     """پوشه‌های آپلودِ جلسه‌های رهاشده را پاک می‌کند."""
     import time
@@ -448,19 +699,30 @@ def render_vn_tab(ctx: dict) -> None:
     from trarium.processors.pipeline import TranslationPipeline
 
     st.markdown("### 🎮 ترجمهٔ ویژوال ناول (آزمایشی)")
-    _rtl(st, "بازی را به‌صورت آرشیو (<b>zip، 7z، rar، tar.gz</b>)، فایل <b>exe</b> ویندوزی (اگر بازی داخلش "
+    _rtl(st, "<b>هر نوع فایلی</b> پذیرفته می‌شود. بازی را به‌صورت آرشیو (<b>zip، 7z، rar، tar.gz</b>)، ایمیج <b>iso</b>، فایل <b>exe</b> ویندوزی (اگر بازی داخلش "
              "چسبیده باشد)، آرشیو <b>.rpa</b> بازی Ren'Py یا <b>.apk</b> بازی Ren'Py بدهید؛ یا کل پوشهٔ بازی را از "
-             "«آپلود پوشه» بفرستید. موتور خودکار تشخیص داده می‌شود (Ren'Py، RPG Maker MV/MZ، TyranoScript). فقط "
-             "متن‌ها و فونت عوض می‌شوند و فایل اجرایی بازی دست نمی‌خورد.", muted=True)
+             "«آپلود پوشه» بفرستید. برای <b>GameMaker</b> فایل <b>data.win</b> (یا game.unx / game.ios / game.droid)، "
+             "exe بازی GameMaker 8، یا APK اندرویدی GameMaker را بدهید. موتور خودکار تشخیص داده می‌شود "
+             "(Ren'Py، RPG Maker MV/MZ و XP/VX/VX Ace، TyranoScript، GameMaker). اگر موتور شناخته نشد، مسیر عمومی "
+             "فایل‌های متنی (json، xml، csv، ini، po/mo، lua/js، txt و…) را پیدا می‌کند و هوش مصنوعی با یک درخواست "
+             "کوتاه تشخیص می‌دهد کدام متن بازیکن است. فقط متن‌ها و فونت عوض می‌شوند؛ خروجی پچ زیپ است.", muted=True)
     _rtl(st, "⚖️ فقط بازی‌هایی را ترجمه کنید که اجازهٔ ترجمه‌شان را دارید."
              "<ul style='margin:.4rem 0 0'>"
              "<li><b>TyranoScript</b>: مجوز موتور بازتوزیع را منع می‌کند؛ خروجی فقط پچ است.</li>"
-             "<li><b>RPG Maker</b>: متن‌ها فارسی می‌شوند، ولی برای چسبیدن حروف و راست‌به‌چپ در بازی پلاگین RTL لازم است.</li>"
+             "<li><b>RPG Maker MV/MZ</b>: متن‌ها فارسی می‌شوند، ولی برای چسبیدن حروف و راست‌به‌چپ در بازی پلاگین RTL لازم است.</li>"
+             "<li><b>RPG Maker XP/VX/VX Ace</b>: پوشهٔ Data باز لازم است (آرشیو رمزشدهٔ rgss3a فعلاً نه)؛ متن‌ها شکل‌دهی و "
+             "راست‌به‌چپ ذخیره می‌شوند؛ فونت بازی باید حروف فارسی داشته باشد.</li>"
              "<li><b>exe</b>: فقط پچ ساخته می‌شود؛ اگر exe باز نشد، پوشهٔ بازی را زیپ کنید.</li>"
+             "<li><b>GameMaker Studio</b>: متن‌ها در data.win فارسی و حروف فارسی به فونت‌های بازی اضافه می‌شوند؛ "
+             "کلمه‌های تکی (احتمال کلید تنظیمات) ترجمه نمی‌شوند. در بازی‌هایی که حرف‌به‌حرف با فاصلهٔ ثابت تایپ "
+             "می‌کنند (Undertale/Deltarune) ممکن است حروف جدا دیده شوند. خروجی فقط پچ است.</li>"
+             "<li><b>GameMaker 8</b>: آزمایشی؛ exe بازی با متن فارسی ساخته می‌شود.</li>"
+             "<li><b>مسیر عمومی</b>: برای موتورهای ناشناخته؛ فایل‌های متنی ترجمه می‌شوند و فایل‌های باینری ناشناخته "
+             "دست نمی‌خورند (فقط .mo بازسازی می‌شود). متن فارسی بدون شکل‌دهی ذخیره می‌شود.</li>"
              "<li>خروجی فعلاً فقط فارسی است.</li></ul>", box=True)
 
     cap = max_upload_bytes() // 2**20
-    uploaded = st.file_uploader(f"فایل بازی (حداکثر {cap} مگابایت)", type=UPLOAD_TYPES, key="uploader_vn")
+    uploaded = st.file_uploader(f"فایل بازی — هر نوع فایلی (حداکثر {cap} مگابایت)", type=None, key="uploader_vn")
     folder_files = None
     with st.expander("📁 آپلود پوشهٔ بازی (به‌جای آرشیو)"):
         try:
@@ -478,7 +740,8 @@ def render_vn_tab(ctx: dict) -> None:
             st.error(f"فایل بزرگ‌تر از سقف {cap} مگابایت است.")
             return
         up_name = uploaded.name
-        digest = hashlib.sha256(uploaded.getvalue()).hexdigest()
+        # بدون getvalue(): برای فایل ۲ گیگی یک کپی دوم در حافظه نمی‌سازیم
+        digest = hashlib.sha256(f"{up_name}|{uploaded.size}|{getattr(uploaded, 'file_id', '')}".encode()).hexdigest()
     else:
         first = str(folder_files[0].name).replace("\\", "/").split("/")[0] or "game"
         up_name = first + ".zip"
@@ -497,7 +760,7 @@ def render_vn_tab(ctx: dict) -> None:
                                  "vn_upload_hash": digest, "vn_upload_name": up_name})
         try:
             if uploaded is not None:
-                path.write_bytes(uploaded.getvalue())
+                save_upload(uploaded, path)
             else:
                 folder_to_zip(folder_files, path)
             with st.spinner("در حال بررسی بازی..."):
@@ -516,15 +779,24 @@ def render_vn_tab(ctx: dict) -> None:
     a.metric("موتور تشخیص‌داده‌شده", ENGINE_LABELS.get(engine, engine))
     if engine == "renpy-apk":
         b.metric("فایل‌های اسکریپت", info.get("script_files", 0))
+    elif engine in ("gamemaker", "gamemaker-apk"):
+        b.metric("خط‌های قابل ترجمه", f"{info.get('lines', 0):,}")
+        _rtl(st, f"رشته‌های کل فایل: {info.get('strings', 0):,} · شناسه/نام (ترجمه نمی‌شود): "
+                 f"{info.get('identifiers', 0):,} · کلمهٔ تکی (ردشده): {info.get('skipped_single_words', 0):,} · "
+                 f"فونت‌ها: {info.get('fonts', 0)} · نسخهٔ GameMaker: {info.get('version', '?')}", muted=True)
     else:
         b.metric("خط‌های قابل ترجمه", f"{info.get('lines', 0):,}")
     if info.get("by_kind"):
-        names = {"say": "دیالوگ", "menu": "گزینه", "ui": "رابط", "name": "نام", "text": "متن", "jname": "نام نمایشی", "attr": "دکمه/برچسب"}
+        names = {"say": "دیالوگ", "menu": "گزینه", "choice": "گزینه", "db": "دیتابیس", "ui": "رابط", "name": "نام", "text": "متن", "jname": "نام نمایشی", "attr": "دکمه/برچسب"}
         _rtl(st, " · ".join(f"{names.get(k, k)}: {v}" for k, v in info["by_kind"].items() if v), muted=True)
     if info.get("note"):
-        st.warning(info["note"])
+        st.markdown('<div style="direction:rtl;text-align:right;padding:12px 16px;border-radius:10px;'
+                    'background:rgba(255,189,69,.12);border:1px solid rgba(255,189,69,.35);color:#ffe2a8;'
+                    f'margin-bottom:.8rem">⚠️ {html_escape(info["note"])}</div>', unsafe_allow_html=True)
+    if engine == "generic" and info.get("lines"):
+        _rtl(st, f"فایل‌های متنی: {info.get('text_files', 0)} · رشته‌های نامزد: {info.get('candidates', 0):,}", muted=True)
     if engine == "unknown":
-        st.error("موتور این بازی پشتیبانی نمی‌شود. فعلاً Ren'Py، RPG Maker MV/MZ، TyranoScript و APK بازی Ren'Py.")
+        st.error("موتور این بازی پشتیبانی نمی‌شود. فعلاً Ren'Py، RPG Maker، TyranoScript، GameMaker و APK بازی Ren'Py/GameMaker.")
         return
     if engine == "renpy-apk" and not info.get("apk_ready"):
         st.warning("ترجمهٔ APK روی این سرور فعال نیست (به Ren'Py SDK و unrpyc نیاز دارد: TRARIUM_RENPY_SDK و TRARIUM_UNRPYC).")
@@ -559,6 +831,8 @@ def render_vn_tab(ctx: dict) -> None:
                 with st.spinner("ترجمه در حال انجام است..."):
                     if engine == "renpy-apk":
                         report = run_apk(path, outdir, prog)
+                    elif engine == "gamemaker-apk":
+                        report = run_apk_gms(path, outdir, prog, limit=int(limit) or None)
                     else:
                         report = run_upload(path, st.session_state.get("vn_upload_name", path.name), outdir,
                                             prog, limit=int(limit) or None)
@@ -582,7 +856,7 @@ def render_vn_tab(ctx: dict) -> None:
     if rep.get("note"):
         st.caption(rep["note"])
     stem = _safe_stem(res["stem"])
-    if rep.get("apk"):
+    if rep.get("apk") and rep.get("engine") != "gamemaker-apk":
         p = outdir / rep["apk"]
         if not (rep.get("sign") or {}).get("signed"):
             st.warning("ابزار امضای اندروید روی سرور نیست؛ APK امضا نشده است.")
@@ -593,6 +867,9 @@ def render_vn_tab(ctx: dict) -> None:
     if rep.get("patch_zip") and (outdir / rep["patch_zip"]).exists():
         st.download_button("⬇️ دانلود پچ فارسی (فقط فایل‌های عوض‌شده)", (outdir / rep["patch_zip"]).read_bytes(),
                            f"{stem}_fa_patch.zip", "application/zip", type="primary", key="vn_dl_patch")
+    if rep.get("engine") == "gamemaker-apk" and rep.get("apk") and (outdir / rep["apk"]).exists():
+        st.download_button("⬇️ دانلود APK فارسی", (outdir / rep["apk"]).read_bytes(), f"{stem}-fa.apk",
+                           "application/vnd.android.package-archive", key="vn_dl_apk_gms")
     if rep.get("full_zip") and (outdir / rep["full_zip"]).exists():
         st.download_button("⬇️ دانلود کل بازیِ فارسی‌شده", (outdir / rep["full_zip"]).read_bytes(),
                            f"{stem}_fa_full.zip", "application/zip", key="vn_dl_full")

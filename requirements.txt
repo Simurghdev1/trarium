@@ -15,3 +15,6 @@ tiktoken>=0.8.0
 numpy>=1.24.0
 yt-dlp>=2025.1.1
 youtube-transcript-api>=1.0
+
+# GameMaker / game tab: ISO images (pure Python, ~240 KB; optional — 7z is used first if installed)
+pycdlib>=1.14

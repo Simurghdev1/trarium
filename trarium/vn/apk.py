@@ -22,7 +22,7 @@ from pathlib import Path
 from trarium.vn import renpy as rp
 
 FONT = Path(__file__).resolve().parents[1] / "fonts" / "Sahel.ttf"
-ALLOWED_CHANGES = re.compile(r"^assets/x-game/(x-[^/]+\.rpyc|x-[^/]+\.ttf)$")
+ALLOWED_CHANGES = re.compile(r"^(assets/x-game/(x-[^/]+\.rpyc|x-[^/]+\.ttf)|assets/game\.droid)$")
 
 
 def _strip(path: str) -> str:
