@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+**Games / visual novels**
+- GameMaker Studio 1/2 (data.win, game.unx, game.ios, game.droid, APK `assets/game.droid`): player text in STRG translated by append-and-repoint, Persian glyphs added to bitmap fonts (PNG texture pages). GameMaker 8 exe route (experimental).
+- RPG Maker XP/VX/VX Ace via a pure-Python Ruby Marshal reader/writer.
+- Generic fallback for unknown engines: text files found by content, one short AI classification call, placeholders locked, `.mo` rebuilt, unknown binaries never modified.
+- The game tab accepts any file type, including ISO images (7z or pycdlib) and nested archives; output is always a patch zip.
+- Upload limit raised to 2 GB (unpacked limit 6 GB, env-configurable); uploads are streamed to disk and inputs hard-linked instead of copied.
+
 ## 1.1.0
 
 First public release of Trarium.
