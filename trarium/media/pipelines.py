@@ -10,7 +10,7 @@ from trarium.media import ffmpeg_tools as ff
 from trarium.media.ass import FONTS_DIR, AssStyle, build_ass
 from trarium.media.gemini_client import GeminiClient
 from trarium.media.langs import is_rtl, resolve
-from trarium.media.mix import mix, place_clips
+from trarium.media.mix import mix, place_clips, trim_pauses
 from trarium.media.timeline import Segment, plan_placements, to_srt, to_vtt
 from trarium.media.transcribe import transcribe
 from trarium.media.translate import translate_segments
@@ -97,9 +97,26 @@ def make_subtitles(source: Path, work: Path, *, target: str | None, translator=N
     return result
 
 
+def _original_track(source: Path, audio_mode: str, rate: int, log):
+    """صدای اصلی برای میکس؛ در حالت novoice گوینده با Demucs حذف می‌شود (نبود Demucs → فقط دوبله)."""
+    if audio_mode == "replace":
+        return None, "replace"
+    if audio_mode == "novoice":
+        from trarium.media import separate
+        if not separate.available():
+            log("Demucs نصب نیست (pip install demucs soundfile)؛ صدای اصلی کامل حذف شد.")
+            return None, "replace"
+        try:
+            return separate.background_track(source, rate, log=log), "novoice"
+        except Exception as exc:  # noqa: BLE001
+            log(f"جدا کردن گوینده نشد ({str(exc)[:120]})؛ صدای اصلی کامل حذف شد.")
+            return None, "replace"
+    return ff.read_mono(source, rate), audio_mode
+
+
 def dub_normal(source: Path, work: Path, *, target: str, translator, client: GeminiClient | None = None,
                transcribe_engine: str = "auto", tts_engine: str = "auto", gender: str = "female",
-               voice: str = "", audio_mode: str = "duck", bed: float = 0.18, max_tempo: float = 1.35,
+               voice: str = "", audio_mode: str = "novoice", bed: float = 0.18, max_tempo: float = 1.4,
                burn_subs: bool = False, style: AssStyle | None = None, stem: str = "video",
                log=None, progress=None) -> MediaResult:
     """رونویسی → ترجمه (کوتاه برای گفتار) → TTS → جا انداختن در زمان → میکس → MP4."""
@@ -129,6 +146,7 @@ def dub_normal(source: Path, work: Path, *, target: str, translator, client: Gem
                                       gender=gender, voice=voice, log=log,
                                       progress=lambda p: progress(0.45 + 0.35 * p, "ساخت صدا"))
     result.stats["tts"] = tts_stats
+    clips = [trim_pauses(c, RATE) for c in clips]
     placements = plan_placements(segments, [len(c) / RATE for c in clips], max_tempo=max_tempo, total=total)
     fitted, starts = [], []
     for plan, clip in zip(placements, clips):
@@ -140,7 +158,7 @@ def dub_normal(source: Path, work: Path, *, target: str, translator, client: Gem
                            "max_delay_s": max(drift) if drift else 0.0}
     progress(0.85, "میکس")
     dub_track = place_clips(fitted, starts, total, RATE)
-    original = ff.read_mono(source, RATE) if audio_mode != "replace" else None
+    original, audio_mode = _original_track(source, audio_mode, RATE, log)
     final = mix(original, dub_track, RATE, mode=audio_mode, bed=bed)
     rtl = is_rtl(lang.code)
     wav = ff.write_wav(final, work / "dub_mix.wav", RATE)
@@ -167,7 +185,7 @@ def dub_normal(source: Path, work: Path, *, target: str, translator, client: Gem
 
 
 def dub_live(source: Path, work: Path, *, target: str, client: GeminiClient, model: str | None = None,
-             glossary: str = "", lag: float | None = None, audio_mode: str = "duck", bed: float = 0.18,
+             glossary: str = "", lag: float | None = None, audio_mode: str = "novoice", bed: float = 0.18,
              translator=None, fallback_normal: bool = True, gender: str = "female",
              stem: str = "video", log=None, progress=None) -> MediaResult:
     """Gemini Live Translate: صدای مبدأ با سرعت واقعی استریم می‌شود و صدای ترجمه روی ویدیو می‌نشیند.
@@ -207,7 +225,7 @@ def dub_live(source: Path, work: Path, *, target: str, client: GeminiClient, mod
                         dub_seconds=round(len(live.audio) / OUT_RATE, 2), lag_compensated=round(live.lag, 2),
                         first_audio_after=round(live.first_audio_at or 0, 2), errors=live.errors)
     progress(0.85, "میکس")
-    original = ff.read_mono(source, OUT_RATE) if audio_mode != "replace" else None
+    original, audio_mode = _original_track(source, audio_mode, OUT_RATE, log)
     final = mix(original, live.audio, OUT_RATE, mode=audio_mode, bed=bed)
     wav = ff.write_wav(final, work / "live_mix.wav", OUT_RATE)
     audio = out / f"{stem}_live_{lang.code}.m4a"
@@ -229,3 +247,50 @@ def dub_live(source: Path, work: Path, *, target: str, client: GeminiClient, mod
     result.stats["total_seconds"] = round(time.time() - t0, 1)
     progress(1.0, "تمام")
     return result
+
+
+def extract_subtitles(source: Path, work: Path, *, target: str | None = None, translator=None,
+                      stem: str = "video", log=None, progress=None) -> MediaResult:
+    """زیرنویس‌های متنی داخل ویدیو را SRT می‌کند و در صورت نیاز ترجمه می‌کند."""
+    import re
+
+    result = MediaResult()
+    log = _logger(result, log)
+    progress = progress or (lambda p, msg="": None)
+    out = work / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    progress(0.1, "استخراج زیرنویس")
+    files = ff.extract_subtitles(source, out, stem=stem)
+    if not files:
+        raise ff.MediaError("زیرنویس متنی داخل این فایل پیدا نشد (زیرنویس تصویری مثل PGS پشتیبانی نمی‌شود).")
+    log(f"{len(files)} زیرنویس استخراج شد.")
+    result.stats["extracted"] = len(files)
+    for n, f in enumerate(files):
+        result.files[f"srt_{n}"] = f
+    if target and translator is not None:
+        lang = resolve(target)
+        progress(0.4, "ترجمه")
+        src = files[0]
+        blocks = [b for b in re.split(r"\n\s*\n", src.read_text(encoding="utf-8", errors="ignore").strip()) if b.strip()]
+        segs = []
+        for b in blocks:
+            lines = b.strip().splitlines()
+            m = next((i for i, l in enumerate(lines) if "-->" in l), None)
+            if m is None:
+                continue
+            a, z = [_srt_time(t) for t in lines[m].split("-->")]
+            text = re.sub(r"<[^>]+>|\{[^}]*\}", "", " ".join(lines[m + 1:])).strip()
+            if text:
+                segs.append(Segment(a, z, text))
+        result.stats["translate"] = translate_segments(segs, translator, lang.code, log=log)
+        dst = out / f"{stem}_{lang.code}.srt"
+        dst.write_text(to_srt(segs, "translation", is_rtl(lang.code)), encoding="utf-8")
+        result.files["srt"] = dst
+        result.segments = segs
+    progress(1.0, "تمام")
+    return result
+
+
+def _srt_time(t: str) -> float:
+    h, m, s = t.strip().replace(",", ".").split()[0].split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)

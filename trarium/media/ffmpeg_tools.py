@@ -152,3 +152,53 @@ def frame(video: str | Path, at: float, dst: str | Path) -> Path:
 
 def _filter_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace(",", "\\,")
+
+
+def run_bytes(args: list[str], timeout: int = 3600) -> bytes:
+    """اجرای ffmpeg و برگرداندن خروجی خام stdout."""
+    args = [_bin(args[0]), *args[1:]]
+    res = subprocess.run(args, capture_output=True, timeout=timeout)
+    if res.returncode != 0:
+        raise MediaError(res.stderr.decode("utf-8", "ignore")[-800:])
+    return res.stdout
+
+
+def resample(samples: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    n = int(round(len(samples) * dst_rate / src_rate))
+    if n <= 0 or len(samples) == 0:
+        return np.zeros(0, dtype=np.float32)
+    x_old = np.linspace(0.0, 1.0, len(samples), endpoint=False)
+    x_new = np.linspace(0.0, 1.0, n, endpoint=False)
+    return np.interp(x_new, x_old, samples).astype(np.float32)
+
+
+def subtitle_streams(path: str | Path) -> list[dict]:
+    """زیرنویس‌های داخل فایل ویدیو (MKV/MP4/…): index، زبان، کدک، عنوان."""
+    out = run(["ffprobe", "-v", "error", "-select_streams", "s", "-show_entries",
+               "stream=index,codec_name:stream_tags=language,title", "-of", "json", str(path)])
+    import json as _json
+    streams = []
+    for i, st in enumerate(_json.loads(out or "{}").get("streams", [])):
+        tags = st.get("tags", {})
+        streams.append({"n": i, "index": st.get("index"), "codec": st.get("codec_name", ""),
+                        "language": tags.get("language", ""), "title": tags.get("title", "")})
+    return streams
+
+
+TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
+
+
+def extract_subtitles(path: str | Path, out_dir: str | Path, stem: str = "video") -> list[Path]:
+    """هر زیرنویس متنی داخل ویدیو را به SRT جدا ذخیره می‌کند (زیرنویس تصویری مثل PGS رد می‌شود)."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    files = []
+    for st in subtitle_streams(path):
+        if st["codec"] not in TEXT_SUB_CODECS:
+            continue
+        tag = "_".join(x for x in (str(st["n"]), st["language"]) if x)
+        dst = out_dir / f"{stem}_{tag}.srt"
+        run(["ffmpeg", "-y", "-v", "error", "-i", str(path), "-map", f"0:s:{st['n']}", "-c:s", "srt", str(dst)])
+        if dst.exists() and dst.stat().st_size > 0:
+            files.append(dst)
+    return files
