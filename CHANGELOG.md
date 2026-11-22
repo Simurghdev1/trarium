@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-11-22
+
+**Media: dubbing and subtitle maker**
+- New «🎙️ دوبله» tab: YouTube link (yt-dlp, ≤720p) or uploaded audio/video → any target language. Live mode streams the audio to Gemini Live (`gemini-3.5-live-translate-preview`, ephemeral token) and lays the translated speech over the video; fallback key 2 → native-audio live model → normal mode. Normal mode: Gemini timestamped transcription (faster-whisper fallback) → Trarium translators → Gemini TTS (edge-tts fallback) → atempo time-fit → ducked mix → MP4 + audio + SRT.
+- New «📝 زیرنویس» tab: speech → original-language subtitles, optional translation and bilingual mode; SRT/VTT files and/or burned-in subtitles (libass, Vazirmatn/Sahel, correct Persian shaping and RTL, size/position/margin/box).
+- `trarium/media/` package with a multi-key Gemini client (key 1 until quota, then key 2), unit tests in `tests/test_media.py`. Vazirmatn Bold (OFL) bundled.
+- `tests/test_deploy_gate.py` now expects 13 tabs.
+
+## 1.2 (README) — games / visual novels
 
 **Games / visual novels**
 - GameMaker Studio 1/2 (data.win, game.unx, game.ios, game.droid, APK `assets/game.droid`): player text in STRG translated by append-and-repoint, Persian glyphs added to bitmap fonts (PNG texture pages). GameMaker 8 exe route (experimental).
