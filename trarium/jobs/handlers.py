@@ -102,7 +102,8 @@ def _save_book_result(ctx, result, fmt: str, stem: str) -> Path:
         save_as_pdf(result, str(path))
     elif fmt == "epub":
         from trarium.epub_cover import cover_from_source
-        save_as_epub(result, str(path), cover=cover_from_source(ctx.job.get("source_path")))
+        save_as_epub(result, str(path), cover=cover_from_source(ctx.job.get("source_path")),
+                     compress=bool((ctx.config or {}).get("epub_compress", True)))
     elif fmt == "html":
         save_as_html(result, str(path))
     else:
