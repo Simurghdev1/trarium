@@ -216,6 +216,8 @@ def _translator_settings():
         target_lang = LANGUAGES[target_label]
         st.divider(); st.markdown("### 🧠 صرفه‌جویی و پایداری")
         safe_opt = st.checkbox("Safe Optimization (بدون دستکاری محتوای داستان)", value=True)
+        epub_compress = st.checkbox("🗜️ فشرده‌سازی EPUB (حجم کمتر)", value=True, key="epub_compress",
+                                    help="فایل EPUB خروجی فشرده (Deflate) ذخیره می‌شود؛ محتوا هیچ تغییری نمی‌کند. خاموش = بدون فشرده‌سازی.")
         protect_spans = st.checkbox("حفاظت URL/ایمیل/تگ/کد با Placeholder", value=True)
         use_memory = st.checkbox("Translation Memory + Cache", value=True)
         use_checkpoint = st.checkbox("Checkpoint برای ادامه بعد از توقف/خاموشی", value=True)
@@ -347,7 +349,7 @@ def _job_config(output_format: str = "txt", extra: dict | None = None) -> dict:
         "safe_optimization": bool(safe_opt), "protect_spans": bool(protect_spans),
         "use_checkpoint": bool(use_checkpoint), "use_cache": bool(use_cache),
         "adaptive_batch": bool(adaptive_batch), "short_prompt": str(short_prompt or ""),
-        "output_format": output_format,
+        "output_format": output_format, "epub_compress": bool(epub_compress),
         "failover": {"retries": int(failover_retries),
                      "cost_cap_usd": float(failover_cost_cap) or None,
                      "smart": bool(failover_smart)},
@@ -493,7 +495,7 @@ with book_tab:
                     out = str(Path(td) / f"{_safe_name(result.title)}_fa.{fmt.lower()}")
                     if fmt == "TXT": save_as_text(result, out); mime = "text/plain"
                     elif fmt == "PDF": save_as_pdf(result, out); mime = "application/pdf"
-                    elif fmt == "EPUB": save_as_epub(result, out); mime = "application/epub+zip"
+                    elif fmt == "EPUB": save_as_epub(result, out, compress=epub_compress); mime = "application/epub+zip"
                     else: save_as_html(result, out); mime = "text/html"
                     st.download_button("⬇️ دانلود خروجی", Path(out).read_bytes(), Path(out).name, mime, type="primary", key="download_text_result")
         if st.session_state.get("book_job_id"):
@@ -779,7 +781,7 @@ with web_tab:
                     out = str(Path(td) / f"{_safe_name(result.title)}_translated.{fmt.lower()}")
                     if fmt == "TXT": save_as_text(result, out); mime = "text/plain"
                     elif fmt == "PDF": save_as_pdf(result, out); mime = "application/pdf"
-                    elif fmt == "EPUB": save_as_epub(result, out); mime = "application/epub+zip"
+                    elif fmt == "EPUB": save_as_epub(result, out, compress=epub_compress); mime = "application/epub+zip"
                     else: save_as_html(result, out); mime = "text/html"
                     st.download_button("⬇️ دانلود خروجی", Path(out).read_bytes(), Path(out).name, mime, type="primary", key="novel_download")
 

@@ -174,8 +174,13 @@ def _reshape_for_pdf(text: str) -> str:
         return text
 
 
-def save_as_epub(result, output_path: str | None = None, cover=None) -> str:
-    """Write the translation as an EPUB; ``cover`` (epub_cover.Cover) is kept as the book's cover."""
+def save_as_epub(result, output_path: str | None = None, cover=None, compress: bool = True) -> str:
+    """Write the translation as an EPUB; ``cover`` (epub_cover.Cover) is kept as the book's cover.
+
+    ``compress`` deflates every entry except ``mimetype`` (which the EPUB spec
+    requires stored). Before this option the archive was written uncompressed,
+    so translated books came out several times larger than the source.
+    """
     path = Path(output_path or f"{_safe_name(result.title)}_translated.epub")
     path.parent.mkdir(parents=True, exist_ok=True)
     book_id = str(uuid.uuid4())
@@ -191,7 +196,8 @@ def save_as_epub(result, output_path: str | None = None, cover=None) -> str:
         chapters.append((i, ch_title, content))
     chapters.append((len(chapters) + 1, ATTRIBUTION_TEXT, ""))
 
-    with zipfile.ZipFile(path, "w") as zf:
+    method = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
+    with zipfile.ZipFile(path, "w", method, compresslevel=9 if compress else None) as zf:
         zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         zf.writestr("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
         manifest = ['<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>', '<item id="css" href="style.css" media-type="text/css"/>']
