@@ -18,3 +18,8 @@ youtube-transcript-api>=1.0
 
 # GameMaker / game tab: ISO images (pure Python, ~240 KB; optional — 7z is used first if installed)
 pycdlib>=1.14
+
+# Dubbing / subtitle maker tabs (ffmpeg with libass must be installed on the system)
+edge-tts>=7.0
+aiohttp>=3.9
+# optional offline speech recognition fallback: pip install faster-whisper
