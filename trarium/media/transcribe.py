@@ -104,10 +104,21 @@ def with_whisper(audio_src: str | Path, model_size: str = "small", language: str
 
 def transcribe(audio_src: str | Path, work: Path, client: GeminiClient | None = None, engine: str = "auto",
                whisper_model: str = "small", log=None) -> tuple[str, list[Segment], dict]:
-    """engine: auto | gemini | whisper. خروجی همیشه برای زیرنویس شکسته و مرتب است."""
+    """engine: auto | gemini | whisper. خروجی همیشه برای زیرنویس شکسته و مرتب است.
+
+    auto: اگر faster-whisper نصب باشد اول آن (زمان‌بندی دقیق‌تر و چیزی جا نمی‌اندازد)، بعد Gemini.
+    """
     log = log or (lambda m: None)
     work.mkdir(parents=True, exist_ok=True)
     errors = []
+    if engine == "auto" and _has_whisper():
+        try:
+            lang, segs, meta = with_whisper(audio_src, whisper_model, log=log)
+            if segs:
+                return lang, split_long(segs), meta
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"whisper: {exc}")
+            log(f"faster-whisper رونویسی نکرد ({str(exc)[:120]}); Gemini امتحان می‌شود.")
     if engine in ("auto", "gemini") and client is not None:
         try:
             lang, segs, meta = with_gemini(audio_src, client, work, log=log)
@@ -117,10 +128,18 @@ def transcribe(audio_src: str | Path, work: Path, client: GeminiClient | None = 
             if engine == "gemini":
                 raise
             log(f"Gemini رونویسی نکرد ({str(exc)[:120]}); faster-whisper امتحان می‌شود.")
-    if engine in ("auto", "whisper"):
+    if engine == "whisper" or (engine == "auto" and not _has_whisper()):
         try:
             lang, segs, meta = with_whisper(audio_src, whisper_model, log=log)
             return lang, split_long(segs), meta
         except Exception as exc:
             errors.append(f"whisper: {exc}")
     raise RuntimeError("رونویسی انجام نشد. " + " | ".join(errors))
+
+
+def _has_whisper() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+        return True
+    except Exception:
+        return False

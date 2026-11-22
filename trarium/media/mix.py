@@ -39,7 +39,8 @@ def normalize_peak(samples: np.ndarray, peak: float = 0.95) -> np.ndarray:
 
 def mix(original: np.ndarray | None, dub: np.ndarray, rate: int, mode: str = "duck",
         bed: float = 0.18, dub_gain: float = 1.0) -> np.ndarray:
-    """mode: duck (اصلی زیر دوبله کم می‌شود) | lower (اصلی کل زمان کم) | replace (فقط دوبله)."""
+    """mode: novoice (فقط موزیک بدون گوینده‌ی اصلی) | duck (اصلی زیر دوبله کم می‌شود) |
+    lower (اصلی کل زمان کم) | replace (فقط دوبله)."""
     dub = dub * dub_gain
     if original is None or mode == "replace":
         return normalize_peak(dub)
@@ -50,6 +51,30 @@ def mix(original: np.ndarray | None, dub: np.ndarray, rate: int, mode: str = "du
     b[: len(dub)] = dub
     if mode == "lower":
         a *= bed
+    elif mode == "novoice":
+        a *= duck_envelope(activity(b), rate, low=0.65)
     else:
         a *= duck_envelope(activity(b), rate, low=bed)
     return normalize_peak(a + b)
+
+
+def trim_pauses(clip: np.ndarray, rate: int, max_pause: float = 0.25, keep: float = 0.12,
+                threshold: float = 0.006) -> np.ndarray:
+    """مکث‌های بلند داخل صدای TTS را کوتاه می‌کند تا جمله بدون تند شدن زیاد در زمانش جا شود."""
+    if len(clip) == 0:
+        return clip
+    win = max(1, rate // 100)
+    quiet = np.convolve(np.abs(clip), np.ones(win, dtype=np.float32) / win, mode="same") < threshold
+    mask = np.ones(len(clip), dtype=bool)
+    i, n, k = 0, len(clip), int(keep * rate)
+    while i < n:
+        if quiet[i]:
+            j = i
+            while j < n and quiet[j]:
+                j += 1
+            if j - i > int(max_pause * rate) and 0 < i and j < n:
+                mask[i + k: j - k] = False
+            i = j
+        else:
+            i += 1
+    return clip[mask]

@@ -166,17 +166,18 @@ def render_dub_tab(ctx: dict) -> None:
                     "می‌شنود و همزمان ترجمه و بیان می‌کند (زمان اجرا ≈ طول ویدیو). اگر سهمیه/مدل در دسترس نبود: "
                     "کلید بعدی → مدل native-audio → حالت عادی. عادی: کیفیت ترجمه بهتر و زمان‌بندی دقیق‌تر.")
     c1, c2 = st.columns(2)
-    audio_mode = c1.selectbox("صدای اصلی", ["کم شدن زیر دوبله (پیشنهادی)", "کم در کل ویدیو", "حذف کامل"],
-                              key="dub_audio_mode")
+    audio_mode = c1.selectbox("صدای اصلی", ["حذف گوینده، موزیک بماند (پیشنهادی)", "کم شدن زیر دوبله",
+                                            "کم در کل ویدیو", "حذف کامل"], key="dub_audio_mode",
+                              help="حذف گوینده با Demucs: صدای زبان اصلی کامل حذف و فقط موزیک/افکت می‌ماند.")
     gender = c2.selectbox("صدای گوینده", ["زن", "مرد"], key="dub_gender")
-    audio_mode = {"کم شدن زیر دوبله (پیشنهادی)": "duck", "کم در کل ویدیو": "lower", "حذف کامل": "replace"}[audio_mode]
+    audio_mode = {"حذف گوینده، موزیک بماند (پیشنهادی)": "novoice", "کم شدن زیر دوبله": "duck", "کم در کل ویدیو": "lower", "حذف کامل": "replace"}[audio_mode]
     gender = "male" if gender == "مرد" else "female"
     with st.expander("تنظیمات بیشتر"):
         bed = st.slider("بلندی صدای اصلی زیر دوبله", 0.0, 0.6, 0.18, 0.02, key="dub_bed")
         tts_engine = st.selectbox("موتور صدا (حالت عادی)", ["خودکار: Gemini TTS → edge-tts", "فقط Gemini TTS",
                                                             "فقط edge-tts"], key="dub_tts")
         voice = st.text_input("نام صدای edge-tts (اختیاری، مثل fa-IR-FaridNeural)", key="dub_voice")
-        max_tempo = st.slider("حداکثر تندکردن گفتار برای جا شدن در زمان", 1.0, 1.6, 1.35, 0.05, key="dub_tempo")
+        max_tempo = st.slider("حداکثر تندکردن گفتار برای جا شدن در زمان", 1.0, 1.6, 1.4, 0.05, key="dub_tempo")
         burn = st.checkbox("زیرنویس ترجمه هم روی ویدیو حک شود", value=False, key="dub_burn")
         glossary = st.text_area("واژه‌نامه/لحن برای Live (اختیاری)", key="dub_glossary",
                                 placeholder="مثلاً: نام‌ها را ترجمه نکن؛ لحن رسمی.")
@@ -218,8 +219,23 @@ def render_subtitle_tab(ctx: dict) -> None:
                "خروجی: فایل SRT/VTT، ویدیوی با زیرنویس حک‌شده (فونت فارسی، راست‌به‌چپ درست) یا هر دو.")
     spec = _source_input("subs")
     target = _language_picker("subs", allow_none=True)
-    output = st.radio("خروجی", ["📄 فایل زیرنویس (SRT + VTT)", "🎬 زیرنویس حک‌شده روی ویدیو", "هر دو"],
-                      horizontal=True, key="subs_output")
+    output = st.radio("خروجی", ["📄 فایل زیرنویس (SRT + VTT)", "🎬 زیرنویس حک‌شده روی ویدیو", "هر دو",
+                                "📤 استخراج زیرنویس داخل ویدیو"], horizontal=True, key="subs_output")
+    if output.startswith("📤"):
+        st.caption("زیرنویس‌های متنی داخل فایل (MKV/MP4) جدا و SRT می‌شوند؛ اگر زبان مقصد انتخاب شود ترجمه هم می‌شوند.")
+        if st.button("📤 استخراج زیرنویس", type="primary", key="subs_extract"):
+            from trarium.media import pipelines
+
+            def ejob(work, log, progress, Client):
+                source, stem = _prepare_source(spec, work, audio_only=False, log=log)
+                res = pipelines.extract_subtitles(source, work, target=target,
+                                                  translator=ctx["resolve_translator"]("subtitle") if target else None,
+                                                  stem=stem, log=log, progress=progress)
+                return res, None
+
+            _runner("subs_result", ejob)
+        _show_result("subs_result")
+        return
     bilingual = st.checkbox("دوزبانه (ترجمه + متن اصلی)", value=False, key="subs_bilingual",
                             disabled=not target)
     engine = st.selectbox("موتور تشخیص گفتار", ["خودکار: Gemini → faster-whisper", "فقط Gemini",
