@@ -13,6 +13,16 @@ on:
         description: "Comma-separated paths inside trarium-files, e.g. 'books/x.epub,qa/outputs/y.pdf'"
         required: true
         type: string
+      files_list:
+        description: "The same paths as a JSON array; used when split is on (one job per file)"
+        required: false
+        default: "[]"
+        type: string
+      split:
+        description: "One job per file, so every book gets its own artifact as soon as it is done"
+        required: false
+        default: "false"
+        type: boolean
       target_lang:
         description: "Target language"
         required: false
@@ -53,6 +63,11 @@ on:
         required: false
         default: ""
         type: string
+      epub_compress:
+        description: "Trarium's own EPUB compression option (on = the translated book is about as big as the source)"
+        required: false
+        default: "true"
+        type: boolean
       workers:
         description: "Parallel translation workers"
         required: false
@@ -83,9 +98,13 @@ concurrency:
 
 jobs:
   translate:
-    name: Translate ${{ inputs.files }}
+    name: Translate ${{ inputs.split == true && matrix.file || inputs.files }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        file: ${{ inputs.split == true && fromJSON(inputs.files_list) || fromJSON('[""]') }}
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -100,7 +119,7 @@ jobs:
       - name: Check out the input files (private repo)
         env:
           FILES_PAT: ${{ secrets.FILES_PAT }}
-          FILES_SPEC: ${{ inputs.files }}
+          FILES_SPEC: ${{ inputs.split == true && matrix.file || inputs.files }}
         run: |
           set -euo pipefail
           if [ -z "$FILES_PAT" ]; then
@@ -121,10 +140,12 @@ jobs:
 
       - name: Prepare the input list
         id: prepare
+        env:
+          FILES_SPEC: ${{ inputs.split == true && matrix.file || inputs.files }}
         run: |
           python - <<'PY'
-          import pathlib
-          spec = "${{ inputs.files }}"
+          import os, pathlib
+          spec = os.environ["FILES_SPEC"]
           found, missing = [], []
           for part in spec.split(","):
               part = part.strip()
@@ -135,9 +156,17 @@ jobs:
               if not p.exists():
                   print(f"::warning::input not found: {p}")
           pathlib.Path("inputs.txt").write_text("\n".join(found), encoding="utf-8")
+          # Each job writes into its own folder so two jobs never collide.
+          if len(found) == 1:
+              folder = pathlib.Path(found[0]).stem[:60]
+          else:
+              folder = "batch"
+          pathlib.Path("outdir.txt").write_text(folder, encoding="utf-8")
           print("inputs:", found or "(none)")
+          print("folder:", folder)
           PY
           test -s inputs.txt
+          echo "folder=$(cat outdir.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -153,51 +182,61 @@ jobs:
           TRARIUM_HOME: ${{ runner.temp }}/trarium-home
         run: |
           set -o pipefail
-          mkdir -p "${{ inputs.outdir }}"
+          FOLDER="$(cat outdir.txt)"
+          OUT="${{ inputs.outdir }}/$FOLDER"
+          mkdir -p "$OUT"
           OCR_FLAG=""
           if [ "${{ inputs.ocr }}" = "true" ]; then
             OCR_FLAG="--ocr"
           fi
+          COMPRESS_FLAG=""
+          if [ "${{ inputs.epub_compress }}" != "true" ]; then
+            COMPRESS_FLAG="--no-epub-compress"
+          fi
           python qa/translate_files.py \
             --list inputs.txt \
-            --outdir "${{ inputs.outdir }}" \
+            --outdir "$OUT" \
             --target-lang "${{ inputs.target_lang }}" \
             --style "${{ inputs.style }}" \
             --providers "${{ inputs.providers }}" \
             $OCR_FLAG \
+            $COMPRESS_FLAG \
             --ocr-method "${{ inputs.ocr_method }}" \
             --ocr-pages "${{ inputs.ocr_pages }}" \
             --pages "${{ inputs.pages }}" \
             --out-format "${{ inputs.out_format }}" \
             --workers "${{ inputs.workers }}" \
             --batch-chars "${{ inputs.batch_chars }}" \
-            2>&1 | tee translate.log
+            2>&1 | tee "translate-$FOLDER.log"
 
       - name: Upload the translated files
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trarium-translate-${{ github.run_number }}
+          name: trarium-translate-${{ github.run_number }}-${{ inputs.split == true && matrix.file || 'batch' }}
           path: |
-            ${{ inputs.outdir }}/**
-            translate.log
+            ${{ inputs.outdir }}/${{ steps.prepare.outputs.folder || '*' }}/**
+            translate-*.log
           if-no-files-found: warn
           retention-days: 30
 
       - name: Publish the outputs into trarium-files
         if: ${{ inputs.publish == true && always() }}
+        env:
+          FOLDER: ${{ steps.prepare.outputs.folder }}
         run: |
           set -e
           cd files
-          mkdir -p "${{ inputs.outdir }}"
-          cp -r "$GITHUB_WORKSPACE/${{ inputs.outdir }}/." "${{ inputs.outdir }}/" 2>/dev/null || true
-          cp -f "$GITHUB_WORKSPACE/translate.log" "${{ inputs.outdir }}/translate.log" 2>/dev/null || true
+          OUT="${{ inputs.outdir }}/$FOLDER"
+          mkdir -p "$OUT"
+          cp -r "$GITHUB_WORKSPACE/$OUT/." "$OUT/" 2>/dev/null || true
+          cp -f "$GITHUB_WORKSPACE/translate-$FOLDER.log" "$OUT/translate.log" 2>/dev/null || true
           git config user.name "trarium-ci"
           git config user.email "trarium-ci@users.noreply.github.com"
           # --sparse: the outputs live outside the sparse-checkout set, and git
           # refuses to add them otherwise. The rest of the repository stays in
           # the index, so the commit adds the outputs and deletes nothing.
-          git add --sparse -A "${{ inputs.outdir }}"
+          git add --sparse -A "$OUT"
           if git diff --cached --quiet; then
             echo "nothing to publish"
           else
