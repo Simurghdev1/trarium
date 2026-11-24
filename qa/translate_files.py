@@ -32,16 +32,21 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from trarium.failover import AUTH, NETWORK, PERMANENT, QUOTA, RATE_LIMIT, TRANSIENT, classify_error
+from trarium.translators.base import BaseTranslator
 from trarium.translators.fallback import FallbackTranslator  # noqa: E402
 from trarium.translators.gemini import GeminiTranslator  # noqa: E402
 from trarium.translators.openai_compatible import OpenAICompatibleTranslator  # noqa: E402
 from trarium.translators.openrouter import OpenRouterTranslator  # noqa: E402
 
-# Ordered by measured speed and free quota: a light model first, a heavy one as
-# backup. A model that answers 429 is dropped and the next one takes over.
+# Ordered by measured availability on the free tier: the two lite models that
+# answer reliably come first. A model that answers 429 is dropped and the next
+# one takes over; a model that is merely overloaded (503) is retried first.
 GEMINI_MODELS = [
     "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-lite-preview",
     "gemini-3.5-flash",
     "gemini-3-flash-preview",
     "gemini-flash-latest",
@@ -56,7 +61,68 @@ OPENROUTER_MODELS = [
 PERSIAN = lambda ch: "\u0600" <= ch <= "\u06ff"  # noqa: E731
 
 
-def build_translator(providers: list[str]) -> FallbackTranslator:
+class ResilientTranslator(BaseTranslator):
+    """Retry the whole chain when every model failed for a temporary reason.
+
+    The fallback chain already moves on to the next model, but when *every*
+    model is momentarily overloaded (Gemini answers 503 "high demand") the
+    block is lost. Here the chain is simply tried again after a pause, so a
+    short overload costs a few seconds instead of a missing chapter.
+    """
+
+    def __init__(self, inner: BaseTranslator, retries: int = 4, base_delay: float = 4.0):
+        self.inner = inner
+        self.retries = retries
+        self.base_delay = base_delay
+        self.transient_retries = 0
+
+    @property
+    def model_name(self) -> str:
+        return self.inner.model_name
+
+    @property
+    def provider(self) -> str:
+        return self.inner.provider
+
+    def get_token_limit(self) -> int:
+        return self.inner.get_token_limit()
+
+    def status(self) -> dict:
+        return self.inner.status() if hasattr(self.inner, "status") else {}
+
+    def translate(self, text: str, target_lang: str = "fa", instructions: str = "") -> str:
+        last: Exception | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                if instructions:
+                    try:
+                        return self.inner.translate(text, target_lang, instructions)
+                    except TypeError:
+                        pass
+                return self.inner.translate(text, target_lang)
+            except Exception as exc:  # noqa: BLE001 - the whole point is to retry
+                last = exc
+                kind = classify_error(exc)
+                if kind in (TRANSIENT, NETWORK):
+                    delay, allowed = self.base_delay * (2 ** attempt), self.retries
+                elif kind == RATE_LIMIT:
+                    # A per-minute limit resets quickly; a daily limit does not,
+                    # so this path gets a single short retry and no more.
+                    delay, allowed = 10.0, 1
+                else:
+                    raise
+                if attempt >= allowed:
+                    raise
+                self.transient_retries += 1
+                print(
+                    f"  ⚠️ موقتی ({kind}): {str(exc)[:110]} — {delay:.0f} ثانیه بعد دوباره",
+                    flush=True,
+                )
+                time.sleep(delay)
+        raise last  # pragma: no cover - the loop always returns or raises
+
+
+def build_translator(providers: list[str]) -> BaseTranslator:
     candidates, labels = [], []
     if "gemini" in providers and os.environ.get("GEMINI_API_KEY"):
         for model in GEMINI_MODELS:
@@ -80,7 +146,7 @@ def build_translator(providers: list[str]) -> FallbackTranslator:
             "No API key is configured (GEMINI_API_KEY / OPENROUTER_API_KEY / TRARIUM_BASE_URL); "
             "nothing to translate."
         )
-    return FallbackTranslator(candidates, labels)
+    return ResilientTranslator(FallbackTranslator(candidates, labels))
 
 
 def safe_name(value: str) -> str:
@@ -201,6 +267,7 @@ def translate_pdf(source: pathlib.Path, outdir: pathlib.Path, translator, args) 
         "page_status": stats.page_status_counts,
         "detected_exempt_pages": stats.detected_exempt_pages,
         "providers": translator.status(),
+        "transient_retries": getattr(translator, "transient_retries", 0),
         "bytes": pathlib.Path(path).stat().st_size if pathlib.Path(path).exists() else 0,
     }
     metrics.update(count_chars(text))
@@ -239,7 +306,8 @@ def translate_book(source: pathlib.Path, outdir: pathlib.Path, translator, args)
     if out_format == "epub":
         from trarium.epub_cover import cover_from_source
 
-        save_as_epub(result, str(output), cover=cover_from_source(str(source)))
+        save_as_epub(result, str(output), cover=cover_from_source(str(source)),
+                     compress=not args.no_epub_compress)
     elif out_format == "pdf":
         save_as_pdf(result, str(output))
     elif out_format == "html":
@@ -270,8 +338,15 @@ def translate_book(source: pathlib.Path, outdir: pathlib.Path, translator, args)
         "estimated_output_tokens": result.estimated_output_tokens,
         "errors": result.errors[:20],
         "providers": translator.status(),
+        "transient_retries": getattr(translator, "transient_retries", 0),
         "bytes": output.stat().st_size if output.exists() else 0,
+        "source_bytes": source.stat().st_size if source.exists() else 0,
     }
+    if out_format == "epub":
+        metrics["epub_compress"] = not args.no_epub_compress
+        metrics["size_ratio_vs_source"] = (
+            round(metrics["bytes"] / metrics["source_bytes"], 3) if metrics["source_bytes"] else None
+        )
     metrics.update(count_chars(text))
     return metrics
 
@@ -311,6 +386,8 @@ def main() -> int:
     parser.add_argument("--providers", default="gemini,openrouter")
     parser.add_argument("--style", default="neutral")
     parser.add_argument("--out-format", default="", help="txt|pdf|epub|html (auto for books)")
+    parser.add_argument("--no-epub-compress", action="store_true",
+                        help="write the EPUB without Deflate compression (default: compressed)")
     parser.add_argument("--pages", default=None, help="pages to skip, e.g. 1,5,10-12")
     parser.add_argument("--ocr", action="store_true", help="OCR scanned PDF pages")
     parser.add_argument("--ocr-method", default="ocrspace", help="auto|ocrspace|pdf24|openrouter")

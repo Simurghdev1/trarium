@@ -18,8 +18,55 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from trarium.translators.base import BaseTranslator  # noqa: E402
+
 from qa.mock_provider import MockServer  # noqa: E402
-from qa.translate_files import build_translator, parse_pages, safe_name  # noqa: E402
+from qa.translate_files import (  # noqa: E402
+    ResilientTranslator,
+    build_translator,
+    parse_pages,
+    safe_name,
+)
+
+
+class _FlakyTranslator(BaseTranslator):
+    """Fails with the given error message for the first `fail_times` calls."""
+
+    def __init__(self, message: str, fail_times: int = 99):
+        self.message = message
+        self.fail_times = fail_times
+        self.calls = 0
+
+    def get_token_limit(self) -> int:
+        return 100000
+
+    def translate(self, text, target_lang="fa", instructions=""):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise RuntimeError(self.message)
+        return "ترجمه"
+
+
+class ResilientTranslatorTests(unittest.TestCase):
+    def test_an_overloaded_model_is_retried(self):
+        inner = _FlakyTranslator("Gemini HTTP 503: model is overloaded", fail_times=2)
+        translator = ResilientTranslator(inner, retries=3, base_delay=0.0)
+        self.assertEqual(translator.translate("hello"), "ترجمه")
+        self.assertEqual(inner.calls, 3)
+        self.assertEqual(translator.transient_retries, 2)
+
+    def test_a_dead_key_is_not_retried(self):
+        inner = _FlakyTranslator("HTTP 401: invalid api key")
+        translator = ResilientTranslator(inner, retries=3, base_delay=0.0)
+        with self.assertRaises(RuntimeError):
+            translator.translate("hello")
+        self.assertEqual(inner.calls, 1)
+
+    def test_a_rate_limit_gets_one_short_retry(self):
+        inner = _FlakyTranslator("HTTP 429: rate limit exceeded", fail_times=1)
+        translator = ResilientTranslator(inner, retries=4, base_delay=0.0)
+        self.assertEqual(translator.translate("hello"), "ترجمه")
+        self.assertEqual(inner.calls, 2)
 
 
 class DriverHelperTests(unittest.TestCase):
