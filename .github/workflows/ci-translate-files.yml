@@ -194,7 +194,10 @@ jobs:
           cp -f "$GITHUB_WORKSPACE/translate.log" "${{ inputs.outdir }}/translate.log" 2>/dev/null || true
           git config user.name "trarium-ci"
           git config user.email "trarium-ci@users.noreply.github.com"
-          git add -A "${{ inputs.outdir }}"
+          # --sparse: the outputs live outside the sparse-checkout set, and git
+          # refuses to add them otherwise. The rest of the repository stays in
+          # the index, so the commit adds the outputs and deletes nothing.
+          git add --sparse -A "${{ inputs.outdir }}"
           if git diff --cached --quiet; then
             echo "nothing to publish"
           else
