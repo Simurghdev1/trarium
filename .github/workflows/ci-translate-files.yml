@@ -92,7 +92,6 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OCR_SPACE_KEY: ${{ secrets.OCR_SPACE_KEY }}
       TRARIUM_OCR_SPACE_KEY: ${{ secrets.OCR_SPACE_KEY }}
-      TRARIUM_HOME: ${{ runner.temp }}/trarium-home
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Check out the code
@@ -150,6 +149,8 @@ jobs:
         run: pip install -r requirements.txt requests tiktoken
 
       - name: Translate
+        env:
+          TRARIUM_HOME: ${{ runner.temp }}/trarium-home
         run: |
           set -o pipefail
           mkdir -p "${{ inputs.outdir }}"
